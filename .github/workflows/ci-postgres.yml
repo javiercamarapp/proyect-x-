@@ -178,6 +178,7 @@ jobs:
           PGUSER=postgres bash supabase/tests/0335_db_retencion_r3_concurrencia.sh localhost 5432 postgres
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0338_db_retencion_r5_red.sql
           PGUSER=postgres bash supabase/tests/0338_db_retencion_r5_concurrencia.sh localhost 5432 postgres
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0339_jornada_integridad_red.sql
 
       # ── Capa 0: contratos de leases/fencing en Postgres real ───────────
       # Este archivo no es informativo: pg_prove interpreta el TAP y falla
