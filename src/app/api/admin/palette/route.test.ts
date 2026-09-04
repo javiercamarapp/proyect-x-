@@ -14,6 +14,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let sesion: { userId: string; tenantId: string | null; rol: string; nombre: string } | null = null;
 vi.mock('@/lib/auth/session', () => ({ getSessionTenant: async () => sesion }));
 
+let veredictoMfa: 'ok' | 'inscribir' | 'retar' | 'no_verificable' = 'ok';
+vi.mock('@/lib/auth/mfa', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  veredictoMfaSuperadmin: async () => veredictoMfa,
+}));
+vi.mock('@/lib/supabase/server', () => ({ supabaseServer: async () => ({}) }));
+
 const apagar = vi.fn(async (_id: string, _motivo: string, _quien: string) => { void _id; void _motivo; void _quien; });
 const encender = vi.fn(async (_id: string, _quien: string) => { void _id; void _quien; });
 vi.mock('@/lib/likida/interruptores', () => ({
@@ -39,6 +46,8 @@ const apagarGlobal = (cabeceras: Record<string, string>) =>
 
 beforeEach(() => {
   sesion = { userId: 'u-javier', tenantId: 't-1', rol: 'superadmin', nombre: 'Javier' };
+  veredictoMfa = 'ok';
+  vi.unstubAllEnvs();
   apagar.mockClear(); encender.mockClear();
 });
 
@@ -78,4 +87,15 @@ describe('la puerta de rol sigue en pie', () => {
     expect((await apagarGlobal({ 'sec-fetch-site': 'same-origin' })).status).toBe(403);
     expect(apagar).not.toHaveBeenCalled();
   });
+
+  it.each(['inscribir', 'retar', 'no_verificable'] as const)(
+    'superadmin con MFA obligatorio y veredicto %s: 403 y cero mutaciones',
+    async (resultado) => {
+      vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+      veredictoMfa = resultado;
+      expect((await apagarGlobal({ 'sec-fetch-site': 'same-origin' })).status).toBe(403);
+      expect(apagar).not.toHaveBeenCalled();
+      expect(encender).not.toHaveBeenCalled();
+    },
+  );
 });

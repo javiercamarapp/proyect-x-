@@ -14,6 +14,11 @@ let sesion: { userId: string; tenantId: string | null; rol: string; nombre: stri
 vi.mock('@/lib/auth/session', () => ({ getSessionTenant: async () => sesion }));
 vi.mock('@/lib/auth/visibilidad', () => ({ puedeVerArea: (rol: string) => rol !== 'operador' }));
 
+let mfaRechazado = false;
+vi.mock('@/lib/auth/api-superadmin', () => ({
+  rechazoMfaSuperadminApi: async () => mfaRechazado ? new Response(null, { status: 403 }) : null,
+}));
+
 // H14 (auditoría 24): `tenantEfectivoChat` (chat/tenant.ts, ajeno a este
 // agente) es la MISMA regla que ya usan /chat y /conversaciones* — un
 // superadmin puede pedir OTRO tenant con `?tenant=`; cualquier otro rol
@@ -59,7 +64,7 @@ function postear(cuerpo: unknown = { imagen: IMG }, cabeceras: Record<string, st
 
 beforeEach(() => {
   sesion = { userId: 'u-1', tenantId: 't-1', rol: 'contador', nombre: 'C' };
-  permitido = true; gastado = 0;
+  permitido = true; gastado = 0; mfaRechazado = false;
   extraer.mockClear(); registrarCosto.mockClear(); rateLimit.mockClear(); tenantEfectivoChat.mockClear();
 });
 
@@ -78,6 +83,17 @@ describe('la puerta', () => {
     sesion = { userId: 'u-1', tenantId: 't-1', rol: 'operador', nombre: 'O' };
     expect((await postear()).status).toBe(403);
     expect(extraer).not.toHaveBeenCalled();
+  });
+
+  it('superadmin sin AAL2: 403 antes de tenant, rate-limit, cuerpo, presupuesto o modelo', async () => {
+    sesion = { userId: 'u-s', tenantId: null, rol: 'superadmin', nombre: 'S' };
+    mfaRechazado = true;
+    const r = await postear();
+    expect(r.status).toBe(403);
+    expect(tenantEfectivoChat).not.toHaveBeenCalled();
+    expect(rateLimit).not.toHaveBeenCalled();
+    expect(extraer).not.toHaveBeenCalled();
+    expect(registrarCosto).not.toHaveBeenCalled();
   });
 
   it('rateLimit por USUARIO: excedido → 429 y el modelo no se llama', async () => {

@@ -14,6 +14,7 @@
 //     y el cliente degrada al respondedor gratis — el chat nunca queda mudo.
 import { NextResponse, type NextRequest } from 'next/server';
 import { getSessionTenant } from '@/lib/auth/session';
+import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerArea } from '@/lib/auth/visibilidad';
 import { registrarCosto, faseDeModelo } from '@/lib/likida/costos';
 import { PartialExecutionError } from '@/lib/llm/openrouter';
@@ -49,6 +50,8 @@ export async function POST(req: NextRequest) {
 
   const sesion = await getSessionTenant();
   if (!sesion) return NextResponse.json({ error: 'sin sesion' }, { status: 401 });
+  const rechazoMfa = await rechazoMfaSuperadminApi(sesion);
+  if (rechazoMfa) return rechazoMfa;
   if (!puedeVerArea(sesion.rol, 'dinero')) {
     return NextResponse.json({ error: 'sin acceso' }, { status: 403 });
   }

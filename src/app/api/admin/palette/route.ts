@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getSessionTenant } from '@/lib/auth/session';
+import { sesionSuperadmin } from '@/lib/auth/api-superadmin';
 import { listarInterruptores, apagar, encender } from '@/lib/likida/interruptores';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { DatoInvalido } from '@/lib/likida/errores';
@@ -25,13 +25,6 @@ export const dynamic = 'force-dynamic';
 // /admin, así que este archivo es su propia puerta. Sin sesión: 401. Con
 // sesión de otro rol: 403. Ninguna de las dos dice qué hay detrás.
 // ═══════════════════════════════════════════════════════════════════════════
-
-async function sesionSuperadmin() {
-  const s = await getSessionTenant();
-  if (!s) return { error: new NextResponse(null, { status: 401 }), sesion: null };
-  if (s.rol !== 'superadmin') return { error: new NextResponse(null, { status: 403 }), sesion: null };
-  return { error: null, sesion: s };
-}
 
 export async function GET() {
   const { error: puerta, sesion } = await sesionSuperadmin();

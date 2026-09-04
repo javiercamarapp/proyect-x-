@@ -12,6 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { MAX_BASE64, LECTURAS_POR_MINUTO } from './limites';
 import { rateLimit } from '@/lib/ratelimit';
 import { getSessionTenant } from '@/lib/auth/session';
+import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerArea } from '@/lib/auth/visibilidad';
 import { leerArchivoUniversal, ArchivoNoSoportado } from '@/lib/likida/intake/archivo';
 import { logger } from '@/lib/logger';
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
 
   const sesion = await getSessionTenant();
   if (!sesion) return NextResponse.json({ error: 'sin sesion' }, { status: 401 });
+  const rechazoMfa = await rechazoMfaSuperadminApi(sesion);
+  if (rechazoMfa) return rechazoMfa;
   if (!puedeVerArea(sesion.rol, 'dinero')) {
     return NextResponse.json({ error: 'sin acceso' }, { status: 403 });
   }

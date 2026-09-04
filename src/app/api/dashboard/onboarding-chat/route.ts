@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getSessionTenant } from '@/lib/auth/session';
+import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerRuta } from '@/lib/auth/visibilidad';
 import { getPerfilCrudo } from '@/lib/likida/repo';
 import { responderEntrevista } from '@/lib/likida/perfil/entrevista-agente';
@@ -45,6 +46,8 @@ export async function POST(req: NextRequest) {
 
   const sesion = await getSessionTenant();
   if (!sesion) return NextResponse.json({ error: 'sin sesion' }, { status: 401 });
+  const rechazoMfa = await rechazoMfaSuperadminApi(sesion);
+  if (rechazoMfa) return rechazoMfa;
   if (!puedeVerRuta(sesion.rol, '/dashboard/onboarding')) {
     return NextResponse.json({ error: 'sin acceso' }, { status: 403 });
   }

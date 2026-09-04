@@ -19,8 +19,19 @@
 // Ninguna respuesta dice qué hay detrás.
 import { NextResponse } from 'next/server';
 import { getSessionTenant, type SessionTenant } from './session';
-import { mfaSuperadminObligatorio, veredictoMfaSuperadmin } from './mfa';
+import { veredictoMfaDeSesion } from './superadmin-mfa';
 import { logger } from '@/lib/logger';
+
+/**
+ * Adaptador HTTP de la puerta MFA. Se usa también en APIs tenant: para un rol
+ * distinto de superadmin devuelve null sin consultar MFA.
+ */
+export async function rechazoMfaSuperadminApi(sesion: SessionTenant): Promise<NextResponse | null> {
+  const veredicto = await veredictoMfaDeSesion(sesion);
+  if (veredicto === 'ok') return null;
+  logger.warn('mfa.superadmin_exigido_api', { veredicto });
+  return new NextResponse(null, { status: 403 });
+}
 
 export async function sesionSuperadmin(): Promise<
   { error: NextResponse; sesion: null } | { error: null; sesion: SessionTenant }
@@ -28,13 +39,7 @@ export async function sesionSuperadmin(): Promise<
   const s = await getSessionTenant();
   if (!s) return { error: new NextResponse(null, { status: 401 }), sesion: null };
   if (s.rol !== 'superadmin') return { error: new NextResponse(null, { status: 403 }), sesion: null };
-  if (mfaSuperadminObligatorio()) {
-    const { supabaseServer } = await import('@/lib/supabase/server');
-    const veredicto = await veredictoMfaSuperadmin(await supabaseServer());
-    if (veredicto !== 'ok') {
-      logger.warn('mfa.superadmin_exigido_api', { veredicto });
-      return { error: new NextResponse(null, { status: 403 }), sesion: null };
-    }
-  }
+  const rechazoMfa = await rechazoMfaSuperadminApi(s);
+  if (rechazoMfa) return { error: rechazoMfa, sesion: null };
   return { error: null, sesion: s };
 }

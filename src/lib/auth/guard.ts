@@ -25,7 +25,8 @@
 import { redirect } from 'next/navigation';
 import { tenantDemo } from './tenant-demo';
 import { leerSeleccionFlota } from './admin-context';
-import { mfaSuperadminObligatorio, veredictoMfaSuperadmin } from './mfa';
+import { mfaSuperadminObligatorio } from './mfa';
+import { veredictoMfaDeSesion } from './superadmin-mfa';
 import { logger } from '@/lib/logger';
 import { getSessionTenant, type SessionTenant } from './session';
 
@@ -37,9 +38,10 @@ import { getSessionTenant, type SessionTenant } from './session';
 const RUTA_MFA = '/dashboard/mi-perfil';
 
 /**
- * MFA OBLIGATORIO PARA SUPERADMIN (auditoría 24, SEG-3). Apagado por default:
- * solo `LIKIDA_SUPERADMIN_MFA=obligatorio` lo enciende (ver `mfa.ts` y
- * DEPLOY.md). Con la palanca apagada esta función no hace ni una llamada.
+ * MFA OBLIGATORIO PARA SUPERADMIN (auditoría 24, SEG-3). En producción está
+ * encendido por default; `desactivado-temporal` es exclusivamente una vía de
+ * recuperación. Fuera de producción solo `obligatorio` lo enciende (ver
+ * `mfa.ts` y DEPLOY.md). Cuando no aplica, no hace ninguna llamada.
  *
  * Rebota a Mi perfil con el veredicto en el query string para que la pantalla
  * diga QUÉ falta —inscribirlo, verificarlo, o que no se pudo preguntar— en vez
@@ -49,8 +51,7 @@ const RUTA_MFA = '/dashboard/mi-perfil';
 async function exigirMfaSuperadmin(destino: string): Promise<void> {
   if (!mfaSuperadminObligatorio()) return;
   if (destino.startsWith(RUTA_MFA)) return;
-  const { supabaseServer } = await import('@/lib/supabase/server');
-  const veredicto = await veredictoMfaSuperadmin(await supabaseServer());
+  const veredicto = await veredictoMfaDeSesion({ rol: 'superadmin' });
   if (veredicto === 'ok') return;
   logger.warn('mfa.superadmin_exigido', { veredicto, destino });
   redirect(`${RUTA_MFA}?exige=${veredicto}`);
@@ -121,7 +122,7 @@ export async function requireSuperadmin(): Promise<SessionTenant> {
   if (!s) redirect(`/login?next=${encodeURIComponent('/admin')}`);
   if (s.rol !== 'superadmin') redirect('/dashboard');
   // SEG-3: la consola de negocio es justo lo que un phishing con enlace
-  // mágico buscaría. Apagado por default (ver `exigirMfaSuperadmin`).
+  // mágico buscaría. Obligatorio por default en producción.
   await exigirMfaSuperadmin('/admin');
   return s;
 }
@@ -144,6 +145,7 @@ export async function requireVendedor(): Promise<SessionTenant> {
     const { inicioDe } = await import('./visibilidad');
     redirect(inicioDe(s.rol));
   }
+  if (s.rol === 'superadmin') await exigirMfaSuperadmin('/vendedor');
   return s;
 }
 
