@@ -49,47 +49,8 @@ jobs:
       # se desincronizó del package.json, que es justo lo que se quiere saber.
       - run: npm ci
 
-      # ── LA PUERTA DE SUPPLY CHAIN (auditoría externa 16-ago-2026) ─────────
-      # "CI verde" mentía sobre las dependencias: npm ci reportaba 2 critical
-      # + 1 high y el workflow seguía de largo. La clasificación del 16-ago:
-      # las 6 vulnerabilidades eran 100% de TOOLING (vitest/vite/esbuild vía
-      # devDependencies) — `npm audit --omit=dev` daba CERO en runtime.
-      #
-      # Esta puerta convierte esa clasificación en regla permanente:
-      #   · runtime high/critical  → CI ROJO (es lo que corre en producción)
-      #   · tooling                → Dependabot lo va subiendo; no bloquea
-      # Sin `audit fix --force` ciego jamás: un fallo aquí se resuelve
-      # mirando el path (`npm audit --omit=dev`) y subiendo el paquete real.
-      - name: Auditoría completa de dependencias
-        run: npm audit --omit=dev --audit-level=high
-
       - name: Chromium para las pruebas de navegador
         run: npx playwright install --with-deps chromium
-
-      # OPERABILIDAD-19C2-5: comentario corregido — es AL REVÉS de como decía.
-      # La auditoría de ARRIBA (`--omit=dev`) es la que omite devDependencies
-      # y hacía invisibles las vulnerabilidades de Vitest/Vite/esbuild; ESTA
-      # SÍ las incluye. No bloquea todavía la entrega porque la deuda
-      # histórica se está reduciendo gradualmente, pero deja resumen en el
-      # job y JSON descargable en cada push/PR.
-      - name: Auditoría de dependencias de DESARROLLO (visible, no bloqueante)
-        id: audit-dev
-        continue-on-error: true
-        run: |
-          set +e
-          npm audit --include=dev --audit-level=moderate --json > "$RUNNER_TEMP/npm-audit-dev.json"
-          audit_exit=$?
-          node scripts/ci/audit-dev.mjs "$RUNNER_TEMP/npm-audit-dev.json" >> "$GITHUB_STEP_SUMMARY"
-          echo "npm_exit=$audit_exit" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Publicar reporte de auditoría dev
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: npm-audit-dev
-          path: ${{ runner.temp }}/npm-audit-dev.json
-          if-no-files-found: warn
 
       - name: Typecheck
         run: npm run typecheck
@@ -164,9 +125,65 @@ jobs:
 
       - name: Logs del smoke si falla
         if: failure()
-        run: cat "$RUNNER_TEMP/likida-next.log"
+        run: |
+          if [ -f "$RUNNER_TEMP/likida-next.log" ]; then
+            cat "$RUNNER_TEMP/likida-next.log"
+          else
+            echo "El servidor smoke no alcanzó a crear likida-next.log; revisar el primer paso rojo."
+          fi
 
       - name: Detener servidor del smoke
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/likida-next.pid" ]; then kill "$(cat "$RUNNER_TEMP/likida-next.pid")" 2>/dev/null || true; fi
+
+      # ── PUERTAS DE SUPPLY CHAIN ─────────────────────────────────────────
+      # Van DESPUÉS de las puertas de código: una indisponibilidad del servicio
+      # de advisories no vuelve a saltarse typecheck/tests/build/smoke. Runtime
+      # sigue siendo bloqueante y fail-closed: tras tres reportes inconclusos el
+      # job queda rojo, pero el log distingue proveedor caído de CVE real.
+      - name: Auditoría runtime high/critical (con reintentos acotados)
+        run: |
+          for intento in 1 2 3; do
+            : > "$RUNNER_TEMP/npm-audit-runtime.json"
+            : > "$RUNNER_TEMP/npm-audit-runtime.err"
+            set +e
+            timeout 75s npm audit --omit=dev --audit-level=high --json \
+              > "$RUNNER_TEMP/npm-audit-runtime.json" \
+              2> "$RUNNER_TEMP/npm-audit-runtime.err"
+            npm_exit=$?
+            node scripts/ci/audit-runtime.mjs "$RUNNER_TEMP/npm-audit-runtime.json"
+            clasificacion=$?
+            set -e
+
+            if [ "$clasificacion" -eq 0 ]; then exit 0; fi
+            if [ "$clasificacion" -eq 1 ]; then exit 1; fi
+            echo "::warning::npm audit inconcluso (intento $intento/3, exit npm=$npm_exit); se reintentará."
+            if [ "$intento" -lt 3 ]; then sleep $((intento * 10)); fi
+          done
+          cat "$RUNNER_TEMP/npm-audit-runtime.err"
+          echo "::error::No se obtuvo una auditoría runtime concluyente tras 3 intentos; no se declara verde."
+          exit 1
+
+      # DevDependencies son visibles y generan artefacto, pero no bloquean el
+      # runtime del producto. Se acota a 2 minutos para que una caída del mismo
+      # proveedor tampoco consuma el timeout completo del job.
+      - name: Auditoría de dependencias de DESARROLLO (visible, no bloqueante)
+        id: audit-dev
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set +e
+          npm audit --include=dev --audit-level=moderate --json > "$RUNNER_TEMP/npm-audit-dev.json"
+          audit_exit=$?
+          node scripts/ci/audit-dev.mjs "$RUNNER_TEMP/npm-audit-dev.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "npm_exit=$audit_exit" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publicar reporte de auditoría dev
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-audit-dev
+          path: ${{ runner.temp }}/npm-audit-dev.json
+          if-no-files-found: warn
