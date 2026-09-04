@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DashboardChrome from './chrome';
 
+// La URL es una constante del propio test, no entrada del usuario.
+// eslint-disable-next-line security/detect-non-literal-fs-filename
 const FUENTE = readFileSync(fileURLToPath(new URL('./chrome.tsx', import.meta.url)), 'utf8');
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams(), usePathname: () => '/dashboard' }));

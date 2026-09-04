@@ -28,7 +28,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '@/lib/likida/presupuesto';
 import { exigir } from '@/lib/likida/pg';
 import {
-  type RevisionLiquidacion, FILTROS_REVISION_EXPORT, type FiltroRevisionExport, leerFiltroRevisionExport,
+  type RevisionLiquidacion, type FiltroRevisionExport, leerFiltroRevisionExport,
 } from '@/lib/likida/revision';
 import {
   abrir, leerPagina, leerCursor, sobre, fallo, errorApi, codificarCursor,
@@ -44,7 +44,6 @@ export const dynamic = 'force-dynamic';
  *  y 400 aquí. `firmadas` sigue siendo el default de ESTA ruta y NO es una
  *  columna: es «aprobada o ajustada», o sea lo asentable. */
 type FiltroRevision = FiltroRevisionExport;
-const FILTROS: readonly FiltroRevision[] = FILTROS_REVISION_EXPORT;
 const FILTRO_DEFECTO: FiltroRevision = 'firmadas';
 
 interface LiquidacionApi {

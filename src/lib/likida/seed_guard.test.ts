@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- arnés de prueba limitado a mkdtemp/tmp y rutas fijas del repo */
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
