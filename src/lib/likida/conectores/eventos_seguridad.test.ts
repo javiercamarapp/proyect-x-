@@ -114,6 +114,85 @@ describe('leerEventosSeguridadSamsara', () => {
     expect(llamadas[0]).toContain('startTime=');
   });
 
+  it('250 eventos incluyen el #201 y cruzan la página 11 sin recorte', async () => {
+    let pagina = 0;
+    const http: Http = async () => {
+      const inicio = pagina * 23;
+      const cantidad = pagina === 10 ? 20 : 23;
+      const actual = pagina++;
+      return {
+        estado: 200,
+        cuerpo: JSON.stringify({
+          data: Array.from({ length: cantidad }, (_, i) => ({
+            id: `evt-${inicio + i + 1}`,
+            startMs: '2026-09-03T12:00:00Z', asset: { id: 'dev-1' },
+            behaviorLabels: [{ label: inicio + i + 1 === 201 ? 'Crash' : 'Braking' }],
+          })),
+          pagination: actual < 10
+            ? { hasNextPage: true, endCursor: `cursor-${actual + 1}` }
+            : { hasNextPage: false },
+        }),
+      };
+    };
+    const r = await leerEventosSeguridadSamsara(CRED, http, '2026-09-03T11:30:00Z', {
+      hastaIso: '2026-09-03T12:05:00Z',
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.paginas).toBe(11);
+    expect(r.eventos).toHaveLength(250);
+    expect(r.eventos.find((e) => e.eventoId === 'evt-201')?.etiquetas).toEqual(['Crash']);
+  });
+
+  it('429 → 200 respeta Retry-After sin perder la ventana fija', async () => {
+    let llamadas = 0;
+    const urls: string[] = [];
+    const http: Http = async (p) => {
+      urls.push(p.url);
+      return ++llamadas === 1
+        ? { estado: 429, cuerpo: '', encabezados: { 'retry-after': '0' } }
+        : { estado: 200, cuerpo: JSON.stringify({ data: [], pagination: { hasNextPage: false } }) };
+    };
+    const r = await leerEventosSeguridadSamsara(CRED, http, '2026-09-03T11:30:00Z', {
+      hastaIso: '2026-09-03T12:00:00Z', dormir: async () => {},
+    });
+    expect(r.ok).toBe(true);
+    expect(urls).toHaveLength(2);
+    expect(urls.every((u) => u.includes('endTime=2026-09-03T12%3A00%3A00Z'))).toBe(true);
+  });
+
+  it('5xx reintenta con backoff exponencial acotado por deadline', async () => {
+    let llamadas = 0;
+    let reloj = 0;
+    const esperas: number[] = [];
+    const http: Http = async () => ++llamadas === 1
+      ? { estado: 503, cuerpo: '' }
+      : { estado: 200, cuerpo: JSON.stringify({ data: [], pagination: { hasNextPage: false } }) };
+    const r = await leerEventosSeguridadSamsara(CRED, http, '2026-09-03T11:30:00Z', {
+      hastaIso: '2026-09-03T12:00:00Z',
+      ahora: () => reloj,
+      venceEn: 10_000,
+      dormir: async (ms) => { esperas.push(ms); reloj += ms; },
+    });
+    expect(r.ok).toBe(true);
+    expect(llamadas).toBe(2);
+    expect(esperas).toEqual([1_000]);
+  });
+
+  it('5xx no duerme si el backoff excede el presupuesto', async () => {
+    let llamadas = 0;
+    const r = await leerEventosSeguridadSamsara(CRED, async () => {
+      llamadas += 1;
+      return { estado: 502, cuerpo: '' };
+    }, '2026-09-03T11:30:00Z', {
+      ahora: () => 9_500,
+      venceEn: 10_000,
+      dormir: async () => { throw new Error('no debe dormir fuera del deadline'); },
+    });
+    expect(r).toMatchObject({ ok: false, backlog: true });
+    expect(llamadas).toBe(1);
+  });
+
   it('sin token no llama a nadie', async () => {
     const r = await leerEventosSeguridadSamsara({}, respuesta(200, { data: [] }), '2026-08-26T17:30:00Z');
     expect(r.ok).toBe(false);

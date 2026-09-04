@@ -104,6 +104,12 @@ describe('el reloj que la ruta les presta a las dos fases', () => {
     expect(optsGps.venceEn).toEqual(expect.any(Number));
     expect(optsEventos.venceEn).toBe(optsGps.venceEn);
   });
+
+  it('prioriza seguridad: eventos corre antes que la telemetría de posiciones', async () => {
+    await GET(peticion());
+    expect(sincronizarEventosTodas.mock.invocationCallOrder[0])
+      .toBeLessThan(sincronizarGpsTodas.mock.invocationCallOrder[0]);
+  });
 });
 
 describe('el corte por reloj se late y se dice, no se calla', () => {

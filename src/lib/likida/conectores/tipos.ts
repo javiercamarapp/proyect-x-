@@ -324,6 +324,9 @@ export interface PeticionHttp {
 export interface RespuestaHttp {
   estado: number;
   cuerpo: string;
+  /** Cabeceras normalizadas a minúsculas. Los pollers usan `retry-after` para
+   *  no convertir un 429 del proveedor en una tormenta de reintentos. */
+  encabezados?: Record<string, string>;
 }
 
 /** Lo que un conector necesita del mundo. En producción, `httpReal()`. */

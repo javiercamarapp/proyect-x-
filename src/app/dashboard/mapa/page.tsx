@@ -105,6 +105,7 @@ async function rastreoDe(tenantId: string, ahora: number): Promise<Rastreo> {
       unidadesConPosicion: estado.unidadesConPosicion,
       ultimaPosicion: estado.ultimaPosicion,
       proveedores: estado.proveedores,
+      polls: estado.polls,
       pines: posiciones.map((p): PinUnidad => {
         const { x, y } = proyectar(p.lat, p.lng);
         return {
@@ -127,7 +128,7 @@ async function rastreoDe(tenantId: string, ahora: number): Promise<Rastreo> {
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     logger.warn('mapa.rastreo', { tenantId, err });
-    return { error: err, unidadesConPosicion: null, ultimaPosicion: null, proveedores: [], pines: [] };
+    return { error: err, unidadesConPosicion: null, ultimaPosicion: null, proveedores: [], polls: [], pines: [] };
   }
 }
 

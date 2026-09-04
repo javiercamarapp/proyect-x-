@@ -1125,7 +1125,7 @@ export async function unidadesSinAvisoPrevio(
   if (unidadIds.length === 0) return { sinAviso };
   const bloquearSinViajeVivo = opciones.sinViajeVivo === 'bloquear';
 
-  const operadorPorUnidad = new Map<string, string>();
+  const operadoresPorUnidad = new Map<string, Set<string>>();
   for (let i = 0; i < unidadIds.length; i += IDS_POR_CONSULTA) {
     const tanda = unidadIds.slice(i, i + IDS_POR_CONSULTA);
     const { data, error } = await acotada(
@@ -1138,15 +1138,26 @@ export async function unidadesSinAvisoPrevio(
     );
     if (error) return { sinAviso, error: `no se pudo saber qué operador lleva cada unidad: ${error.message}` };
     for (const v of (data ?? []) as Array<{ unidad_id: unknown; operador_id: unknown }>) {
-      if (v.unidad_id && v.operador_id) operadorPorUnidad.set(String(v.unidad_id), String(v.operador_id));
+      if (!v.unidad_id || !v.operador_id) continue;
+      const unidadId = String(v.unidad_id);
+      const operadores = operadoresPorUnidad.get(unidadId) ?? new Set<string>();
+      operadores.add(String(v.operador_id));
+      operadoresPorUnidad.set(unidadId, operadores);
     }
   }
-  if (operadorPorUnidad.size === 0) {
+  if (operadoresPorUnidad.size === 0) {
     if (bloquearSinViajeVivo) for (const unidadId of unidadIds) sinAviso.add(unidadId);
     return { sinAviso };
   }
 
-  const operadores = [...new Set(operadorPorUnidad.values())];
+  // Dos viajes vivos de operadores distintos sobre la misma unidad son una
+  // asignación ambigua. No se escoge "el último" por orden accidental: aun
+  // cuando ambos tengan aviso, no sabemos quién conduce esta lectura.
+  for (const [unidadId, operadores] of operadoresPorUnidad) {
+    if (operadores.size !== 1) sinAviso.add(unidadId);
+  }
+
+  const operadores = [...new Set([...operadoresPorUnidad.values()].flatMap((ids) => [...ids]))];
   const conAviso = new Set<string>();
   for (let i = 0; i < operadores.length; i += IDS_POR_CONSULTA) {
     const tanda = operadores.slice(i, i + IDS_POR_CONSULTA);
@@ -1164,12 +1175,14 @@ export async function unidadesSinAvisoPrevio(
   }
 
   for (const unidadId of unidadIds) {
-    const operadorId = operadorPorUnidad.get(unidadId);
-    if (!operadorId) {
+    const candidatos = operadoresPorUnidad.get(unidadId);
+    if (!candidatos || candidatos.size === 0) {
       // Sin viaje vivo: sin forma de saber quién la conduce hoy.
       if (bloquearSinViajeVivo) sinAviso.add(unidadId);
       continue;
     }
+    if (candidatos.size !== 1) continue; // ya quedó bloqueada por ambigüedad
+    const operadorId = [...candidatos][0];
     if (!conAviso.has(operadorId)) sinAviso.add(unidadId);
   }
   return { sinAviso };

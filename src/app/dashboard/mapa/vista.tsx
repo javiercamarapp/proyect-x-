@@ -20,6 +20,13 @@ export interface Rastreo {
   /** La posición más reciente de TODA la flota (`max(medida_en)`). */
   ultimaPosicion: string | null;
   proveedores: Array<{ proveedor: string; ultimos4: string | null; activo: boolean; probadaEn: string | null; ultimoError: string | null }>;
+  /** Salud del poller (0324). `ultimoPoll` es recepción; `ultimaMedida` es el
+   * reloj del dispositivo. Nunca se presenta una como si fuera la otra. */
+  polls: Array<{
+    proveedor: string; recurso: 'posiciones' | 'eventos'; ultimoPoll: string | null;
+    ultimoCompleto: string | null; ultimaMedida: string | null;
+    backlogPendiente: boolean; paginas: number; elementos: number; error: string | null;
+  }>;
   /** Una por unidad activa con posición, ya proyectada al viewBox. */
   pines: PinUnidad[];
 }
@@ -123,6 +130,13 @@ export function VistaMapa({ ubicados, sinUbicar, totalVivos, tope, rastreo }: {
               </p>
             ) : (
               <>
+                {rastreo.polls.map((p) => (
+                  <p key={`${p.proveedor}:${p.recurso}`} className="text-[11px] mt-1" style={{ color: p.backlogPendiente ? 'var(--warn)' : 'var(--faint)' }}>
+                    {p.proveedor} · {p.recurso}: poll {p.ultimoPoll ? fechaHoraMx(p.ultimoPoll) : 'nunca'};
+                    {' '}medida {p.ultimaMedida ? fechaHoraMx(p.ultimaMedida) : 'ninguna'};
+                    {' '}{p.backlogPendiente ? `backlog pendiente${p.error ? ` (${p.error.slice(0, 100)})` : ''}` : `${numero(p.elementos)} elementos / ${numero(p.paginas)} páginas`}.
+                  </p>
+                ))}
                 <p className="text-[11px] mb-3" style={{ color: 'var(--faint)' }}>
                   Posición MEDIDA de cada unidad: la que manda tu proveedor de GPS o el pin que el chofer
                   comparte por WhatsApp. Es un dato con hora, no el trayecto ilustrativo del mapa.
