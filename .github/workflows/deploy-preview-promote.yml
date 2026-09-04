@@ -139,11 +139,15 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL_STAGING }}
         run: |
           set -euo pipefail
           [ -n "$SUPABASE_ACCESS_TOKEN" ] || { echo "::error::Falta SUPABASE_ACCESS_TOKEN en staging."; exit 1; }
           [ -n "$SUPABASE_DB_PASSWORD" ] || { echo "::error::Falta SUPABASE_DB_PASSWORD en staging."; exit 1; }
           [ -n "$SUPABASE_PROJECT_REF" ] || { echo "::error::Falta SUPABASE_PROJECT_REF_STAGING."; exit 1; }
+          [ -n "$SUPABASE_DB_URL" ] || { echo "::error::Falta SUPABASE_DB_URL_STAGING para el preflight concurrente de 0332."; exit 1; }
+          command -v psql >/dev/null || { echo "::error::El runner no incluye psql; no se puede ejecutar el preflight de 0332."; exit 1; }
+          psql "$SUPABASE_DB_URL" -X -v ON_ERROR_STOP=1 -f scripts/ci/0335_preflight_retencion_indices.sql
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push --dry-run
 
@@ -233,6 +237,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL_PRODUCTION }}
           CONFIRM: ${{ inputs.production_confirmation }}
         run: |
           set -euo pipefail
@@ -240,6 +245,9 @@ jobs:
           [ -n "$SUPABASE_ACCESS_TOKEN" ] || { echo "::error::Falta SUPABASE_ACCESS_TOKEN en production."; exit 1; }
           [ -n "$SUPABASE_DB_PASSWORD" ] || { echo "::error::Falta SUPABASE_DB_PASSWORD en production."; exit 1; }
           [ -n "$SUPABASE_PROJECT_REF" ] || { echo "::error::Falta SUPABASE_PROJECT_REF_PRODUCTION."; exit 1; }
+          [ -n "$SUPABASE_DB_URL" ] || { echo "::error::Falta SUPABASE_DB_URL_PRODUCTION para el preflight concurrente de 0332."; exit 1; }
+          command -v psql >/dev/null || { echo "::error::El runner no incluye psql; no se puede ejecutar el preflight de 0332."; exit 1; }
+          psql "$SUPABASE_DB_URL" -X -v ON_ERROR_STOP=1 -f scripts/ci/0335_preflight_retencion_indices.sql
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push --dry-run
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push

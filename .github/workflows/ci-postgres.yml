@@ -150,6 +150,14 @@ jobs:
           set -e
           n=0
           for f in supabase/migrations/*.sql; do
+            # 0332 necesita dos índices sobre tablas operativas. Se crean en
+            # autocommit y CONCURRENTLY justo antes de esa migración: meter
+            # CONCURRENTLY dentro del archivo transaccional falla con 25001;
+            # crearlos allí sin CONCURRENTLY bloquearía escritores reales.
+            if [ "$(basename "$f")" = "0332_db_retencion_producto.sql" ]; then
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
+                -f scripts/ci/0335_preflight_retencion_indices.sql
+            fi
             n=$((n + 1))
             if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"; then
               echo "::error::La migración $f no aplicó limpia sobre una base virgen."
@@ -157,6 +165,18 @@ jobs:
             fi
           done
           echo "$n migraciones aplicadas limpias."
+
+      # Los tres contratos de 0332 ya vivían en el repo pero no en CI. Corren
+      # aquí, sobre la misma base efímera y dentro del mismo job: cero workflow
+      # o ejecución adicional. Los SQL hacen rollback; el script de dos
+      # sesiones limpia sus tenants al salir.
+      - name: DB retención 0332 — exactitud, 0104 y concurrencia
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0330_db_producto_uso_red.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0330_db_retencion_0104_red.sql
+          PGUSER=postgres bash supabase/tests/0332_db_retencion_concurrencia.sh localhost 5432 postgres
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0335_db_retencion_r3_red.sql
+          PGUSER=postgres bash supabase/tests/0335_db_retencion_r3_concurrencia.sh localhost 5432 postgres
 
       # ── Capa 0: contratos de leases/fencing en Postgres real ───────────
       # Este archivo no es informativo: pg_prove interpreta el TAP y falla

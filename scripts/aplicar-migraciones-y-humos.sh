@@ -3,11 +3,7 @@
 # LA SECUENCIA COMPLETA: migraciones pendientes → humos → listo para [deploy].
 # (16-ago-2026 — el desbloqueo que todo el día estuvo esperando.)
 #
-# Uso:  SUPABASE_ACCESS_TOKEN=sbp_xxx bash scripts/aplicar-migraciones-y-humos.sh
-#   o:  SUPABASE_DB_URL='postgresql://...' bash scripts/aplicar-migraciones-y-humos.sh
-#
-# El token se usa SOLO en este proceso (no se escribe a ningún archivo).
-# Al terminar: revoca el token en supabase.com/dashboard/account/tokens.
+# Uso: SUPABASE_DB_URL='postgresql://...' bash scripts/aplicar-migraciones-y-humos.sh
 #
 # Qué hace, en orden, parándose en el primer fallo:
 #  1. `db push` de TODAS las migraciones pendientes (0115–0125) con el CLI
@@ -25,22 +21,21 @@ cd "$(dirname "$0")/.."
 REF="$(grep '^NEXT_PUBLIC_SUPABASE_URL=' .env.local | head -1 | sed -E 's#.*//([a-z0-9]+)\.supabase\.co.*#\1#')"
 [ -n "$REF" ] || { echo "No pude leer el project ref de .env.local"; exit 2; }
 
-if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ] && [ -z "${SUPABASE_DB_URL:-}" ]; then
-  echo "Falta la credencial. Dos rutas (cualquiera sirve):"
-  echo "  A) Token de cuenta (1 min): supabase.com/dashboard/account/tokens → Generate new token"
-  echo "     SUPABASE_ACCESS_TOKEN=sbp_xxx bash scripts/aplicar-migraciones-y-humos.sh"
-  echo "  B) Connection string: Dashboard → Project Settings → Database → Connection string (URI)"
-  echo "     SUPABASE_DB_URL='postgresql://...' bash scripts/aplicar-migraciones-y-humos.sh"
+if [ -z "${SUPABASE_DB_URL:-}" ]; then
+  echo "Falta SUPABASE_DB_URL. El rollout de 0332 es fail-closed: necesita una"
+  echo "conexión SQL directa para crear/verificar los índices CONCURRENTLY antes"
+  echo "de que Supabase abra la transacción de migraciones. Un token solo no basta."
+  echo "Dashboard → Project Settings → Database → Connection string (URI)"
+  echo "SUPABASE_DB_URL='postgresql://...' bash scripts/aplicar-migraciones-y-humos.sh"
   exit 2
 fi
 
+command -v psql >/dev/null || { echo "Falta psql para el preflight concurrente de 0332."; exit 2; }
+echo "═══ Preflight · índices concurrentes de retención antes de 0332 ═══"
+psql "$SUPABASE_DB_URL" -X -v ON_ERROR_STOP=1 -f scripts/ci/0335_preflight_retencion_indices.sql
+
 echo "═══ 1/3 · Aplicando migraciones pendientes (project: $REF) ═══"
-if [ -n "${SUPABASE_DB_URL:-}" ]; then
-  npx --yes supabase@latest db push --db-url "$SUPABASE_DB_URL" --include-all
-else
-  npx --yes supabase@latest link --project-ref "$REF"
-  npx --yes supabase@latest db push --include-all
-fi
+npx --yes supabase@latest db push --db-url "$SUPABASE_DB_URL" --include-all
 
 echo "═══ 2/3 · Verificación de las piezas nuevas en la base real ═══"
 npx tsx - <<'TSX'
@@ -93,5 +88,4 @@ echo "════════════════════════�
 echo "✅ MIGRACIONES APLICADAS Y VERIFICADAS."
 echo "El siguiente paso es consciente y es UNO:"
 echo "  git commit --allow-empty -m '[deploy] producción al día: migraciones 0115-0125 + todo lo del 16-ago' && git push origin master"
-echo "Y después: REVOCA el token en supabase.com/dashboard/account/tokens"
 echo "════════════════════════════════════════════════════════════"

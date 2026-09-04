@@ -110,15 +110,42 @@ comment on function public.mantener_producto_evento(integer,timestamptz,timestam
 revoke all on function public.mantener_producto_evento(integer,timestamptz,timestamptz) from public, anon, authenticated;
 grant execute on function public.mantener_producto_evento(integer,timestamptz,timestamptz) to service_role;
 
--- Estrategia de rollout: estos índices son DDL bloqueante dentro de una
--- migración transaccional. Antes de producción se miden cardinalidad y tiempo
--- de lock. Si exceden el presupuesto, se precrean con CREATE INDEX CONCURRENTLY
--- en una ventana controlada; los IF NOT EXISTS de esta migración quedan no-op.
--- La segunda columna hace determinista ORDER BY y evita sort del lote.
-create index if not exists wa_conversacion_purga_idx
-  on public.wa_conversacion(updated_at, id);
-create index if not exists codigo_pendiente_purga_idx
-  on public.codigo_pendiente(creado_en, id);
+-- Rollout obligatorio fuera de la transacción: el workflow y el script manual
+-- ejecutan scripts/ci/0335_preflight_retencion_indices.sql ANTES de 0332. Aquí
+-- sólo se verifica, fail-closed, la definición exacta; nunca se toma el lock
+-- bloqueante de CREATE INDEX sobre tablas operativas.
+do $indices_preflight$
+begin
+  if not exists (
+    select 1 from pg_index i join pg_class c on c.oid=i.indexrelid join pg_am am on am.oid=c.relam
+     where c.oid=to_regclass('public.wa_conversacion_purga_idx')
+       and i.indrelid=to_regclass('public.wa_conversacion')
+       and i.indisvalid and i.indisready and not i.indisunique
+       and am.amname='btree' and i.indnkeyatts=2 and i.indnatts=2
+       and i.indpred is null and i.indexprs is null
+       and i.indoption='0 0'::int2vector
+       and (select array_agg(a.attname::text order by k.ord)
+              from unnest(i.indkey) with ordinality k(attnum,ord)
+              join pg_attribute a on a.attrelid=i.indrelid and a.attnum=k.attnum
+             where k.ord<=i.indnkeyatts)=array['updated_at','id']
+  ) or not exists (
+    select 1 from pg_index i join pg_class c on c.oid=i.indexrelid join pg_am am on am.oid=c.relam
+     where c.oid=to_regclass('public.codigo_pendiente_purga_idx')
+       and i.indrelid=to_regclass('public.codigo_pendiente')
+       and i.indisvalid and i.indisready and not i.indisunique
+       and am.amname='btree' and i.indnkeyatts=2 and i.indnatts=2
+       and i.indpred is null and i.indexprs is null
+       and i.indoption='0 0'::int2vector
+       and (select array_agg(a.attname::text order by k.ord)
+              from unnest(i.indkey) with ordinality k(attnum,ord)
+              join pg_attribute a on a.attrelid=i.indrelid and a.attnum=k.attnum
+             where k.ord<=i.indnkeyatts)=array['creado_en','id']
+  ) then
+    raise exception '0332 requiere preflight concurrente exacto: ejecute scripts/ci/0335_preflight_retencion_indices.sql antes de migrar'
+      using errcode='55000';
+  end if;
+end
+$indices_preflight$;
 
 -- La firma anterior devolvía bigint y ejecutaba un DELETE monolítico.
 drop function if exists public.purgar_wa_conversacion(integer, timestamptz);

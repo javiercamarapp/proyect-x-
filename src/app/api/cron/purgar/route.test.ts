@@ -131,7 +131,11 @@ describe('la corrida', () => {
     // en la misma vuelta, misma razón que producto_evento.
     expect(cuerpo).toMatchObject({ mcpOauth: { tokensBorrados: 0, codigosBorrados: 0, clientesBorrados: 0, parcial: false } });
     expect(rpc).toHaveBeenCalledWith('mantenimiento_de_datos', { p_dias_wa: 30 });
-    expect(rpc).toHaveBeenCalledWith('mantener_producto_evento');
+    expect(rpc).toHaveBeenCalledWith('mantener_producto_evento', expect.objectContaining({
+      p_dias: 92,
+      p_ahora: expect.any(String),
+      p_vence: expect.any(String),
+    }));
     expect(rpc).toHaveBeenCalledWith('mantener_mcp_oauth');
     expect(llamadasPurga('purgar_wa_conversacion')).toBe(0);
     expect(llamadasPurga('purgar_codigo_pendiente')).toBe(0);
@@ -149,15 +153,31 @@ describe('la corrida', () => {
     expect(alertarOperador).toHaveBeenCalledWith('cron.purgar.mcp_oauth', expect.objectContaining({ error: 'no existe' }));
   });
 
-  it('si la RPC de producto_evento falla, la corrida NO se cae — pero se alerta y el cuerpo dice null, no un 0 inventado', async () => {
+  it('si producto_evento falla, responde 500, late fallo y conserva la causa', async () => {
     rpcProductoRespuesta = { data: null, error: { message: 'no existe', code: '42883' } };
     const res = await GET(peticion('Bearer secreto-de-prueba'));
     const cuerpo = await res.json();
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(cuerpo.corrio).toBe(true);
     expect(cuerpo.productoEvento).toBeNull();
+    expect(cuerpo).toMatchObject({ estado: 'fallo', productoEventoError: '42883: no existe' });
     expect(alertarOperador).toHaveBeenCalledWith('cron.purgar.producto_evento', expect.objectContaining({ error: 'no existe' }));
+    expect(registrarLatido).toHaveBeenLastCalledWith('purgar', 'fallo', expect.objectContaining({
+      productoEventoError: '42883: no existe',
+    }));
+  });
+
+  it('si producto_evento queda parcial, el estado y latido globales también son parciales', async () => {
+    rpcProductoRespuesta = { data: { mesesConsolidados: 1, detalleBorrado: 7, parcial: true, agotado: false }, error: null };
+    const res = await GET(peticion('Bearer secreto-de-prueba'));
+    const cuerpo = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(cuerpo).toMatchObject({ estado: 'parcial', parcial: true, productoEvento: { parcial: true } });
+    expect(registrarLatido).toHaveBeenLastCalledWith('purgar', 'parcial', expect.objectContaining({
+      productoEventoParcial: true,
+    }));
   });
 
   // ESC-16: la purga borra en tandas y devuelve `parcial` cuando no alcanzó.
@@ -281,11 +301,55 @@ describe('la corrida', () => {
 
     const res = await GET(peticion('Bearer secreto-de-prueba'));
     const cuerpo = await res.json();
+    expect(res.status).toBe(500);
     expect(cuerpo).toMatchObject({ estado: 'fallo', parcial: true });
     expect(cuerpo.erroresRetencion0104).toEqual(['wa_conversacion: timeout 0104']);
+    expect(alertarOperador).toHaveBeenCalledWith('cron.purgar.retencion_0104', expect.objectContaining({
+      nombre: 'purgar_wa_conversacion',
+      error: 'timeout 0104',
+    }));
     expect(registrarLatido).toHaveBeenLastCalledWith('purgar', 'fallo', expect.objectContaining({
       parcial: true,
       erroresRetencion0104: ['wa_conversacion: timeout 0104'],
+    }));
+  });
+
+  it('si 0104 falla dentro de mantenimiento, no se confunde con agotada: drena y conserva la causa', async () => {
+    rpcRespuesta = { data: {
+      conversacionesPurgadas: 0,
+      codigosPurgados: 0,
+      conversacionesParcial: true,
+      codigosParcial: false,
+      conversacionesError: '57014: canceling statement due to statement timeout',
+      codigosError: null,
+      otrasPurgasParcial: true,
+      fallos: ['wa_conversacion: canceling statement due to statement timeout'],
+      parcial: true,
+    }, error: null };
+    rpcConversacionRespuestas = [
+      { data: { borradas: 19, parcial: false, agotado: true }, error: null },
+    ];
+
+    const res = await GET(peticion('Bearer secreto-de-prueba'));
+    const cuerpo = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(llamadasPurga('purgar_wa_conversacion')).toBe(1);
+    expect(cuerpo.retencion0104.conversaciones).toMatchObject({
+      borradasDrenaje: 19,
+      agotado: true,
+      errorMantenimiento: '57014: canceling statement due to statement timeout',
+    });
+    expect(cuerpo.erroresRetencion0104).toContain(
+      'wa_conversacion (mantenimiento): 57014: canceling statement due to statement timeout',
+    );
+    expect(alertarOperador).toHaveBeenCalledWith('cron.purgar.purgas_con_fallos', expect.objectContaining({
+      fallos: expect.stringContaining('wa_conversacion'),
+    }));
+    expect(registrarLatido).toHaveBeenLastCalledWith('purgar', 'fallo', expect.objectContaining({
+      erroresRetencion0104: expect.arrayContaining([
+        'wa_conversacion (mantenimiento): 57014: canceling statement due to statement timeout',
+      ]),
     }));
   });
 

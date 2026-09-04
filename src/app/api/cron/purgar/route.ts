@@ -185,6 +185,8 @@ export async function GET(req: Request) {
     let codigosParcialConocido = false;
     let conversacionesParcial = true;
     let codigosParcial = true;
+    let conversacionesErrorMantenimiento: string | null = null;
+    let codigosErrorMantenimiento: string | null = null;
     do {
       vueltas++;
       const r = await supabaseAdmin().rpc('mantenimiento_de_datos', {
@@ -225,6 +227,12 @@ export async function GET(req: Request) {
         codigosParcialConocido = true;
         codigosParcial = data.codigosParcial;
       }
+      if (typeof data.conversacionesError === 'string') {
+        conversacionesErrorMantenimiento = data.conversacionesError;
+      }
+      if (typeof data.codigosError === 'string') {
+        codigosErrorMantenimiento = data.codigosError;
+      }
       parcial = data.parcial === true;
       if (typeof data.otrasPurgasParcial === 'boolean') otrasPurgasParcial = data.otrasPurgasParcial;
       if (parcial) logger.warn('cron.purgar.parcial', { vuelta: vueltas, transcurridoMs: Date.now() - inicio });
@@ -255,9 +263,9 @@ export async function GET(req: Request) {
     const venceRetencionMs = inicio + maxDuration * 1000 - MARGEN_FINAL_MS;
     const [conversacionesDrenaje, codigosDrenaje] = await Promise.all([
       drenarPurga0104('purgar_wa_conversacion', ahoraRetencion, venceRetencionMs,
-        conversacionesParcialConocido && !conversacionesParcial),
+        conversacionesErrorMantenimiento === null && conversacionesParcialConocido && !conversacionesParcial),
       drenarPurga0104('purgar_codigo_pendiente', ahoraRetencion, venceRetencionMs,
-        codigosParcialConocido && !codigosParcial),
+        codigosErrorMantenimiento === null && codigosParcialConocido && !codigosParcial),
     ]);
     const conversaciones0104 = {
       ...conversacionesDrenaje,
@@ -267,6 +275,7 @@ export async function GET(req: Request) {
       lotesMantenimiento: lotesConversacionEnMantenimiento,
       borradasDrenaje: conversacionesDrenaje.borradas,
       lotesDrenaje: conversacionesDrenaje.lotes,
+      errorMantenimiento: conversacionesErrorMantenimiento,
     };
     const codigos0104 = {
       ...codigosDrenaje,
@@ -276,9 +285,12 @@ export async function GET(req: Request) {
       lotesMantenimiento: lotesCodigoEnMantenimiento,
       borradasDrenaje: codigosDrenaje.borradas,
       lotesDrenaje: codigosDrenaje.lotes,
+      errorMantenimiento: codigosErrorMantenimiento,
     };
     const retencion0104 = { conversaciones: conversaciones0104, codigos: codigos0104 };
     const erroresRetencion0104 = [
+      conversacionesErrorMantenimiento && `wa_conversacion (mantenimiento): ${conversacionesErrorMantenimiento}`,
+      codigosErrorMantenimiento && `codigo_pendiente (mantenimiento): ${codigosErrorMantenimiento}`,
       conversaciones0104.error && `wa_conversacion: ${conversaciones0104.error}`,
       codigos0104.error && `codigo_pendiente: ${codigos0104.error}`,
     ].filter((error): error is string => typeof error === 'string');
@@ -318,10 +330,16 @@ export async function GET(req: Request) {
     // crecer sin techo en silencio es exactamente el hallazgo que esto
     // cierra. `null` en el cuerpo = no se pudo, dicho; jamás un 0 inventado.
     let productoEvento: Record<string, unknown> | null = null;
+    let productoEventoError: string | null = null;
     try {
-      const pe = await supabaseAdmin().rpc('mantener_producto_evento');
+      const pe = await supabaseAdmin().rpc('mantener_producto_evento', {
+        p_dias: 92,
+        p_ahora: ahoraRetencion,
+        p_vence: new Date(venceRetencionMs).toISOString(),
+      });
       if (pe.error) {
         const codigo = codigoDeError(pe.error);
+        productoEventoError = `${codigo}: ${pe.error.message}`;
         logger.error('cron.purgar.producto_evento_falló', { error: pe.error.message, codigo });
         await alertarOperador('cron.purgar.producto_evento', { error: pe.error.message, codigo });
       } else {
@@ -329,6 +347,7 @@ export async function GET(req: Request) {
       }
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
+      productoEventoError = `${codigoDeError(e)}: ${error}`;
       logger.error('cron.purgar.producto_evento_excepcion', { error });
       await alertarOperador('cron.purgar.producto_evento', { error });
     }
@@ -359,14 +378,27 @@ export async function GET(req: Request) {
     // ya se drenaron fuera de la RPC, no conservamos un `parcial` obsoleto de
     // la última tanda de mantenimiento. En rollout sobre una BD anterior se
     // usa el agregado legado, que es el fallback conservador.
-    const parcialGlobal = (otrasPurgasParcial ?? parcial) || retencionParcial;
-    const estado = erroresRetencion0104.length > 0 ? 'fallo' : parcialGlobal ? 'parcial' : 'ok';
-    const detalleFinal = { ...data, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, mcpOauth };
+    const productoEventoParcial = productoEvento?.parcial === true;
+    const parcialGlobal = (otrasPurgasParcial ?? parcial) || retencionParcial || productoEventoParcial;
+    const estado = erroresRetencion0104.length > 0 || productoEventoError !== null
+      ? 'fallo'
+      : parcialGlobal ? 'parcial' : 'ok';
+    const detalleFinal = { ...data, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, productoEventoError, mcpOauth };
     if (estado === 'fallo') logger.error('cron.purgar.retencion_0104_incompleta', detalleFinal);
     else if (estado === 'parcial') logger.warn('cron.purgar.incompleta', detalleFinal);
     else logger.info('cron.purgar.ok', detalleFinal);
-    await registrarLatido('purgar', estado, { vueltas, parcial: parcialGlobal, erroresRetencion0104, retencion0104 });
-    return NextResponse.json({ corrio: true, ...data, parcial: parcialGlobal, estado, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, mcpOauth });
+    await registrarLatido('purgar', estado, {
+      vueltas,
+      parcial: parcialGlobal,
+      erroresRetencion0104,
+      retencion0104,
+      productoEventoParcial,
+      productoEventoError,
+    });
+    return NextResponse.json(
+      { corrio: true, ...data, parcial: parcialGlobal, estado, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, productoEventoError, mcpOauth },
+      { status: estado === 'fallo' ? 500 : 200 },
+    );
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     // Mismo criterio que el `if (error)` de arriba, para el camino que lanza.
