@@ -31,6 +31,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
+import { diaEnZona, TZ_MX } from '@/lib/formato';
 import { acotada } from '../presupuesto';
 import { descifrar } from './cofre';
 import { lectorEventosDe, LECTORES_EVENTOS, esEventoGrave, type EventoSeguridadLeido } from './eventos_seguridad';
@@ -145,11 +146,7 @@ interface DrenajeGraves {
   error?: string;
 }
 
-function diaEnZona(iso: string, zonaHoraria: string): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(iso));
-}
+
 
 /**
  * Resuelve al conductor point-in-time. `estatus` no participa: un backfill
@@ -168,14 +165,14 @@ async function evaluarPrivacidadHistorica(
     'eventos.privacidad_zona_tenant',
   );
   if (errorTenant) return { porEvento, error: `no se pudo leer la zona horaria del tenant: ${errorTenant.message}` };
-  const zonaHoraria = String((tenant as { zona_horaria?: unknown } | null)?.zona_horaria ?? 'America/Mexico_City');
+  const zonaHoraria = String((tenant as { zona_horaria?: unknown } | null)?.zona_horaria ?? TZ_MX);
   try {
-    diaEnZona(entradas[0].evento.ocurridoEn, zonaHoraria);
+    diaEnZona(new Date(entradas[0].evento.ocurridoEn), zonaHoraria);
   } catch {
     return { porEvento, error: `zona horaria inválida: ${zonaHoraria}` };
   }
   const unidades = [...new Set(entradas.map((e) => e.unidadId))];
-  const dias = entradas.map((e) => diaEnZona(e.evento.ocurridoEn, zonaHoraria)).sort();
+  const dias = entradas.map((e) => diaEnZona(new Date(e.evento.ocurridoEn), zonaHoraria)).sort();
   const maxOcurrido = entradas.map((e) => e.evento.ocurridoEn).sort().at(-1) as string;
   const viajes: Array<{
     id: unknown; folio: unknown; unidad_id: unknown; operador_id: unknown; fecha_inicio: unknown; fecha_fin: unknown; aceptado_en: unknown;
@@ -211,11 +208,11 @@ async function evaluarPrivacidadHistorica(
   }
 
   for (const entrada of entradas) {
-    const dia = diaEnZona(entrada.evento.ocurridoEn, zonaHoraria);
+    const dia = diaEnZona(new Date(entrada.evento.ocurridoEn), zonaHoraria);
     const candidatos = viajes.filter((v) =>
       String(v.unidad_id) === entrada.unidadId && v.operador_id != null &&
       (v.fecha_inicio != null || v.aceptado_en != null) &&
-      (v.fecha_inicio != null ? String(v.fecha_inicio) : diaEnZona(String(v.aceptado_en), zonaHoraria)) <= dia &&
+      (v.fecha_inicio != null ? String(v.fecha_inicio) : diaEnZona(new Date(String(v.aceptado_en)), zonaHoraria)) <= dia &&
       (v.fecha_fin == null || String(v.fecha_fin) >= dia));
     if (candidatos.length === 0) {
       porEvento.set(entrada.evento.eventoId, { autorizado: false, motivo: 'sin_viaje_historico' });

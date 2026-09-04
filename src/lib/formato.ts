@@ -47,6 +47,21 @@ export function hoyMx(fecha: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: TZ_MX, year: 'numeric', month: '2-digit', day: '2-digit' }).format(fecha);
 }
 
+/** Día natural de un instante en una zona IANA. Postgres es la autoridad para
+ * persistir el bucket; este helper sólo cubre el fallback de despliegue y hace
+ * explícito que el servidor no debe usar su zona local. */
+export function diaEnZona(momento: Date, zonaHoraria: string): string {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(momento);
+  const valor = (tipo: Intl.DateTimeFormatPartTypes) =>
+    partes.find((p) => p.type === tipo)?.value;
+  const dia = `${valor('year')}-${valor('month')}-${valor('day')}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new Error(`zona IANA inválida: ${zonaHoraria}`);
+  return dia;
+}
+
+
 /**
  * El desfase fijo de México contra UTC, para armar un instante a partir de un
  * día de calendario. Va en horas enteras y NO cambia en todo el año: México

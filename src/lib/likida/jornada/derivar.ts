@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
+import { diaEnZona, TZ_MX } from '@/lib/formato';
 import { acotada } from '../presupuesto';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -110,19 +111,8 @@ interface Trabajo {
   zonaHoraria: string;
 }
 
-/** Día natural de un instante en una zona IANA. Postgres es la autoridad para
- * persistir el bucket; este helper sólo cubre el fallback de despliegue y hace
- * explícito que el servidor no debe usar su zona local. */
-export function diaEnZona(momento: Date, zonaHoraria: string): string {
-  const partes = new Intl.DateTimeFormat('en-CA', {
-    timeZone: zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(momento);
-  const valor = (tipo: Intl.DateTimeFormatPartTypes) =>
-    partes.find((p) => p.type === tipo)?.value;
-  const dia = `${valor('year')}-${valor('month')}-${valor('day')}`;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new Error(`zona IANA inválida: ${zonaHoraria}`);
-  return dia;
-}
+// Conserva el contrato público del derivador para sus consumidores.
+export { diaEnZona } from '@/lib/formato';
 
 /**
  * Arma la lista de trabajo: un renglón por (operador, día) tocado por un viaje
@@ -165,7 +155,7 @@ async function listaDeTrabajo(
   const filas = (data ?? []) as unknown as Fila[];
   const truncada = filas.some((f) => f.hay_mas === true);
   const trabajos: Trabajo[] = filas.map((f) => {
-    const zonaHoraria = f.zona_horaria || 'America/Mexico_City';
+    const zonaHoraria = f.zona_horaria || TZ_MX;
     const dia = f.dia || diaEnZona(new Date(f.aceptado_en), zonaHoraria);
     return {
       tenantId: String(f.tenant_id),
@@ -239,8 +229,8 @@ export async function derivarJornadas(args: {
 } = {}): Promise<ResultadoDerivacion> {
   const ahora = args.ahora ?? new Date();
   const dias = args.dias ?? DIAS_QUE_BARRE;
-  const hasta = diaEnZona(ahora, 'America/Mexico_City');
-  const desde = diaEnZona(new Date(ahora.getTime() - (dias - 1) * 86_400_000), 'America/Mexico_City');
+  const hasta = diaEnZona(ahora, TZ_MX);
+  const desde = diaEnZona(new Date(ahora.getTime() - (dias - 1) * 86_400_000), TZ_MX);
 
   const r: ResultadoDerivacion = {
     revisados: 0, asentados: 0, yaEstaban: 0, fallos: [], cortadosPorReloj: 0,
