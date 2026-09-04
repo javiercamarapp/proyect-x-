@@ -12,12 +12,18 @@ psql_cmd=(psql -h "$host" -p "$port" -d "$database" -X -v ON_ERROR_STOP=1 -qAt)
 salida_dir="$(mktemp -d)"
 salida_a="$salida_dir/a.txt"
 salida_b="$salida_dir/b.txt"
+salida_update="$salida_dir/update.txt"
 pid_a=''
+pid_update=''
 
 limpiar() {
   if [[ -n "$pid_a" ]]; then
     kill "$pid_a" 2>/dev/null || true
     wait "$pid_a" 2>/dev/null || true
+  fi
+  if [[ -n "$pid_update" ]]; then
+    kill "$pid_update" 2>/dev/null || true
+    wait "$pid_update" 2>/dev/null || true
   fi
   "${psql_cmd[@]}" -c "set statement_timeout='10s'; set lock_timeout='2s'; delete from public.tenant where id='$tenant';" >/dev/null || true
   rm -rf "$salida_dir"
@@ -55,3 +61,40 @@ test "$repetidos" = '0'
 test "$estado_a" = 'active:Timeout:PgSleep'
 test "$locks_no_concedidos" = '0'
 echo "0325_jornada_concurrencia: PASS (A=$cuantos_a B=$cuantos_b repetidos=$repetidos, B<1s, A=$estado_a, locks_no_concedidos=$locks_no_concedidos)"
+
+# El procesador cerca la fuente con FOR SHARE. Un corrector que intenta poner
+# aceptado_en=NULL mientras el RPC sigue abierto debe esperar; después del
+# commit, el sync reconcilia la cola obsoleta sin duplicarla.
+limpiar_datos
+viaje_fence="$("${psql_cmd[@]}" -c "select md5('0325-conc-v-1')::uuid;")"
+operador_fence="$("${psql_cmd[@]}" -c "select md5('0325-conc-op-1')::uuid;")"
+"${psql_cmd[@]}" -c "update public.jornada_derivacion_trabajo set siguiente_intento_en='infinity' where tenant_id='$tenant' and operador_id<>'$operador_fence';" >/dev/null
+token_fence="$("${psql_cmd[@]}" -c "select claim_token from public.reclamar_jornadas_por_derivar(1,'worker-fence',180);")"
+test -n "$token_fence"
+
+"${psql_cmd[@]}" -c "set application_name='0325-processor-fence'; begin; set local statement_timeout='5s'; select exito from public.procesar_jornadas_derivadas('worker-fence',array['$token_fence'::uuid],3600,300); select pg_sleep(2); commit;" >"$salida_a" &
+pid_a=$!
+sleep 0.2
+
+"${psql_cmd[@]}" -c "set application_name='0325-updater-fence'; set statement_timeout='5s'; update public.viaje set aceptado_en=null where id='$viaje_fence';" >"$salida_update" &
+pid_update=$!
+sleep 0.2
+
+estado_update="$("${psql_cmd[@]}" -F '|' -c "set statement_timeout='2s'; select state || ':' || coalesce(wait_event_type, '-') || ':' || coalesce(wait_event, '-') from pg_stat_activity where application_name='0325-updater-fence';")"
+case "$estado_update" in
+  active:Lock:*) ;;
+  *) echo "updater no esperó el fence: $estado_update" >&2; exit 1 ;;
+esac
+
+wait "$pid_a"
+pid_a=''
+wait "$pid_update"
+pid_update=''
+
+test "$(grep -Ec '^t$' "$salida_a")" = '1'
+"${psql_cmd[@]}" -c "select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00',1);" >/dev/null
+cola_fence="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_derivacion_trabajo where tenant_id='$tenant' and operador_id='$operador_fence';")"
+jornadas_fence="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_dia where tenant_id='$tenant' and operador_id='$operador_fence' and dia='2026-09-03';")"
+test "$cola_fence" = '0'
+test "$jornadas_fence" = '1'
+echo "0325_jornada_fence: PASS (updater=$estado_update, cola_reconciliada=$cola_fence, jornadas_sin_duplicar=$jornadas_fence)"

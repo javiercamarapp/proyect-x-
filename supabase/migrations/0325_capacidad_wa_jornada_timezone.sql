@@ -192,6 +192,18 @@ create unique index if not exists jornada_derivacion_claim_token_idx
   on public.jornada_derivacion_trabajo (claim_owner, claim_token)
   where claim_token is not null;
 
+-- La reconciliación consulta una fuente exacta por tenant/operador y rango
+-- UTC del día local. El índice anterior empieza por `aceptado_en` y sirve al
+-- barrido reciente; éste evita un scan de la historia por cada fila de cola.
+create index if not exists viaje_derivacion_fuente_idx
+  on public.viaje (tenant_id, operador_id, aceptado_en, id)
+  include (unidad_id)
+  where aceptado_en is not null;
+
+create index if not exists jornada_derivacion_retencion_idx
+  on public.jornada_derivacion_trabajo (dia, tenant_id, operador_id)
+  where procesado_al_menos_una_vez and claim_token is null;
+
 create or replace function public.sincronizar_jornadas_por_derivar(
   p_ahora timestamptz default clock_timestamp(),
   p_dias integer default 3
@@ -202,11 +214,47 @@ set search_path = ''
 as $$
 declare
   v_afectadas integer;
+  v_eliminadas integer;
 begin
   if p_ahora is null then raise exception 'jornada sync timestamp is required'; end if;
   if p_dias < 1 or p_dias > 31 then
     raise exception 'jornada sync days must be between 1 and 31';
   end if;
+
+  -- La cola es reconstruible. Una fuente desaparecida (`aceptado_en=NULL`) o
+  -- movida de día invalida el trabajo aunque ya haya envejecido fuera del
+  -- barrido. Además, una versión ya procesada caduca al salir de la retención:
+  -- conserva pendientes válidos tras una caída larga, pero impide acumular
+  -- 50k filas por mes para siempre. El lote acota locks/tiempo; ejecuciones
+  -- siguientes continúan la purga. Un lease vivo nunca se toca y el procesador
+  -- revalida la fuente cercada antes de escribir.
+  with obsoletos as materialized (
+    select j.tenant_id, j.operador_id, j.dia
+      from public.jornada_derivacion_trabajo j
+      join public.tenant t on t.id = j.tenant_id
+     where (j.claim_token is null or j.lease_expires_at <= clock_timestamp())
+       and (
+         (j.procesado_al_menos_una_vez
+          and j.dia < (p_ahora at time zone t.zona_horaria)::date - (p_dias - 1))
+         or not exists (
+           select 1
+             from public.viaje v
+            where v.tenant_id = j.tenant_id
+              and v.operador_id = j.operador_id
+              and v.aceptado_en is not null
+              and v.aceptado_en >= (j.dia::timestamp at time zone t.zona_horaria)
+              and v.aceptado_en < ((j.dia + 1)::timestamp at time zone t.zona_horaria)
+         )
+       )
+     order by j.tenant_id, j.operador_id, j.dia
+     for update of j skip locked
+     limit 10000
+  )
+  delete from public.jornada_derivacion_trabajo j
+   using obsoletos o
+   where (j.tenant_id, j.operador_id, j.dia) =
+         (o.tenant_id, o.operador_id, o.dia);
+  get diagnostics v_eliminadas = row_count;
 
   -- El filtro exterior es sargable y acota el índice de viaje. El interior
   -- aplica el día natural de cada tenant; el día UTC nunca es autoridad.
@@ -254,13 +302,14 @@ begin
            else j.siguiente_intento_en
          end,
          updated_at = clock_timestamp()
-   where (j.viaje_id, j.unidad_id, j.unidad_ids, j.aceptado_en, j.viajes_version)
+   where (j.claim_token is null or j.lease_expires_at <= clock_timestamp())
+     and (j.viaje_id, j.unidad_id, j.unidad_ids, j.aceptado_en, j.viajes_version)
          is distinct from
          (excluded.viaje_id, excluded.unidad_id, excluded.unidad_ids,
           excluded.aceptado_en, excluded.viajes_version);
 
   get diagnostics v_afectadas = row_count;
-  return v_afectadas;
+  return v_afectadas + v_eliminadas;
 end;
 $$;
 
@@ -438,6 +487,7 @@ declare
   v_ya_estaban integer;
   v_sin_gps boolean;
   v_error text;
+  v_viajes_version_actual text;
 begin
   if nullif(btrim(p_owner), '') is null then
     raise exception 'jornada derivacion lease owner is required';
@@ -466,7 +516,41 @@ begin
     v_error := null;
 
     begin
-      if v.claim_aviso_previo is not true then
+      -- Cerrar el TOCTOU entre comprobar la fuente y crear los asientos. Los
+      -- locks se toman en orden estable y viven hasta que termina el RPC: un
+      -- UPDATE/DELETE concurrente espera; si ganó la carrera antes, el
+      -- predicado se reevalúa y la versión de abajo detecta el cambio. Los
+      -- INSERT posteriores reabren la versión en el siguiente sync.
+      perform 1
+        from public.viaje fuente
+       where fuente.tenant_id = v.tenant_id
+         and fuente.operador_id = v.operador_id
+         and fuente.aceptado_en is not null
+         and fuente.aceptado_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
+         and fuente.aceptado_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria)
+       order by fuente.id
+       for share;
+
+      -- El claim pudo quedar obsoleto después de ser tomado. Recalcular la
+      -- versión bajo el fence evita crear una jornada falsa si `aceptado_en`
+      -- pasó a NULL, cambió de día/unidad/hora o cambió el conjunto visible.
+      select md5(string_agg(
+               concat_ws(':', fuente.id::text,
+                         coalesce(fuente.unidad_id::text, '-'),
+                         fuente.aceptado_en::text),
+               ',' order by fuente.aceptado_en, fuente.id
+             ))
+        into v_viajes_version_actual
+        from public.viaje fuente
+       where fuente.tenant_id = v.tenant_id
+         and fuente.operador_id = v.operador_id
+         and fuente.aceptado_en is not null
+         and fuente.aceptado_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
+         and fuente.aceptado_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria);
+
+      if v_viajes_version_actual is distinct from v.viajes_version then
+        v_error := 'fuente de viaje cambió después del claim; cola obsoleta';
+      elsif v.claim_aviso_previo is not true then
         v_error := 'aviso de privacidad pendiente';
       else
         insert into public.jornada_dia (tenant_id, operador_id, dia)

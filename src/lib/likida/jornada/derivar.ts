@@ -264,20 +264,17 @@ export async function derivarJornadas(args: {
     });
   }
 
-  const intentables: Trabajo[] = [];
-  for (const t of trabajos) {
-    if (args.venceEn !== undefined && Date.now() >= args.venceEn) break;
-    intentables.push(t);
-  }
-  const intentados = intentables.length;
-  r.cortadosPorReloj = trabajos.length - intentados;
-  if (r.cortadosPorReloj > 0) {
-    logger.warn('jornada.derivar.corte_por_reloj', { pendientes: r.cortadosPorReloj, desde, hasta });
-  }
-
+  let intentados = 0;
   try {
-    for (let i = 0; i < intentables.length; i += TAMANO_LOTE_PROCESO) {
-      const lote = intentables.slice(i, i + TAMANO_LOTE_PROCESO);
+    for (let i = 0; i < trabajos.length; i += TAMANO_LOTE_PROCESO) {
+      // El primer filtro no basta: un lote RPC puede consumir el presupuesto.
+      // Se consulta de nuevo antes de CADA operación de proceso. Todo lo que
+      // aún no empezó conserva su claim y se libera cercado en `finally`.
+      if (args.venceEn !== undefined && Date.now() >= args.venceEn) break;
+      const lote = trabajos.slice(i, i + TAMANO_LOTE_PROCESO);
+      // Desde aquí el lote sí fue intentado. Si la respuesta es ambigua, no se
+      // libera: el lease decide si Postgres alcanzó a confirmar su ACK.
+      intentados += lote.length;
       const procesado = await procesarLote(owner, lote);
       if (procesado.error) {
         // Respuesta ambigua: no liberar. Si Postgres sí confirmó, ya quedó ACK;
@@ -302,6 +299,12 @@ export async function derivarJornadas(args: {
     }
   } finally {
     const noIntentados = trabajos.slice(intentados);
+    r.cortadosPorReloj = noIntentados.length;
+    if (r.cortadosPorReloj > 0) {
+      logger.warn('jornada.derivar.corte_por_reloj', {
+        pendientes: r.cortadosPorReloj, desde, hasta,
+      });
+    }
     if (!(await liberarNoIntentados(owner, noIntentados))) {
       r.fallos.push(`liberación: no se liberaron ${noIntentados.length} claim(s) no intentados; el lease los recuperará`);
     }

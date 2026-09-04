@@ -4,6 +4,7 @@ begin;
 
 -- Suite destructiva sólo dentro de ROLLBACK: aislar las colas evita que datos
 -- previos del Postgres de prueba alteren conteos, orden o fairness.
+delete from public.tenant where id = '32590000-0000-4000-8000-000000000001';
 delete from public.wa_evento_pendiente;
 delete from public.jornada_derivacion_trabajo;
 
@@ -178,7 +179,145 @@ begin
 end;
 $$;
 
--- ── Lote real de 50: tres asientos potenciales por operador ───────────────
+-- ── Jornada: NULL/cambio de día/lease y cola envejecida ───────────────
+-- Reconciliar fuentes mutadas, incluso fuera de la ventana del barrido.
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000060', 'Reconciliación 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000061', '32500000-0000-4000-8000-000000000060', 'Op NULL', '523250000061', '2026-08-01'),
+  ('32510000-0000-4000-8000-000000000062', '32500000-0000-4000-8000-000000000060', 'Op movido', '523250000062', '2026-08-01'),
+  ('32510000-0000-4000-8000-000000000063', '32500000-0000-4000-8000-000000000060', 'Op lease', '523250000063', '2026-08-01'),
+  ('32510000-0000-4000-8000-000000000064', '32500000-0000-4000-8000-000000000060', 'Op viejo obsoleto', '523250000064', '2026-08-01'),
+  ('32510000-0000-4000-8000-000000000065', '32500000-0000-4000-8000-000000000060', 'Op backlog válido', '523250000065', '2026-08-01');
+insert into public.viaje(id, tenant_id, operador_id, avisado_en, aceptado_en) values
+  ('32520000-0000-4000-8000-000000000061', '32500000-0000-4000-8000-000000000060', '32510000-0000-4000-8000-000000000061', '2026-09-02 11:59+00', '2026-09-02 12:00+00'),
+  ('32520000-0000-4000-8000-000000000062', '32500000-0000-4000-8000-000000000060', '32510000-0000-4000-8000-000000000062', '2026-09-02 12:59+00', '2026-09-02 13:00+00'),
+  ('32520000-0000-4000-8000-000000000063', '32500000-0000-4000-8000-000000000060', '32510000-0000-4000-8000-000000000063', '2026-09-03 13:59+00', '2026-09-03 14:00+00'),
+  ('32520000-0000-4000-8000-000000000064', '32500000-0000-4000-8000-000000000060', '32510000-0000-4000-8000-000000000064', '2026-08-19 11:59+00', '2026-08-19 12:00+00'),
+  ('32520000-0000-4000-8000-000000000065', '32500000-0000-4000-8000-000000000060', '32510000-0000-4000-8000-000000000065', '2026-08-19 12:59+00', '2026-08-19 13:00+00');
+
+-- Primero materializa dos trabajos fuera de la futura ventana y luego los
+-- recientes. El backlog viejo válido debe sobrevivir; el viejo sin fuente no.
+select public.sincronizar_jornadas_por_derivar('2026-08-19 18:00+00', 1);
+select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00', 2);
+
+update public.jornada_derivacion_trabajo
+   set siguiente_intento_en = 'infinity'
+ where tenant_id = '32500000-0000-4000-8000-000000000060'
+   and operador_id <> '32510000-0000-4000-8000-000000000063';
+create temporary table audit_claim_obsoleto_0325 as
+select * from public.reclamar_jornadas_por_derivar(1, '0325-obsoleto-vivo', 180);
+
+do $$
+begin
+  if (select count(*) from audit_claim_obsoleto_0325
+       where operador_id = '32510000-0000-4000-8000-000000000063') <> 1 then
+    raise exception 'no cercó el caso de lease vivo esperado';
+  end if;
+end;
+$$;
+
+-- Cambios de fuente: uno desaparece, otro se mueve de día, el tercero cambia
+-- mientras su fila tiene lease vivo, y el cuarto desaparece fuera de p_dias.
+update public.viaje set aceptado_en = null
+ where id in ('32520000-0000-4000-8000-000000000061',
+              '32520000-0000-4000-8000-000000000063',
+              '32520000-0000-4000-8000-000000000064');
+update public.viaje set aceptado_en = '2026-09-03 13:00+00'
+ where id = '32520000-0000-4000-8000-000000000062';
+
+select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00', 2);
+
+do $$
+declare v_token uuid; v_exito boolean; v_error text;
+begin
+  if exists (select 1 from public.jornada_derivacion_trabajo
+              where operador_id in ('32510000-0000-4000-8000-000000000061',
+                                    '32510000-0000-4000-8000-000000000064')) then
+    raise exception 'sync conservó fuente NULL, incluso fuera de p_dias';
+  end if;
+  if (select count(*) from public.jornada_derivacion_trabajo
+       where operador_id = '32510000-0000-4000-8000-000000000062') <> 1
+     or (select dia from public.jornada_derivacion_trabajo
+          where operador_id = '32510000-0000-4000-8000-000000000062') <> date '2026-09-03' then
+    raise exception 'cambio de día dejó trabajo viejo/duplicado';
+  end if;
+  if not exists (select 1 from public.jornada_derivacion_trabajo
+                  where operador_id = '32510000-0000-4000-8000-000000000065') then
+    raise exception 'purga perdió backlog viejo pero válido';
+  end if;
+
+  select claim_token into v_token from audit_claim_obsoleto_0325;
+  if not exists (select 1 from public.jornada_derivacion_trabajo
+                  where operador_id = '32510000-0000-4000-8000-000000000063'
+                    and claim_token = v_token) then
+    raise exception 'sync tocó lease vivo ajeno';
+  end if;
+  select p.exito, p.error into v_exito, v_error
+    from public.procesar_jornadas_derivadas(
+      '0325-obsoleto-vivo', array[v_token], 3600, 0
+    ) p;
+  if v_exito is not false or v_error not like '%cola obsoleta%' then
+    raise exception 'procesador no falló cerrado ante fuente mutada: % / %', v_exito, v_error;
+  end if;
+  if exists (select 1 from public.jornada_dia
+              where operador_id = '32510000-0000-4000-8000-000000000063') then
+    raise exception 'fuente mutada bajo lease produjo jornada falsa';
+  end if;
+end;
+$$;
+
+select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00', 2);
+do $$
+begin
+  if exists (select 1 from public.jornada_derivacion_trabajo
+              where operador_id = '32510000-0000-4000-8000-000000000063') then
+    raise exception 'trabajo obsoleto no se recuperó al liberar el lease';
+  end if;
+end;
+$$;
+
+-- Retención: 50k trabajos exitosos no crecen mes tras mes. Cinco lotes
+-- acotados los drenan; la fila vigente reconstruida es la única superviviente.
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000070', 'Retención 50k 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000070', '32500000-0000-4000-8000-000000000070', 'Op retención', '523250000070', '2026-08-01');
+insert into public.viaje(id, tenant_id, operador_id, avisado_en, aceptado_en) values
+  ('32520000-0000-4000-8000-000000000070', '32500000-0000-4000-8000-000000000070', '32510000-0000-4000-8000-000000000070', '2026-09-03 11:59+00', '2026-09-03 12:00+00');
+insert into public.jornada_derivacion_trabajo (
+  tenant_id, operador_id, dia, viaje_id, aceptado_en, viajes_version,
+  input_version, processed_version, procesado_al_menos_una_vez
+)
+select '32500000-0000-4000-8000-000000000070',
+       '32510000-0000-4000-8000-000000000070',
+       date '1800-01-01' + g,
+       '32520000-0000-4000-8000-000000000070',
+       ('1800-01-01 12:00+00'::timestamptz + make_interval(days => g)),
+       'vieja-' || g, 'vieja-' || g, 'vieja-' || g, true
+  from generate_series(0, 49999) g;
+
+do $$
+declare i integer; v_inicio timestamptz; v_ms numeric; v_restantes integer;
+begin
+  v_inicio := clock_timestamp();
+  for i in 1..5 loop
+    perform public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00', 1);
+  end loop;
+  v_ms := extract(epoch from clock_timestamp() - v_inicio) * 1000;
+  select count(*) into v_restantes
+    from public.jornada_derivacion_trabajo
+   where tenant_id = '32500000-0000-4000-8000-000000000070';
+  raise notice '0325 retención 50k: % filas restantes en % ms', v_restantes, round(v_ms, 3);
+  if v_restantes <> 1 then
+    raise exception 'retención 50k dejó % filas (esperada sólo la vigente)', v_restantes;
+  end if;
+  if v_ms >= 10000 then raise exception 'purga 50k excedió 10s: % ms', v_ms; end if;
+end;
+$$;
+
+-- ── Lote real de 50: tres asientos potenciales por operador ──────────────
+delete from public.jornada_derivacion_trabajo;
 insert into public.tenant(id, nombre) values
   ('32500000-0000-4000-8000-000000000050', 'Batch 50 0325');
 insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en)

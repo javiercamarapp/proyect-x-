@@ -55,6 +55,8 @@ interface TrabajoFake {
 let trabajos = new Map<string, TrabajoFake>();
 let secuenciaClaim = 0;
 let fallarAckUnaVez = false;
+let lotesProcesados = 0;
+let alTerminarLote: (() => void) | null = null;
 /** `${unidadId}|${dia}` → los `medida_en` de ese día, en orden ascendente. */
 let posiciones = new Map<string, string[]>();
 let errorGps: { message: string } | null = null;
@@ -234,7 +236,12 @@ async function resolverRpc(nombre: string, args: Record<string, unknown>): Promi
     return { data: trabajos.size, error: null };
   }
   if (nombre === 'reclamar_jornadas_por_derivar') return resolverClaimJornada(args);
-  if (nombre === 'procesar_jornadas_derivadas') return resolverProceso(args);
+  if (nombre === 'procesar_jornadas_derivadas') {
+    const resultado = await resolverProceso(args);
+    lotesProcesados++;
+    alTerminarLote?.();
+    return resultado;
+  }
   if (nombre === 'finalizar_jornada_derivacion') {
     if (fallarAckUnaVez) {
       fallarAckUnaVez = false;
@@ -334,6 +341,8 @@ beforeEach(() => {
   trabajos = new Map();
   secuenciaClaim = 0;
   fallarAckUnaVez = false;
+  lotesProcesados = 0;
+  alTerminarLote = null;
   posiciones = new Map();
   errorGps = null;
   conAviso = null;
@@ -383,6 +392,23 @@ describe('derivarJornadas — el reloj de la corrida', () => {
     expect(r.fallos).toEqual([]);
   });
 
+  it('si el reloj vence después del primer RPC no arranca un segundo lote y libera el resto', async () => {
+    viajes = Array.from({ length: 101 }, (_, i) => viaje(i, `op-${i}`, null));
+    let reloj = 0;
+    const ahora = vi.spyOn(Date, 'now').mockImplementation(() => reloj);
+    alTerminarLote = () => { reloj = 2; };
+    try {
+      const r = await derivarJornadas({ ahora: AHORA, venceEn: 1 });
+      expect(r.revisados).toBe(101);
+      expect(r.cortadosPorReloj).toBe(51);
+      expect(r.asentados).toBe(50);
+      expect(lotesProcesados).toBe(1);
+      expect([...trabajos.values()].filter((t) => t.claimToken !== null)).toEqual([]);
+    } finally {
+      ahora.mockRestore();
+    }
+  });
+
   it('sin `venceEn` el motor NO corta — el reloj es del llamador, no del motor', async () => {
     viajes = [viaje(1, 'op-a', null)];
     const r = await derivarJornadas({ ahora: AHORA });
@@ -427,23 +453,22 @@ describe('derivarJornadas — la ventana que no cupo', () => {
     expect(operadores.size).toBe(1_520);
   });
 
-  it('consumir solo 10 de cada lote converge a los 1,520 y no reconoce los 390 no intentados', async () => {
-    // Rompe el cursor adelantado de la primera versión de 0319: avanzar 400 y
-    // consumir 10 recorre solo 190 ids tras 76 corridas. Con ACK por claim,
-    // 76 corridas consumen 760 exactos y otras 76 completan los 1,520.
+  it('consumir sólo el primer batch de 50 converge y libera los 350 no iniciados', async () => {
+    // El deadline ahora se consulta por RPC/lote, que es la unidad atómica.
+    // Cada corrida procesa 50 y libera cercadamente los otros 350 claims.
     viajes = Array.from({ length: 1_520 }, (_, i) => viaje(i, `op-${i}`, null));
     const reloj = vi.spyOn(Date, 'now');
     try {
-      for (let corrida = 0; corrida < 76; corrida++) {
+      for (let corrida = 0; corrida < 15; corrida++) {
         let consultas = 0;
-        reloj.mockImplementation(() => consultas++ < 10 ? 0 : 2);
+        reloj.mockImplementation(() => consultas++ < 1 ? 0 : 2);
         await derivarJornadas({ ahora: AHORA, venceEn: 1 });
       }
       const operadores = new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1])));
-      expect(operadores.size).toBe(760);
-      for (let corrida = 0; corrida < 76; corrida++) {
+      expect(operadores.size).toBe(750);
+      for (let corrida = 0; corrida < 16; corrida++) {
         let consultas = 0;
-        reloj.mockImplementation(() => consultas++ < 10 ? 0 : 2);
+        reloj.mockImplementation(() => consultas++ < 1 ? 0 : 2);
         await derivarJornadas({ ahora: AHORA, venceEn: 1 });
       }
     } finally {
