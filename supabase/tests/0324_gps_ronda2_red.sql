@@ -37,7 +37,7 @@ declare outbox_id uuid; claim uuid; ok boolean;
 begin
   insert into public.wa_outbox (dedupe_key, payload, estado, provider_message_id, provider_status, enviada_en)
   values (
-    'gps:ronda2:sent-before-link',
+    'gps:samsara:a3240000-0000-0000-0000-000000000201:r2-sent-before-link',
     '{"messaging_product":"whatsapp","to":"529999999201","type":"interactive"}'::jsonb,
     'sent', 'wamid.r2.race', 'delivered', '2026-09-04T10:00:01Z'
   ) returning id into outbox_id;
@@ -116,7 +116,7 @@ declare outbox_id uuid; claim uuid;
 begin
   insert into public.wa_outbox (dedupe_key, payload)
   values (
-    'gps:ronda2:accepted-not-delivered',
+    'gps:samsara:a3240000-0000-0000-0000-000000000201:r2-accepted-not-delivered',
     '{"messaging_product":"whatsapp","to":"529999999201","type":"template","template":{"name":"gps_alerta_critica","language":{"code":"es_MX"},"components":[{"type":"button","sub_type":"quick_reply","index":"0"}]}}'::jsonb
   ) returning id into outbox_id;
   select claim_token into claim

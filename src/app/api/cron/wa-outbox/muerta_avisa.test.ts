@@ -25,6 +25,7 @@ vi.mock('@/lib/likida/wa_outbox', () => ({
 
 const alertarOperador = vi.fn(async (_e: string, _d: Record<string, unknown>) => {});
 vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: (e: string, d: Record<string, unknown>) => alertarOperador(e, d) }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc: async () => ({ data: 0, error: null }) }) }));
 
 // BACK-19-1 (CRÍTICO, cherry-pick de dae7f640): el cron ahora consulta el
 // kill switch antes de reclamar. Este archivo prueba otra cosa (el aviso de
@@ -71,6 +72,8 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
     await GET(peticion());
 
     expect(alertarOperador).not.toHaveBeenCalled();
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b' }), undefined, expect.stringMatching(/^retryable:HTTP 429:/));
     vi.unstubAllGlobals();
   });
 
@@ -87,22 +90,19 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
     vi.unstubAllGlobals();
   });
 
-  it('MEDIO-278 (auditoría 25, REINCIDENTE): un 200 sin wamid es Meta ACEPTANDO — se marca sent, no se reencola', async () => {
+  it('GPS R3: un 200 sin wamid queda dead/manual-review y alerta, no se reencola', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('e')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: false });
+    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: true });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })));
 
     const r = await GET(peticion());
     const body = await r.json() as { fallidas: number; enviadas: number };
 
-    expect(alertarOperador).not.toHaveBeenCalled();
-    expect(body.fallidas).toBe(0);
-    expect(body.enviadas).toBe(1);
-    // Nunca se manda con `undefined`/vacío: eso reencolaría por la RPC
-    // (`p_message_id is null` → 'pending'/'dead'), duplicando un envío que
-    // Meta ya aceptó.
+    expect(alertarOperador).toHaveBeenCalledWith('cron.wa_outbox', expect.objectContaining({ codigo: 'salida_muerta' }));
+    expect(body.fallidas).toBe(1);
+    expect(body.enviadas).toBe(0);
     expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'e' }), expect.stringMatching(/^sin_wamid:/), undefined);
+      expect.objectContaining({ id: 'e' }), undefined, 'sin_wamid:e');
     vi.unstubAllGlobals();
   });
 
@@ -114,6 +114,8 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
     await GET(peticion());
 
     expect(alertarOperador).toHaveBeenCalledWith('cron.wa_outbox', expect.objectContaining({ codigo: 'salida_muerta' }));
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'd' }), undefined, expect.stringMatching(/^terminal:HTTP 400:/));
     vi.unstubAllGlobals();
   });
 });

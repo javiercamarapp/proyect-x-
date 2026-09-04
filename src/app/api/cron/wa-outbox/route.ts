@@ -5,6 +5,8 @@ import { conPool } from '@/lib/likida/lotes';
 import { leerInterruptor } from '@/lib/likida/interruptores';
 import { logger } from '@/lib/logger';
 import { alertarOperador } from '@/lib/observability/alerta';
+import { supabaseAdmin } from '@/lib/supabase/admin';
+import { esReintentableMeta } from '@/lib/meta/client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -98,6 +100,14 @@ export async function GET(req: Request) {
   }
 
   try {
+    try {
+      const reconciliacion = await supabaseAdmin().rpc('reconciliar_wa_meta_receipts', { p_limite: 100 });
+      if (reconciliacion.error) logger.warn('wa.receipts.reconciliacion_fallo', { error: reconciliacion.error.message });
+    } catch (err) { logger.warn('wa.receipts.reconciliacion_fallo', { error: err instanceof Error ? err.message : String(err) }); }
+    try {
+      const purga = await supabaseAdmin().rpc('purgar_wa_meta_receipts', { p_limite: 100 });
+      if (purga.error) logger.warn('wa.receipts.purga_fallo', { error: purga.error.message });
+    } catch (err) { logger.warn('wa.receipts.purga_fallo', { error: err instanceof Error ? err.message : String(err) }); }
     const salidas = await reclamarSalidasWhatsApp();
     let enviadas = 0;
     let fallidas = 0;
@@ -110,23 +120,26 @@ export async function GET(req: Request) {
         const body = await r.text();
         if (!r.ok) {
           fallidas++;
-          await finalizarYAvisarSiMurio(s, undefined, `HTTP ${r.status}: ${body.slice(0, 300)}`);
+          let metaCodigo: number | undefined;
+          try { metaCodigo = Number((JSON.parse(body) as { error?: { code?: number } }).error?.code); } catch { /* cuerpo no JSON */ }
+          const retryable = esReintentableMeta(Number.isFinite(metaCodigo) ? metaCodigo : undefined, r.status);
+          const codigo = retryable ? 'retryable:' : 'terminal:';
+          await finalizarYAvisarSiMurio(s, undefined, `${codigo}HTTP ${r.status}: ${body.slice(0, 300)}`);
           return;
         }
         let id: string | undefined;
         try { id = (JSON.parse(body) as { messages?: Array<{ id?: string }> }).messages?.[0]?.id; } catch { /* no wamid */ }
         if (!id) {
-          // MEDIO (auditoría 25, REINCIDENTE): `r.ok` YA es Meta ACEPTANDO —
-          // menos ambiguo que el `catch` de red de abajo, que sí razona la
-          // ambigüedad. Tratar esto como fallo reencolaba un mensaje que YA
-          // SALIÓ: el chofer/jefe lo recibía otra vez cada 15·2^intentos
-          // segundos hasta 8 veces. Se marca 'sent' con un marcador que NO
-          // puede confundirse con un wamid real (los de Meta empiezan por
-          // "wamid.") — queda visible en la fila que Meta no devolvió id,
-          // sin reencolar un mensaje que sí se entregó.
+          // `r.ok` prueba aceptación HTTP, pero sin wamid no existe una
+          // identidad que el webhook pueda reconciliar. Reenviar duplicaría un
+          // mensaje posiblemente aceptado y marcarlo sent inventaría entrega:
+          // queda dead/manual-review y alerta al operador.
           logger.warn('wa.outbox_sin_wamid', { id: s.id, cuerpo: body.slice(0, 300) });
-          enviadas++;
-          await finalizarSalidaWhatsApp(s, `sin_wamid:${s.id}`);
+          // Un 200 sin wamid confirma aceptación HTTP pero no deja una
+          // identidad reconciliable. No se puede marcar sent: queda dead para
+          // revisión manual y se alerta, evitando retry infinito o silencio.
+          fallidas++;
+          await finalizarYAvisarSiMurio(s, undefined, `sin_wamid:${s.id}`);
           return;
         }
         enviadas++;

@@ -20,6 +20,7 @@ vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock('@/lib/likida/processor', () => ({ processInbound: vi.fn() }));
 vi.mock('@/lib/meta/client', () => ({
   verifyWebhookChallenge: () => false,
+  esReintentableMeta: () => false,
   verifySignature: () => true,          // la firma no es lo que se prueba aquí
 }));
 vi.mock('next/server', async (orig) => {

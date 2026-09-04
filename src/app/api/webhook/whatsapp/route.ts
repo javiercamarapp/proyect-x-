@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 // es el aviso de mantenimiento (AUDITORÍA 24 · AGEN-7): con la palanca abajo
 // el processor no llega a correr, así que si no habla esta ruta no habla
 // nadie — y el chofer se queda tres horas sin una sola línea.
-import { verifyWebhookChallenge, verifySignature, sendText } from '@/lib/meta/client';
+import { verifyWebhookChallenge, verifySignature, sendText, esReintentableMeta } from '@/lib/meta/client';
 import { processInbound, type InboundMessage, type ResultadoInbound } from '@/lib/likida/processor';
 import { rateLimit, bodyExcede } from '@/lib/ratelimit';
 import { logger } from '@/lib/logger';
@@ -490,7 +490,9 @@ export async function POST(req: NextRequest) {
       try {
         const resultado = await supabaseAdmin().rpc('registrar_estado_wa_meta', {
           p_wamid: e.id, p_estado: e.status,
-          p_error: e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? null,
+          p_error: e.status === 'failed'
+            ? `${esReintentableMeta(e.errors?.[0]?.code) ? 'retryable:' : 'terminal:'}${e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? 'Meta failed'}`
+            : null,
         });
         if (resultado.error || resultado.data !== true) fallosEstado++;
       } catch (err) {
