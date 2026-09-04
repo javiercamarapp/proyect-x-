@@ -138,6 +138,10 @@ export async function POST(req: Request) {
   if (!tipo || !actual) return new NextResponse('Evento Cal.com incompleto', { status: 400 });
   if (!EVENTOS_SOPORTADOS.has(tipo)) return new NextResponse('Evento Cal.com no soportado', { status: 400 });
   const ocurridoEn = instanteFirmado(evt);
+  // El reloj del sobre firmado es obligatorio: startTime pertenece a la cita,
+  // no al evento, y sin createdAt no se puede ordenar ni aplicar de forma
+  // segura. Rechazar antes del lookup/RPC evita crear efectos parciales.
+  if (!ocurridoEn) return new NextResponse('Evento Cal.com sin createdAt válido', { status: 400 });
   const participante = participanteDelEvento(evt, tipo);
   if (tipo === 'BOOKING_NO_SHOW_UPDATED' && (participante.noShow === null || !participante.email)) {
     return new NextResponse('Evento Cal.com sin attendee/noShow coherente', { status: 400 });

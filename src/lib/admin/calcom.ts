@@ -246,6 +246,15 @@ function eventosDeBooking(booking: BookingCalcom): EventoSnapshotCalcom[] {
   if ((booking.uid === undefined || booking.uid === '') && booking.id === undefined) {
     throw new Error('Cal.com booking sin uid/id');
   }
+  // La reconciliación no tiene un sobre firmado del webhook. Exige ambos
+  // relojes del recurso para no inventar createdAt con startTime ni con el
+  // reloj local, y falla cerrada si Cal.com devuelve datos incompletos.
+  for (const campo of ['createdAt', 'updatedAt'] as const) {
+    const valor = booking[campo];
+    if (typeof valor !== 'string' || !valor.trim() || !Number.isFinite(Date.parse(valor))) {
+      throw new Error(`Cal.com booking sin ${campo} válido (reloj)`);
+    }
+  }
   const attendees: Array<Record<string, unknown> & { noShow: boolean }> = Array.isArray(booking.attendees)
     ? booking.attendees.map((a) => ({ ...a, noShow: a.absent === true }))
     : [];
@@ -549,10 +558,11 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
     // Una deuda con backoff o cuarentena futura sigue visible en `restantes`,
     // pero no congela para siempre el watermark de Bookings. Sólo la deuda que
     // era reclamable y quedó sin consumir impide cerrar esta ventana.
+    const deudaReclamable = ledgerFinal.elegibles ?? ledgerFinal.restantes;
     const completa = reservas.completa
       && !cortadoAntesSegundoBarrido
       && !cortadoDespuesSegundoBarrido
-      && (ledgerFinal.elegibles ?? 0) === 0;
+      && deudaReclamable === 0;
     await rpcBooleana(
       completa ? 'finalizar_sincronizacion_calcom' : 'pausar_sincronizacion_calcom',
       { p_claim_token: claim },

@@ -398,6 +398,19 @@ begin
     from pg_proc p
    where p.oid = 'public.aplicar_evento_calcom_tx(text,text,text,uuid,jsonb,timestamptz,text,text[],text[],boolean,text,text)'::regprocedure;
   if seguro is not true then raise exception 'RPC sin SECURITY DEFINER/search_path vacío/permisos mínimos'; end if;
+
+  -- Ronda 3: una función SECURITY DEFINER no puede confiar en `public` para
+  -- resolver nombres; tampoco puede dejar digest() ambiguo bajo un
+  -- search_path controlado. Este contrato evita shadowing de funciones.
+  select p.prosecdef
+      and coalesce(array_to_string(p.proconfig, ','), '') not like '%public%'
+      and p.prosrc not like '%encode(digest(%'
+    into seguro
+    from pg_proc p
+   where p.oid = 'public.purgar_comercial_evento(integer,timestamptz)'::regprocedure;
+  if seguro is not true then
+    raise exception 'RED ronda3: purga SECURITY DEFINER usa public o digest() sin calificar';
+  end if;
   if has_function_privilege('anon', 'public.reconciliar_eventos_calcom_pendientes(integer)', 'execute')
      or has_function_privilege('authenticated', 'public.reconciliar_eventos_calcom_pendientes(integer)', 'execute')
      or not has_function_privilege('service_role', 'public.reconciliar_eventos_calcom_pendientes(integer)', 'execute') then
@@ -500,6 +513,19 @@ begin
         or externo_id is not null or externo_aliases <> '{}'::text[]
         or externo_anterior_aliases <> '{}'::text[])
   ) then raise exception 'purga Cal.com conservó correo/aliases/identificador'; end if;
+
+  -- Contrato de privacidad propuesto (pendiente de decisión): una huella
+  -- SHA-256 pública de la clave original sigue siendo verificable por quien
+  -- conozca esa clave. La retención fuerte exige que el tombstone no conserve
+  -- esa relación determinista; esta RED debe permanecer roja hasta acordar la
+  -- estrategia de cierre (p.ej. eliminar el enlace de replay y sellar como
+  -- tombstone anónimo, sin introducir otro secreto en la base).
+  if exists (
+    select 1 from public.comercial_evento
+     where id=purga_id and clave_replay_hash is not null
+  ) then
+    raise exception 'RED privacidad propuesta: tombstone conserva huella SHA-256 verificable';
+  end if;
 end $$;
 
 rollback;

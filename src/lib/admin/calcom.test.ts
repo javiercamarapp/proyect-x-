@@ -213,6 +213,20 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
       .rejects.toThrow(/status.*no soportado/i);
   });
 
+  it('rechaza una reserva sin reloj firmado y no inventa hora local ni de la cita', async () => {
+    const ingest = vi.fn(async () => {});
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      data: [{
+        id: 25, uid: 'SIN-RELOJ', status: 'accepted',
+        startTime: '2099-01-01T00:00:00Z', attendees: [],
+      }], pagination: { hasMore: false, nextCursor: null },
+    })));
+
+    await expect(reconciliarReservasCalcom('2026-08-01T00:00:00Z', ingest, CONFIG))
+      .rejects.toThrow(/createdAt|updatedAt|reloj/i);
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
   it('corta antes de cada evento sintético, conserva el cursor de la página y no cuenta el booking incompleto', async () => {
     let ahora = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => ahora);
@@ -261,6 +275,30 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
     )).resolves.toEqual({ configured: true, revisadas: 1, completa: true, cursor: null });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it.each([429, 503])('dos GET fallidos consecutivos (%s) hacen exactamente dos intentos y fallan', async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status, headers: { 'retry-after': '0' } }))
+      .mockResolvedValueOnce(new Response('{}', { status, headers: { 'retry-after': '0' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reconciliarReservasCalcom(
+      '2026-08-01T00:00:00Z', async () => {}, CONFIG,
+    )).rejects.toThrow(new RegExp(`failed \\(${status}\\)`));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('Retry-After enorme respeta el presupuesto y no espera ni abre un tercer intento', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', {
+      status: 429, headers: { 'retry-after': '86400' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reconciliarReservasCalcom(
+      '2026-08-01T00:00:00Z', async () => {}, CONFIG, { venceEn: Date.now() + 300 },
+    )).rejects.toThrow(/presupuesto de tiempo/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('reconciliarEventosCalcomPendientes — barrido durable', () => {
@@ -279,6 +317,32 @@ describe('reconciliarEventosCalcomPendientes — barrido durable', () => {
     await expect(reconciliarEventosCalcomPendientes(250, {
       apiUrl: 'https://api.cal.com', apiKey: '', webhookSecret: '', eventTypeId: null,
     })).resolves.toMatchObject({ configured: true, recuperados: 1 });
+  });
+
+  it('legacy sin elegibles bloquea el watermark cuando aún quedan restantes', async () => {
+    let barridos = 0;
+    rpc.mockImplementation(async (nombre: string) => {
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        barridos += 1;
+        return { data: [{ revisados: 1, recuperados: 0, restantes: 1 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
+        claim_token: 'claim-legacy', desde_en: '2026-08-01T00:00:00Z',
+        ventana_hasta_en: '2026-08-02T00:00:00Z', cursor_siguiente: null,
+        debe_provisionar: false,
+      }], error: null };
+      return { data: true, error: null };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      data: [], pagination: { hasMore: false, nextCursor: null },
+    })));
+    await expect(ejecutarMantenimientoCalcom({
+      config: CONFIG,
+      callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: Date.now() + 30_000,
+    })).resolves.toMatchObject({ completa: false, ledger: { restantes: 1 } });
+    expect(barridos).toBe(2);
+    expect(rpc).toHaveBeenCalledWith('pausar_sincronizacion_calcom', { p_claim_token: 'claim-legacy' });
   });
 });
 
@@ -390,7 +454,7 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
         barrido += 1;
         return barrido === 1
           ? { data: [{ revisados: 0, recuperados: 0, restantes: 0 }], error: null }
-          : { data: [{ revisados: 1, recuperados: 0, restantes: 1 }], error: null };
+          : { data: [{ revisados: 1, recuperados: 0, restantes: 1, elegibles: 0 }], error: null };
       }
       if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
         claim_token: 'claim-backlog', desde_en: '2026-08-01T00:00:00Z',

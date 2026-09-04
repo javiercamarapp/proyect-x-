@@ -82,6 +82,7 @@ function postear(cuerpo: string, firma = firmar(cuerpo)) {
 
 const EVENTO = JSON.stringify({
   triggerEvent: 'BOOKING_CREATED',
+  createdAt: '2026-08-20T12:00:00.000Z',
   bookingId: 'booking-1',
   payload: { attendees: [{ email: '  lead@landing.mx ' }] },
 });
@@ -118,7 +119,7 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
         p_externo: 'id:booking-1',
         p_prospecto: 'p-landing-1',
         p_payload: { attendees: [{ email: '  lead@landing.mx ' }] },
-        p_creado_en: null,
+        p_creado_en: '2026-08-20T12:00:00.000Z',
         p_externo_anterior: null,
         p_externos: ['id:booking-1'],
         p_externos_anteriores: [],
@@ -216,6 +217,7 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
   it('lookup de correo es exacto sobre la forma normalizada, sin depender del casing almacenado', async () => {
     const cuerpo = JSON.stringify({
       triggerEvent: 'BOOKING_CREATED',
+      createdAt: '2026-08-20T12:00:00.000Z',
       payload: { uid: 'EMAIL', attendees: [{ email: '  Lead@Landing.MX ' }] },
     });
     expect((await postear(cuerpo)).status).toBe(200);
@@ -262,13 +264,17 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     expect(await r.json()).toMatchObject({ ok: true, resultado: 'esperando_vinculo' });
   });
 
-  it('createdAt inválido no se convierte en hora local ni hora de la cita', async () => {
+  it.each([
+    ['ausente', undefined],
+    ['inválido', 'no-es-fecha'],
+  ])('createdAt %s rechaza 400 y no llama RPC', async (_caso, createdAt) => {
     const cuerpo = JSON.stringify({
-      triggerEvent: 'BOOKING_CREATED', bookingId: 'sin-reloj', createdAt: 'no-es-fecha',
+      triggerEvent: 'BOOKING_CREATED', bookingId: `sin-reloj-${_caso}`,
+      ...(createdAt === undefined ? {} : { createdAt }),
       payload: { startTime: '2099-01-01T00:00:00Z', attendees: [{ email: 'lead@landing.mx' }] },
     });
-    expect((await postear(cuerpo)).status).toBe(200);
-    expect(db.rpcCalls[0].args.p_creado_en).toBeNull();
+    expect((await postear(cuerpo)).status).toBe(400);
+    expect(db.rpcCalls).toHaveLength(0);
   });
 
   it('un duplicado confirmado por la RPC responde repetido sin segunda mutación', async () => {

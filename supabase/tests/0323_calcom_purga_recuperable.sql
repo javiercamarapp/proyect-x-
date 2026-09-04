@@ -1,4 +1,4 @@
--- Regresión RED: la retención no puede convertir trabajo recuperable en
+-- Regresión: la retención no puede convertir trabajo recuperable en
 -- una poison pill sin identidad que derribe todos los barridos posteriores.
 
 begin;
@@ -22,8 +22,8 @@ begin
     array['uid:PURGA-POISON-RED'], '{}'::text[], null,
     'purga-poison-red@example.test', null
   );
-  if r.resultado <> 'esperando_vinculo' then
-    raise exception 'precondición: terminal adelantado no quedó recuperable: %', r.resultado;
+  if r.resultado <> 'ignorado' then
+    raise exception 'precondición: evento fuera de retención no quedó ignorado: %', r.resultado;
   end if;
 
   perform public.purgar_comercial_evento(365, '2026-09-04 00:00:00+00');
