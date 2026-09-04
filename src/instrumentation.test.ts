@@ -77,8 +77,7 @@ describe('register — el arranque llama a todo lo que dice que llama', () => {
   it('sonda el aviso de privacidad, no solo las migraciones', async () => {
     const verificarMigracionesCriticas = vi.fn(async () => {});
     const verificarAvisoDePrivacidad = vi.fn(async () => {});
-    const verificarSondeoEscritura0172 = vi.fn(async () => {});
-    vi.doMock('@/lib/likida/startup', () => ({ verificarMigracionesCriticas, verificarAvisoDePrivacidad, verificarSondeoEscritura0172 }));
+    vi.doMock('@/lib/likida/startup', () => ({ verificarMigracionesCriticas, verificarAvisoDePrivacidad }));
     vi.doMock('@/lib/observability/sentry', () => ({
       avisarObservabilidad: vi.fn(), precargar: vi.fn(async () => {}),
     }));
@@ -100,7 +99,6 @@ describe('register — el arranque llama a todo lo que dice que llama', () => {
     const verificarAvisoDePrivacidad = vi.fn(() => new Promise<void>(() => { /* nunca contesta: el host caído */ }));
     vi.doMock('@/lib/likida/startup', () => ({
       verificarMigracionesCriticas: vi.fn(async () => {}), verificarAvisoDePrivacidad,
-      verificarSondeoEscritura0172: vi.fn(async () => {}),
     }));
     vi.doMock('@/lib/observability/sentry', () => ({ avisarObservabilidad: vi.fn(), precargar: vi.fn(async () => {}) }));
     vi.doMock('@/lib/observability/arranque', () => ({ avisarConfiguracionSilenciosa: vi.fn() }));
@@ -113,55 +111,33 @@ describe('register — el arranque llama a todo lo que dice que llama', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════
-  // MEDIO REINCIDENTE (auditoría 24 y 25, `agentico.md`): el sondeo de la
-  // 0172 ESCRIBE una fila real en `tenant` y confía en un `finally` que la
-  // borra. Disparado con `void` como los diez sondeos de lectura, la
-  // instancia de Vercel se congela en cuanto sale el primer 200 con el
-  // `delete` de limpieza en vuelo, y la fila `__likida_probe_624__` se queda
-  // en la base — `lib/admin/negocio.ts` la cuenta como una flota más. A
-  // diferencia del de arriba, ESTE sondeo sí se tiene que esperar.
+  // El probe 0172 antiguo insertaba y borraba un tenant. Si vuelve a cablearse,
+  // una promesa colgada vuelve a bloquear cada arranque frío.
   // ═══════════════════════════════════════════════════════════════════════
-  it('el sondeo de ESCRITURA (0172) SÍ se espera: no queda en vuelo tras el primer 200', async () => {
-    let resuelto = false;
-    const verificarSondeoEscritura0172 = vi.fn(() => new Promise<void>((r) => {
-      setTimeout(() => { resuelto = true; r(); }, 20);
-    }));
+  it('no ejecuta ni espera el antiguo probe mutativo 0172', async () => {
+    const probeMutativoQueNuncaTermina = vi.fn(() => new Promise<void>(() => {}));
     vi.doMock('@/lib/likida/startup', () => ({
       verificarMigracionesCriticas: vi.fn(async () => {}),
       verificarAvisoDePrivacidad: vi.fn(async () => {}),
-      verificarSondeoEscritura0172,
+      verificarSondeoEscritura0172: probeMutativoQueNuncaTermina,
     }));
     vi.doMock('@/lib/observability/sentry', () => ({ avisarObservabilidad: vi.fn(), precargar: vi.fn(async () => {}) }));
     vi.doMock('@/lib/observability/arranque', () => ({ avisarConfiguracionSilenciosa: vi.fn() }));
     vi.stubEnv('NEXT_RUNTIME', 'nodejs');
 
     const { register } = await import('./instrumentation');
-    await register();
-
-    expect(verificarSondeoEscritura0172).toHaveBeenCalled();
-    expect(resuelto).toBe(true);
-  });
-
-  it('un sondeo de escritura que LANZA no tumba el arranque', async () => {
-    const verificarSondeoEscritura0172 = vi.fn(async () => { throw new Error('sin red'); });
-    vi.doMock('@/lib/likida/startup', () => ({
-      verificarMigracionesCriticas: vi.fn(async () => {}),
-      verificarAvisoDePrivacidad: vi.fn(async () => {}),
-      verificarSondeoEscritura0172,
-    }));
-    vi.doMock('@/lib/observability/sentry', () => ({ avisarObservabilidad: vi.fn(), precargar: vi.fn(async () => {}) }));
-    vi.doMock('@/lib/observability/arranque', () => ({ avisarConfiguracionSilenciosa: vi.fn() }));
-    vi.stubEnv('NEXT_RUNTIME', 'nodejs');
-
-    const { register } = await import('./instrumentation');
-    await expect(register()).resolves.toBeUndefined();
+    const carrera = await Promise.race([
+      register().then(() => 'arrancó'),
+      new Promise((r) => setTimeout(() => r('colgado'), 200)),
+    ]);
+    expect(carrera).toBe('arrancó');
+    expect(probeMutativoQueNuncaTermina).not.toHaveBeenCalled();
   });
 
   it('fuera del runtime de Node no arranca nada', async () => {
     const verificarAvisoDePrivacidad = vi.fn(async () => {});
     vi.doMock('@/lib/likida/startup', () => ({
       verificarMigracionesCriticas: vi.fn(async () => {}), verificarAvisoDePrivacidad,
-      verificarSondeoEscritura0172: vi.fn(async () => {}),
     }));
     vi.stubEnv('NEXT_RUNTIME', 'edge');
 
