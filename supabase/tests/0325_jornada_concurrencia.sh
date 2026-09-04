@@ -95,6 +95,10 @@ test "$(grep -Ec '^t$' "$salida_a")" = '1'
 "${psql_cmd[@]}" -c "select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00',1);" >/dev/null
 cola_fence="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_derivacion_trabajo where tenant_id='$tenant' and operador_id='$operador_fence';")"
 jornadas_fence="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_dia where tenant_id='$tenant' and operador_id='$operador_fence' and dia='2026-09-03';")"
+automaticos_vivos="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_asiento a join public.jornada_dia d on d.id=a.jornada_id where d.tenant_id='$tenant' and d.operador_id='$operador_fence' and a.procedencia in ('hito_viaje','gps') and a.anulado_en is null;")"
+automaticos_anulados="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_asiento a join public.jornada_dia d on d.id=a.jornada_id where d.tenant_id='$tenant' and d.operador_id='$operador_fence' and a.procedencia in ('hito_viaje','gps') and a.anulado_en is not null and a.anulado_por_email='sistema:derivador-jornada@likida.internal';")"
 test "$cola_fence" = '0'
 test "$jornadas_fence" = '1'
-echo "0325_jornada_fence: PASS (updater=$estado_update, cola_reconciliada=$cola_fence, jornadas_sin_duplicar=$jornadas_fence)"
+test "$automaticos_vivos" = '0'
+test "$automaticos_anulados" = '1'
+echo "0325_jornada_fence: PASS (updater=$estado_update, cola=$cola_fence, jornada=$jornadas_fence, auto_vivos=$automaticos_vivos, auto_anulados=$automaticos_anulados)"

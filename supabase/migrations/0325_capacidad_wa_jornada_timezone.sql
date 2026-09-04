@@ -229,31 +229,62 @@ begin
   -- siguientes continúan la purga. Un lease vivo nunca se toca y el procesador
   -- revalida la fuente cercada antes de escribir.
   with obsoletos as materialized (
-    select j.tenant_id, j.operador_id, j.dia
+    select j.tenant_id, j.operador_id, j.dia, j.viajes_version,
+           fuente.fuente_obsoleta
       from public.jornada_derivacion_trabajo j
       join public.tenant t on t.id = j.tenant_id
+      cross join lateral (
+        select not exists (
+          select 1
+            from public.viaje v
+           where v.tenant_id = j.tenant_id
+             and v.operador_id = j.operador_id
+             and v.aceptado_en is not null
+             and v.aceptado_en >= (j.dia::timestamp at time zone t.zona_horaria)
+             and v.aceptado_en < ((j.dia + 1)::timestamp at time zone t.zona_horaria)
+        ) as fuente_obsoleta
+      ) fuente
      where (j.claim_token is null or j.lease_expires_at <= clock_timestamp())
        and (
          (j.procesado_al_menos_una_vez
           and j.dia < (p_ahora at time zone t.zona_horaria)::date - (p_dias - 1))
-         or not exists (
-           select 1
-             from public.viaje v
-            where v.tenant_id = j.tenant_id
-              and v.operador_id = j.operador_id
-              and v.aceptado_en is not null
-              and v.aceptado_en >= (j.dia::timestamp at time zone t.zona_horaria)
-              and v.aceptado_en < ((j.dia + 1)::timestamp at time zone t.zona_horaria)
-         )
+         or fuente.fuente_obsoleta
        )
      order by j.tenant_id, j.operador_id, j.dia
      for update of j skip locked
      limit 10000
+  ), dias_cercados as materialized (
+    -- El expediente es el mutex común con el escritor derivado. Se toma en
+    -- orden UUID para que sync/proceso concurrentes no inviertan locks.
+    select d.id, d.tenant_id, o.viajes_version
+      from obsoletos o
+      join public.jornada_dia d
+        on (d.tenant_id, d.operador_id, d.dia) =
+           (o.tenant_id, o.operador_id, o.dia)
+     where o.fuente_obsoleta
+     order by d.id
+     for update of d
+  ), asientos_anulados as (
+    update public.jornada_asiento a
+       set anulado_en = clock_timestamp(),
+           anulado_por_email = 'sistema:derivador-jornada@likida.internal',
+           anulado_motivo = left(
+             'reconciliación automática: la fuente de viajes dejó de sostener el día; versión cola '
+             || coalesce(d.viajes_version, 'sin-versión'), 500
+           )
+      from dias_cercados d
+     where a.jornada_id = d.id
+       and a.tenant_id = d.tenant_id
+       and a.procedencia in ('hito_viaje', 'gps')
+       and a.anulado_en is null
+    returning a.id
   )
   delete from public.jornada_derivacion_trabajo j
    using obsoletos o
    where (j.tenant_id, j.operador_id, j.dia) =
-         (o.tenant_id, o.operador_id, o.dia);
+         (o.tenant_id, o.operador_id, o.dia)
+     -- Dependencia explícita: la historia se anula antes de soltar su trabajo.
+     and (select count(*) from asientos_anulados) >= 0;
   get diagnostics v_eliminadas = row_count;
 
   -- El filtro exterior es sargable y acota el índice de viaje. El interior
@@ -459,6 +490,112 @@ begin
 end;
 $$;
 
+-- La 0319 ya versiona ampliaciones. Esta revisión cubre el camino inverso:
+-- después de anular una inferencia contraída, el mismo origen puede reaparecer
+-- sin chocar con el índice histórico. Cada restitución recibe identidad propia y
+-- apunta a la versión automática anterior; nunca edita `momento` en silencio.
+create or replace function public.asentar_extremo_jornada_derivado(
+  p_jornada_id uuid,
+  p_tenant_id uuid,
+  p_tipo text,
+  p_momento timestamptz,
+  p_procedencia text,
+  p_origen_ref text,
+  p_viaje_id uuid default null,
+  p_unidad_id uuid default null,
+  p_detalle jsonb default null
+) returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actual public.jornada_asiento%rowtype;
+  v_previa public.jornada_asiento%rowtype;
+  v_nuevo_id uuid := gen_random_uuid();
+  v_origen_nuevo text;
+  v_resultado text := 'asentado';
+begin
+  if p_jornada_id is null or p_tenant_id is null or p_momento is null then
+    raise exception 'derived journey endpoint requires journey, tenant and timestamp';
+  end if;
+  if p_tipo not in ('inicio_jornada', 'fin_jornada') then
+    raise exception 'derived journey endpoint type is invalid';
+  end if;
+  if p_procedencia not in ('hito_viaje', 'gps') or nullif(btrim(p_origen_ref), '') is null then
+    raise exception 'derived journey endpoint requires a derived source';
+  end if;
+
+  perform 1
+    from public.jornada_dia d
+   where d.id = p_jornada_id and d.tenant_id = p_tenant_id
+   for update;
+  if not found then raise exception 'journey day does not belong to tenant'; end if;
+
+  select a.* into v_actual
+    from public.jornada_asiento a
+   where a.jornada_id = p_jornada_id
+     and a.tenant_id = p_tenant_id
+     and a.tipo = p_tipo
+     and a.anulado_en is null
+   for update;
+
+  if found then
+    if v_actual.procedencia not in ('hito_viaje', 'gps') then return 'ya_estaba'; end if;
+    -- Este escritor sigue ampliando por sí solo. Las contracciones sólo se
+    -- habilitan tras la comparación completa y cercada del procesador 0325.
+    if (p_tipo = 'inicio_jornada' and p_momento >= v_actual.momento)
+       or (p_tipo = 'fin_jornada' and p_momento <= v_actual.momento) then
+      return 'ya_estaba';
+    end if;
+    update public.jornada_asiento
+       set anulado_en = clock_timestamp(),
+           anulado_por_email = 'sistema:derivador-jornada@likida.internal',
+           anulado_motivo = 'Nueva evidencia automática amplió el extremo derivado'
+     where id = v_actual.id and tenant_id = p_tenant_id and anulado_en is null;
+    v_previa := v_actual;
+    v_resultado := 'actualizado';
+  else
+    select a.* into v_previa
+      from public.jornada_asiento a
+     where a.jornada_id = p_jornada_id
+       and a.tenant_id = p_tenant_id
+       and a.tipo = p_tipo
+       and a.procedencia in ('hito_viaje', 'gps')
+     order by coalesce(a.anulado_en, a.created_at) desc, a.id desc
+     limit 1;
+    if found then v_resultado := 'actualizado'; end if;
+  end if;
+
+  if v_previa.id is null
+     and not exists (
+       select 1 from public.jornada_asiento a
+        where a.jornada_id = p_jornada_id and a.origen_ref = p_origen_ref
+     ) then
+    v_origen_nuevo := p_origen_ref;
+  else
+    v_origen_nuevo := p_origen_ref || ':version:' || v_nuevo_id::text;
+  end if;
+
+  insert into public.jornada_asiento (
+    id, tenant_id, jornada_id, tipo, momento, procedencia, origen_ref,
+    viaje_id, unidad_id, detalle, corrige_a
+  ) values (
+    v_nuevo_id, p_tenant_id, p_jornada_id, p_tipo, p_momento, p_procedencia,
+    v_origen_nuevo, p_viaje_id, p_unidad_id,
+    coalesce(p_detalle, '{}'::jsonb) || case when v_previa.id is null then '{}'::jsonb else jsonb_build_object(
+      'version_anterior_id', v_previa.id,
+      'version_anterior_momento', v_previa.momento
+    ) end,
+    v_previa.id
+  );
+  return v_resultado;
+end;
+$$;
+
+revoke all on function public.asentar_extremo_jornada_derivado(uuid, uuid, text, timestamptz, text, text, uuid, uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.asentar_extremo_jornada_derivado(uuid, uuid, text, timestamptz, text, text, uuid, uuid, jsonb) to service_role;
+
 -- Procesa un lote ya cercado. Cada fila tiene subtransacción propia: el fallo
 -- de un expediente no revierte los anteriores ni deja el lote completo mudo.
 create or replace function public.procesar_jornadas_derivadas(
@@ -488,6 +625,18 @@ declare
   v_sin_gps boolean;
   v_error text;
   v_viajes_version_actual text;
+  v_input_version_actual text;
+  v_viaje_id_actual uuid;
+  v_unidad_id_actual uuid;
+  v_unidad_ids_actual uuid[];
+  v_aceptado_en_actual timestamptz;
+  v_gps_primera_en_actual timestamptz;
+  v_gps_primera_unidad_id_actual uuid;
+  v_gps_ultima_en_actual timestamptz;
+  v_gps_ultima_unidad_id_actual uuid;
+  v_inicio_momento_actual timestamptz;
+  v_inicio_procedencia_actual text;
+  v_inicio_unidad_id_actual uuid;
 begin
   if nullif(btrim(p_owner), '') is null then
     raise exception 'jornada derivacion lease owner is required';
@@ -516,11 +665,8 @@ begin
     v_error := null;
 
     begin
-      -- Cerrar el TOCTOU entre comprobar la fuente y crear los asientos. Los
-      -- locks se toman en orden estable y viven hasta que termina el RPC: un
-      -- UPDATE/DELETE concurrente espera; si ganó la carrera antes, el
-      -- predicado se reevalúa y la versión de abajo detecta el cambio. Los
-      -- INSERT posteriores reabren la versión en el siguiente sync.
+      -- Orden total: trabajo → viajes → posiciones → expediente. Los
+      -- UPDATE/DELETE concurrentes esperan; los INSERT nuevos reabren después.
       perform 1
         from public.viaje fuente
        where fuente.tenant_id = v.tenant_id
@@ -531,16 +677,19 @@ begin
        order by fuente.id
        for share;
 
-      -- El claim pudo quedar obsoleto después de ser tomado. Recalcular la
-      -- versión bajo el fence evita crear una jornada falsa si `aceptado_en`
-      -- pasó a NULL, cambió de día/unidad/hora o cambió el conjunto visible.
-      select md5(string_agg(
-               concat_ws(':', fuente.id::text,
-                         coalesce(fuente.unidad_id::text, '-'),
+      select (array_agg(fuente.id order by fuente.aceptado_en, fuente.id))[1],
+             (array_agg(fuente.unidad_id order by fuente.aceptado_en, fuente.id)
+               filter (where fuente.unidad_id is not null))[1],
+             coalesce(array_agg(distinct fuente.unidad_id order by fuente.unidad_id)
+               filter (where fuente.unidad_id is not null), array[]::uuid[]),
+             min(fuente.aceptado_en),
+             md5(string_agg(
+               concat_ws(':', fuente.id::text, coalesce(fuente.unidad_id::text, '-'),
                          fuente.aceptado_en::text),
                ',' order by fuente.aceptado_en, fuente.id
              ))
-        into v_viajes_version_actual
+        into v_viaje_id_actual, v_unidad_id_actual, v_unidad_ids_actual,
+             v_aceptado_en_actual, v_viajes_version_actual
         from public.viaje fuente
        where fuente.tenant_id = v.tenant_id
          and fuente.operador_id = v.operador_id
@@ -548,53 +697,141 @@ begin
          and fuente.aceptado_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
          and fuente.aceptado_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria);
 
-      if v_viajes_version_actual is distinct from v.viajes_version then
-        v_error := 'fuente de viaje cambió después del claim; cola obsoleta';
+      v_gps_primera_en_actual := null;
+      v_gps_primera_unidad_id_actual := null;
+      v_gps_ultima_en_actual := null;
+      v_gps_ultima_unidad_id_actual := null;
+      if cardinality(v_unidad_ids_actual) > 0 then
+        perform 1
+          from public.posicion p
+         where p.tenant_id = v.tenant_id
+           and p.unidad_id = any(v_unidad_ids_actual)
+           and p.medida_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
+           and p.medida_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria)
+         order by p.id
+         for share;
+        select (array_agg(p.medida_en order by p.medida_en, p.id))[1],
+               (array_agg(p.unidad_id order by p.medida_en, p.id))[1],
+               (array_agg(p.medida_en order by p.medida_en desc, p.id desc))[1],
+               (array_agg(p.unidad_id order by p.medida_en desc, p.id desc))[1]
+          into v_gps_primera_en_actual, v_gps_primera_unidad_id_actual,
+               v_gps_ultima_en_actual, v_gps_ultima_unidad_id_actual
+          from public.posicion p
+         where p.tenant_id = v.tenant_id
+           and p.unidad_id = any(v_unidad_ids_actual)
+           and p.medida_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
+           and p.medida_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria);
+      end if;
+
+      v_input_version_actual := case when v_viajes_version_actual is null then null else md5(concat_ws('|',
+        v_viajes_version_actual,
+        coalesce(v_gps_primera_en_actual::text, '-'), coalesce(v_gps_primera_unidad_id_actual::text, '-'),
+        coalesce(v_gps_ultima_en_actual::text, '-'), coalesce(v_gps_ultima_unidad_id_actual::text, '-')
+      )) end;
+      v_inicio_momento_actual := v_aceptado_en_actual;
+      v_inicio_procedencia_actual := 'hito_viaje';
+      v_inicio_unidad_id_actual := v_unidad_id_actual;
+      if v_gps_primera_en_actual is not null
+         and v_gps_primera_en_actual < v_aceptado_en_actual then
+        v_inicio_momento_actual := v_gps_primera_en_actual;
+        v_inicio_procedencia_actual := 'gps';
+        v_inicio_unidad_id_actual := v_gps_primera_unidad_id_actual;
+      end if;
+
+      v_jornada_id := null;
+      select d.id into v_jornada_id
+        from public.jornada_dia d
+       where d.tenant_id = v.tenant_id and d.operador_id = v.operador_id and d.dia = v.dia
+       for update;
+
+      if v_viajes_version_actual is null then
+        -- Ya no existe ninguna fuente para este bucket. Conservar el expediente
+        -- y anular sólo sus inferencias; una marca humana queda intacta.
+        if v_jornada_id is not null then
+          update public.jornada_asiento a
+             set anulado_en = clock_timestamp(),
+                 anulado_por_email = 'sistema:derivador-jornada@likida.internal',
+                 anulado_motivo = left(
+                   'reconciliación automática: ningún viaje aceptado sostiene ya el día; versión previa '
+                   || coalesce(a.detalle ->> 'derivacion_input_version', v.claim_input_version, 'legado'), 500
+                 )
+           where a.jornada_id = v_jornada_id and a.tenant_id = v.tenant_id
+             and a.procedencia in ('hito_viaje', 'gps') and a.anulado_en is null;
+        end if;
       elsif v.claim_aviso_previo is not true then
         v_error := 'aviso de privacidad pendiente';
       else
-        insert into public.jornada_dia (tenant_id, operador_id, dia)
-        values (v.tenant_id, v.operador_id, v.dia)
-        on conflict (tenant_id, operador_id, dia) do nothing;
+        if v_jornada_id is null then
+          insert into public.jornada_dia (tenant_id, operador_id, dia)
+          values (v.tenant_id, v.operador_id, v.dia)
+          on conflict (tenant_id, operador_id, dia) do nothing;
+          select d.id into strict v_jornada_id
+            from public.jornada_dia d
+           where d.tenant_id = v.tenant_id and d.operador_id = v.operador_id and d.dia = v.dia
+           for update;
+        end if;
 
-        select d.id into strict v_jornada_id
-          from public.jornada_dia d
-         where d.tenant_id = v.tenant_id
-           and d.operador_id = v.operador_id
-           and d.dia = v.dia;
+        -- La versión esperada puede contraerse. Anular antes de reconstruir
+        -- libera el índice de extremo vivo sin tocar marcas humanas.
+        update public.jornada_asiento a
+           set anulado_en = clock_timestamp(),
+               anulado_por_email = 'sistema:derivador-jornada@likida.internal',
+               anulado_motivo = left(
+                 'reconciliación automática: cambió la evidencia; versión previa '
+                 || coalesce(a.detalle ->> 'derivacion_input_version', 'legado')
+                 || ', versión nueva ' || coalesce(v_input_version_actual, 'sin-fuente'), 500
+               )
+         where a.jornada_id = v_jornada_id and a.tenant_id = v.tenant_id
+           and a.procedencia in ('hito_viaje', 'gps') and a.anulado_en is null
+           and (
+             (a.tipo = 'inicio_jornada' and
+               (a.momento, a.procedencia, a.viaje_id, a.unidad_id) is distinct from
+               (v_inicio_momento_actual, v_inicio_procedencia_actual,
+                v_viaje_id_actual, v_inicio_unidad_id_actual))
+             or
+             (a.tipo = 'fin_jornada' and
+               (v_gps_ultima_en_actual is null
+                or v_gps_ultima_en_actual = v_gps_primera_en_actual
+                or (a.momento, a.procedencia, a.viaje_id, a.unidad_id) is distinct from
+                   (v_gps_ultima_en_actual, 'gps'::text,
+                    v_viaje_id_actual, v_gps_ultima_unidad_id_actual)))
+           );
 
         v_resultado := public.asentar_extremo_jornada_derivado(
-          v_jornada_id, v.tenant_id, 'inicio_jornada', v.aceptado_en,
-          'hito_viaje', 'viaje:' || v.viaje_id::text || ':aceptado_en',
-          v.viaje_id, v.unidad_id,
-          jsonb_build_object('hecho', 'el operador aceptó el viaje por WhatsApp', 'cota', 'inferior')
+          v_jornada_id, v.tenant_id, 'inicio_jornada', v_aceptado_en_actual,
+          'hito_viaje', 'viaje:' || v_viaje_id_actual::text || ':aceptado_en',
+          v_viaje_id_actual, v_unidad_id_actual,
+          jsonb_build_object('hecho', 'el operador aceptó el viaje por WhatsApp', 'cota', 'inferior',
+                             'derivacion_input_version', v_input_version_actual)
         );
         if v_resultado in ('asentado', 'actualizado') then v_asentados := v_asentados + 1;
         else v_ya_estaban := v_ya_estaban + 1; end if;
 
-        if cardinality(v.unidad_ids) > 0 and v.claim_gps_primera_en is null then
+        if cardinality(v_unidad_ids_actual) > 0 and v_gps_primera_en_actual is null then
           v_sin_gps := true;
-        elsif v.claim_gps_primera_en is not null then
+        elsif v_gps_primera_en_actual is not null then
           v_resultado := public.asentar_extremo_jornada_derivado(
-            v_jornada_id, v.tenant_id, 'inicio_jornada', v.claim_gps_primera_en,
-            'gps', concat('gps:', v.claim_gps_primera_unidad_id, ':', v.dia,
-                          ':primera:', v.claim_gps_primera_en),
-            v.viaje_id, v.claim_gps_primera_unidad_id,
+            v_jornada_id, v.tenant_id, 'inicio_jornada', v_gps_primera_en_actual,
+            'gps', concat('gps:', v_gps_primera_unidad_id_actual, ':', v.dia,
+                          ':primera:', v_gps_primera_en_actual),
+            v_viaje_id_actual, v_gps_primera_unidad_id_actual,
             jsonb_build_object('hecho', 'primera posición de la unidad ese día', 'cota', 'inferior',
-                               'zona_horaria', v.claim_zona_horaria)
+                               'zona_horaria', v.claim_zona_horaria,
+                               'derivacion_input_version', v_input_version_actual)
           );
           if v_resultado in ('asentado', 'actualizado') then v_asentados := v_asentados + 1;
           else v_ya_estaban := v_ya_estaban + 1; end if;
 
-          if v.claim_gps_ultima_en is not null
-             and v.claim_gps_ultima_en <> v.claim_gps_primera_en then
+          if v_gps_ultima_en_actual is not null
+             and v_gps_ultima_en_actual <> v_gps_primera_en_actual then
             v_resultado := public.asentar_extremo_jornada_derivado(
-              v_jornada_id, v.tenant_id, 'fin_jornada', v.claim_gps_ultima_en,
-              'gps', concat('gps:', v.claim_gps_ultima_unidad_id, ':', v.dia,
-                            ':ultima:', v.claim_gps_ultima_en),
-              v.viaje_id, v.claim_gps_ultima_unidad_id,
+              v_jornada_id, v.tenant_id, 'fin_jornada', v_gps_ultima_en_actual,
+              'gps', concat('gps:', v_gps_ultima_unidad_id_actual, ':', v.dia,
+                            ':ultima:', v_gps_ultima_en_actual),
+              v_viaje_id_actual, v_gps_ultima_unidad_id_actual,
               jsonb_build_object('hecho', 'última posición de la unidad ese día', 'cota', 'inferior',
-                                 'zona_horaria', v.claim_zona_horaria)
+                                 'zona_horaria', v.claim_zona_horaria,
+                                 'derivacion_input_version', v_input_version_actual)
             );
             if v_resultado in ('asentado', 'actualizado') then v_asentados := v_asentados + 1;
             else v_ya_estaban := v_ya_estaban + 1; end if;
