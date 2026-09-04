@@ -599,6 +599,14 @@ begin
 end;
 $$;
 
+-- Snapshot durable de la versión que realmente se confirmó. Tras purgar la
+-- cola, la auditoría de una corrección debe conservar exactamente previous y
+-- new; no basta con un texto genérico o con reconstruir sólo el hash nuevo.
+create temporary table audit_historico_versiones_0325 as
+select operador_id, processed_version as previous_input_version
+  from public.jornada_derivacion_trabajo
+ where tenant_id='32500000-0000-4000-8000-000000000090';
+
 -- Cerrar y obtener conformidad es estado VIVO, no permiso para presentar una
 -- versión vieja tras cambiar la evidencia. La invalidación debe conservar el
 -- sello anterior en historial y reabrir el expediente vigente.
@@ -679,6 +687,19 @@ begin
        and h.conforme_wa_message_id_anterior='wamid.0325-conforme-historico'
        and h.invalidado_motivo is not null
   ) then raise exception 'invalidación no conservó el sello anterior'; end if;
+
+  if not exists (
+    select 1
+      from public.jornada_revision_historial h
+      join public.jornada_dia d on d.id=h.jornada_id and d.tenant_id=h.tenant_id
+      join audit_historico_versiones_0325 e on e.operador_id=d.operador_id
+     where h.jornada_id=v_jornada
+       and h.input_version_anterior=e.previous_input_version
+       and h.input_version_nueva is not null
+       and h.input_version_nueva is distinct from h.input_version_anterior
+  ) then
+    raise exception 'auditoría perdió previous/new input_version tras purga';
+  end if;
 
   select id into strict v_jornada from public.jornada_dia
    where tenant_id='32500000-0000-4000-8000-000000000090'
@@ -769,6 +790,18 @@ select * from public.procesar_jornadas_derivadas(
 );
 do $$
 begin
+  -- En multiunidad, una posición sólo prueba la unidad. Sin intervalo
+  -- conductor/unidad no puede atribuirse honestamente a ningún viaje.
+  if exists (
+    select 1
+      from public.jornada_asiento a
+      join public.jornada_dia d on d.id=a.jornada_id and d.tenant_id=a.tenant_id
+     where d.tenant_id='32500000-0000-4000-8000-000000000110'
+       and a.procedencia='gps' and a.anulado_en is null
+       and a.viaje_id is not null
+  ) then
+    raise exception 'GPS multiunidad inventó viaje_id sin intervalo de asignación';
+  end if;
   if exists (
     select 1 from public.jornada_asiento a
     join public.jornada_dia d on d.id=a.jornada_id and d.tenant_id=a.tenant_id
