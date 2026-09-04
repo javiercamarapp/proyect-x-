@@ -141,13 +141,18 @@ export async function verificarMigracionesCriticas(): Promise<void> {
 
     const resultados = await Promise.allSettled(sondeos.map((s) => s()));
     let faltan = false;
+    let inconclusos = false;
     for (const r of resultados) {
       if (r.status === 'fulfilled') { faltan = faltan || r.value; continue; }
       // Un sondeo que LANZA (cliente sin env, bucket inexistente…) no es
       // "falta la migración": se dice como lo que es y no se afirma nada.
+      inconclusos = true;
       logger.warn('startup.migraciones_sondeo_fallo', { err: r.reason instanceof Error ? r.reason.message : String(r.reason) });
     }
-    if (!faltan) logger.info('startup.migraciones', { ok: true });
+    // `ok` significa que TODOS pudieron preguntar y ninguno encontró faltantes.
+    // Antes un query builder que lanzaba dejaba warning + `{ok:true}` en la
+    // misma corrida: el agregador sano podía tapar al diagnóstico inconcluso.
+    if (!faltan && !inconclusos) logger.info('startup.migraciones', { ok: true });
   } catch (e) {
     // Sin env/DB (p. ej. durante el build) → no romper, solo avisar.
     logger.warn('startup.migraciones_skip', { err: e instanceof Error ? e.message : String(e) });

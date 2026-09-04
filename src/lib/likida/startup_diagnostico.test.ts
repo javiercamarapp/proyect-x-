@@ -109,6 +109,21 @@ describe('diagnóstico de migraciones', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalled();
   });
+
+  it('si un sondeo LANZA, registra diagnóstico inconcluso y nunca dice ok', async () => {
+    rpc.mockResolvedValue({ data: [], error: null });
+    from.mockImplementation((nombre: string) => {
+      if (nombre === 'codigo_pendiente') throw new Error('query builder roto');
+      return okTabla;
+    });
+
+    await verificarMigracionesCriticas();
+
+    expect(warn).toHaveBeenCalledWith('startup.migraciones_sondeo_fallo', {
+      err: 'query builder roto',
+    });
+    expect(info).not.toHaveBeenCalledWith('startup.migraciones', { ok: true });
+  });
 });
 
 // CRÍTICO de la auditoría 5 (modelo de datos): la migración 0022 estaba aplicada
