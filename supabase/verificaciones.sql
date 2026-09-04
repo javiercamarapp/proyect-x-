@@ -116,6 +116,58 @@ begin
   raise exception E'MUTEX  1er=%  concurrente=%  tras-unlock=%   (esperado t / f / t)', l1, l2, l3;
 end $$;
 
+-- ── 266. Arranque puramente catalogal, exacto y server-only (mig. 0326) ──
+-- Esperado: STARTUP_CATALOGO_0326 completo=t estable=t sin-escrituras=t permisos=t
+do $$
+declare
+  faltantes text[];
+  antes jsonb;
+  despues jsonb;
+  completo boolean := false;
+  estable boolean := false;
+  sin_escrituras boolean := false;
+  permisos boolean := false;
+begin
+  select jsonb_build_object(
+    'tenant', (select count(*) from public.tenant),
+    'operador', (select count(*) from public.operador),
+    'viaje', (select count(*) from public.viaje),
+    'gasto', (select count(*) from public.gasto),
+    'liquidacion', (select count(*) from public.liquidacion)
+  ) into antes;
+
+  faltantes := public.garantias_arranque_faltantes();
+
+  select jsonb_build_object(
+    'tenant', (select count(*) from public.tenant),
+    'operador', (select count(*) from public.operador),
+    'viaje', (select count(*) from public.viaje),
+    'gasto', (select count(*) from public.gasto),
+    'liquidacion', (select count(*) from public.liquidacion)
+  ) into despues;
+
+  completo := coalesce(cardinality(faltantes), 0) = 0;
+  sin_escrituras := antes = despues;
+
+  select p.provolatile = 's'
+      and p.prosecdef
+      and coalesce(array_to_string(p.proconfig, ','), '') like '%search_path=""%'
+    into estable
+    from pg_catalog.pg_proc p
+   where p.oid = 'public.garantias_arranque_faltantes()'::regprocedure;
+
+  permisos := not has_function_privilege(
+      'anon', 'public.garantias_arranque_faltantes()', 'EXECUTE'
+    ) and not has_function_privilege(
+      'authenticated', 'public.garantias_arranque_faltantes()', 'EXECUTE'
+    ) and has_function_privilege(
+      'service_role', 'public.garantias_arranque_faltantes()', 'EXECUTE'
+    );
+
+  raise exception E'STARTUP_CATALOGO_0326 completo=% estable=% sin-escrituras=% permisos=%   (esperado t / t / t / t)',
+    completo, estable, sin_escrituras, permisos;
+end $$;
+
 -- ── 261. Jornada versionada: GPS tardío amplía sin pisar declaración (mig. 0319) ──
 -- Esperado: JORNADA_VERSION_0319 reabre=t actualiza=t historial=t manual=t
 do $$

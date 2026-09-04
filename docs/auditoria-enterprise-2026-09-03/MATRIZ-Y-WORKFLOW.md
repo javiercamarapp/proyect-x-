@@ -175,27 +175,43 @@ resultado anterior no certifica código que cambió después.
 
 ## Hallazgos de la revisión de constructor en curso
 
-- GPS (abierto): un fallo al insertar un evento todavía podía terminar la
-  ventana como completa y avanzar el watermark; un evento huérfano persistido
-  con `unidad_id = NULL` no podía adoptar el mapeo corregido; además, la ingesta
-  hacía un round-trip por evento. Los tres regresaron al constructor junto con
-  el caso de bootstrap/backfill y recuperación de lease.
-- WhatsApp/jornada (en validación): el selector ya fue rediseñado como
-  round-robin por remitente, conservando cadenas causales dentro del lote. En
-  PostgreSQL 17, 13,000 mensajes se listaron en 13.086 ms y el claim de 50
-  jornadas con tres marcas en 12.624 ms; queda resolver el hang del arnés de
-  dos sesiones antes de aceptar la ola.
-- Cal.com (cerrado en la primera reauditoría): `sin_prospecto` y `cuarentena`
-  ahora responden `503` con `Retry-After`; el email y `noShow` salen del mismo
-  asistente; UID/id tienen namespace y la máquina de estados drena entregas
-  invertidas. Evidencia: 25/25 Vitest, SQL atómico PG17 y concurrencia real.
+- GPS (P0, devuelto a un constructor distinto): la primera implementación
+  durable pasó 98/98 pruebas focales y PG17, pero la reauditoría adversarial
+  demostró seis huecos que bloquean release: payload inválido perdido al
+  avanzar watermark; outbox de choques detenido por 401/403/429/credencial
+  corrupta; poison-pill que hambrea choques posteriores; tail actual detrás de
+  hasta 30 días de backfill; huérfano/privacidad congelando el cursor global; y
+  autorización histórica evaluada contra el conductor actual en vez del
+  conductor point-in-time; además, la carrera real demostró que el `INSERT ...
+  ON CONFLICT` previo al `SKIP LOCKED` bloquea al segundo worker, y las filas
+  huérfanas creadas por la versión anterior no se reconcilian al actualizar. El
+  criterio nuevo exige carril reciente prioritario, inbox/cuarentena durable,
+  backoff/DLQ, compuerta temporal por evento, migración de huérfanos y claim
+  caliente sin aprovisionamiento bloqueante.
+- WhatsApp/jornada (P1 en reauditoría): el selector round-robin conserva cadenas
+  causales. En PostgreSQL 17, 13,000 mensajes se listaron en 13.163 ms y un lote
+  de 50 jornadas con dos extremos GPS terminó en 14.590 ms. Dos sesiones reales
+  reclamaron 400 + 400 trabajos en menos de un segundo, sin solapes. La revisión
+  independiente detectó que el caller consulta `venceEn` antes de armar la lista
+  pero no entre sus hasta ocho RPC de proceso; puede rebasar el presupuesto por
+  decenas de segundos. También está intentando invalidar fuentes borradas o
+  movidas de día antes de aceptar la ola.
+- Cal.com (P1/P2 reabierto por reauditoría): 25/25 Vitest y los arnés PG17
+  atómico/concurrente base pasan, pero se reprodujeron dos P1: A→B→C se rompe
+  si dos reschedules comparten `createdAt`, y una reentrega concurrente con el
+  enlazador puede formar un deadlock `40P01` por orden inverso de locks. Además,
+  el lookup por correo ambiguo, el provisionamiento no idempotente y el falso
+  reconciliador manual quedan como P2 hasta tener identidad durable y barrido
+  propio; el `503` no se considera garantía de reentrega del proveedor.
 - CI (cerrado localmente; pendiente de una corrida GitHub): la auditoría
   runtime clasifica CVE vs. caída del registry, reintenta con tiempo acotado y
   corre después de typecheck/tests/build/smoke. Un 503 sigue dejando el job
   rojo, pero ya no oculta la evidencia de las puertas de código.
-- Arranque (abierto): los probes de funciones/constraints ejecutaban lógica de
-  negocio, tocaban un viaje/tenant y generaban errores artificiales en los logs
-  de producción. Se está sustituyendo por inspección de catálogo sin escritura.
+- Arranque (cerrado localmente; pendiente del gate completo): los probes
+  mutativos se sustituyeron por `garantias_arranque_faltantes()`, lector estable
+  de catálogo server-only. Sus pruebas focales, firmas/overloads hostiles y PG17
+  pasaron; también se corrigió el caso `Promise.allSettled` que antes registraba
+  un rechazo pero devolvía `ok: true`.
 
 Todo punto marcado abierto sigue fuera del conteo de aceptación hasta contar
 con regresión, PostgreSQL 17 real y reauditoría independiente.
