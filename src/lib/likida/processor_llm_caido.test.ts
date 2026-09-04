@@ -76,6 +76,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   claimMessage: (...a: unknown[]) => claimMessage(...(a as [string])),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
@@ -159,7 +160,7 @@ const presupuestoAgotadoEnvuelto = () => new PartialExecutionError(
   new LlmBudgetExceededError('tenant', 5.2, 5.0),
   [], 0, 0, 0,
 );
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
 beforeEach(() => {
   salientes.length = 0; media.clear();

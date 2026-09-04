@@ -31,6 +31,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ───────────────────────────────────────────────────────────────────────────
 
 const runAgent = vi.fn();
+const fotoAnteriorSinProcesar = vi.fn<() => Promise<boolean | null>>(async () => false);
+beforeEach(() => { fotoAnteriorSinProcesar.mockReset(); fotoAnteriorSinProcesar.mockResolvedValue(false); });
 // DAT-21: el processor pide el mutex del CIERRE por `intentarLockViaje`, que
 // devuelve tres estados. `acquireViajeLock` (booleano) sigue existiendo para
 // los otros llamadores y se mockea aparte para que este archivo no dependa de
@@ -67,6 +69,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   acquireViajeLock: async (...a: unknown[]) => (await intentarLockViaje(...(a as []))) === 'obtenido',
   releaseViajeLock: vi.fn(), releaseMessageClaim: (...a: unknown[]) => releaseMessageClaim(...a),
   completarMessageClaim: (...a: unknown[]) => completarMessageClaim(...(a as [])),
+  fotoAnteriorSinProcesar: () => fotoAnteriorSinProcesar(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
@@ -107,7 +110,7 @@ vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 
 const { processInbound } = await import('./processor');
 
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
 describe('processInbound — mutex del viaje', () => {
   beforeEach(() => {
@@ -220,6 +223,7 @@ describe('processInbound — el "listo" que llegó tarde', () => {
     salientes.length = 0;
     runAgent.mockReset(); intentarLockViaje.mockReset(); getOpenViaje.mockReset();
     viajeAbiertoDesdeMs.mockReset();
+    releaseMessageClaim.mockClear(); completarMessageClaim.mockClear();
     vi.stubGlobal('fetch', fetchSpy);
     fetchSpy.mockClear();
     process.env.WHATSAPP_ACCESS_TOKEN = 'tok-de-prueba';
@@ -257,11 +261,15 @@ describe('processInbound — el "listo" que llegó tarde', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('sin hora de Meta tampoco se adivina: ni se consulta', async () => {
-    await processInbound({ ...listo, waMessageId: 'wa-sin-hora' });
+  it('sin hora de Meta aplaza el cierre, no consulta apertura ni ejecuta el agente', async () => {
+    expect(await processInbound({ ...listo, timestampMs: undefined, waMessageId: 'wa-sin-hora' })).toBe('sin_tiempo');
     expect(viajeAbiertoDesdeMs, 'la consulta corre SÓLO cuando puede decidir algo')
       .not.toHaveBeenCalled();
-    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(releaseMessageClaim).toHaveBeenCalledWith('wa-sin-hora');
+    expect(salientes).toHaveLength(0);
+    expect(intentarLockViaje).not.toHaveBeenCalled();
+    expect(completarMessageClaim).not.toHaveBeenCalled();
   });
 });
 
@@ -290,6 +298,18 @@ describe('processInbound — el resultado que decide la fila durable', () => {
     intentarLockViaje.mockResolvedValue('obtenido');
     expect(await processInbound(listo)).toBe('procesado');
     expect(completarMessageClaim).toHaveBeenCalledWith('wa1');
+  });
+
+  it.each([true, null])('foto anterior pendiente o indeterminada (%s) aplaza sin tomar mutex ni cerrar', async (estadoFoto) => {
+    fotoAnteriorSinProcesar.mockResolvedValue(estadoFoto);
+    intentarLockViaje.mockResolvedValue('obtenido');
+    expect(await processInbound(listo)).toBe('sin_tiempo');
+    expect(fotoAnteriorSinProcesar).toHaveBeenCalledTimes(1);
+    expect(intentarLockViaje).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(salientes).toHaveLength(0);
+    expect(releaseMessageClaim).toHaveBeenCalledWith('wa1');
+    expect(completarMessageClaim).not.toHaveBeenCalled();
   });
 
   it('con el lock OCUPADO es "reintentable": el claim se soltó y NO se completa', async () => {
