@@ -2,22 +2,18 @@ import { NextResponse } from 'next/server';
 import { bodyExcede } from '@/lib/ratelimit';
 import { logger } from '@/lib/logger';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { calcomConfig, registrarEventoComercial, verificarFirmaCalcom } from '@/lib/admin/calcom';
-import {
-  normalizarEstadoProspecto,
-  type EstadoProspecto,
-} from '@/lib/likida/vendedores';
+import { calcomConfig, verificarFirmaCalcom } from '@/lib/admin/calcom';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const MAX_BODY = 256 * 1024;
-const ESTADO_POR_EVENTO: Record<string, EstadoProspecto> = {
-  BOOKING_CREATED: 'appointment',
-  BOOKING_RESCHEDULED: 'rescheduled',
-  BOOKING_CANCELLED: 'cancelled',
-  BOOKING_NO_SHOW: 'no-show',
-};
+const EVENTOS_SOPORTADOS = new Set([
+  'BOOKING_CREATED',
+  'BOOKING_RESCHEDULED',
+  'BOOKING_CANCELLED',
+  'BOOKING_NO_SHOW',
+]);
 
 type CalcomEvent = {
   triggerEvent?: string;
@@ -29,24 +25,8 @@ type CalcomEvent = {
   payload?: Record<string, unknown>;
 };
 
-type ProspectoActual = { id: string; estado: string };
-type EventoOrdenable = {
-  clave_idempotencia: string;
-  tipo: string;
-  externo_id: string | null;
-  ocurrido_en: string;
-};
-
-const PRECEDENCIA_EVENTO: Record<string, number> = {
-  BOOKING_CREATED: 0,
-  BOOKING_RESCHEDULED: 1,
-  BOOKING_CANCELLED: 2,
-  BOOKING_NO_SHOW: 2,
-};
-const ESTADOS_NEGOCIO_PROTEGIDOS = new Set<EstadoProspecto>([
-  'demo', 'proposal', 'pilot', 'won', 'lost',
-]);
-const ESTADOS_AGENDA_TERMINALES = new Set<EstadoProspecto>(['cancelled', 'no-show']);
+type ProspectoActual = { id: string };
+type ResultadoRpc = { resultado?: string; estado_prospecto?: string | null };
 
 function texto(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, 320) : null;
@@ -55,6 +35,15 @@ function texto(v: unknown): string | null {
 function bookingId(evt: CalcomEvent): string | null {
   const p = evt.payload ?? {};
   const value = evt.bookingId ?? evt.id ?? p.bookingId ?? p.id ?? p.uid;
+  return value === undefined || value === null ? null : String(value);
+}
+
+/** Cal.com manda el uid anterior al reprogramar. Sólo se usa para enlazar la
+ * reserva nueva con la que sigue vigente; jamás como sustituto del bookingId
+ * del evento. */
+function bookingAnterior(evt: CalcomEvent): string | null {
+  const p = evt.payload ?? {};
+  const value = p.rescheduleUid ?? p.oldBookingUid ?? p.previousBookingUid;
   return value === undefined || value === null ? null : String(value);
 }
 
@@ -95,34 +84,37 @@ export async function POST(req: Request) {
   const tipo = texto(evt.triggerEvent)?.toUpperCase();
   const externo = bookingId(evt);
   if (!tipo || !externo) return new NextResponse('Evento Cal.com incompleto', { status: 400 });
+  if (!EVENTOS_SOPORTADOS.has(tipo)) return new NextResponse('Evento Cal.com no soportado', { status: 400 });
   const clave = `calcom:${tipo}:${externo}`;
-  const estado = ESTADO_POR_EVENTO[tipo];
   const ocurridoEn = instanteFirmado(evt);
 
   try {
     // Lookup is inside the retryable path too: a transient CRM read failure
     // must be a loud 500, never an unhandled rejection or a false 2xx.
     const prospecto = await encontrarProspecto(emailDelEvento(evt));
-    const resultado = await registrarEventoComercial({
-      claveIdempotencia: clave, fuente: 'calcom', tipo, externoId: externo,
-      prospectoId: prospecto?.id ?? null, payload: evt.payload ?? {},
-      ...(ocurridoEn ? { ocurridoEn } : {}),
+    // 0323: ledger, orden, vínculo de booking y cambio de embudo viven en UNA
+    // transacción PostgreSQL. Un error/rollback nunca queda sellado como 200 y
+    // un duplicado concurrente espera a saber si el dueño hizo COMMIT.
+    const { data, error } = await supabaseAdmin().rpc('aplicar_evento_calcom_tx', {
+      p_clave: clave,
+      p_tipo: tipo,
+      p_externo: externo,
+      p_prospecto: prospecto?.id ?? null,
+      p_payload: evt.payload ?? {},
+      p_creado_en: ocurridoEn,
+      p_externo_anterior: bookingAnterior(evt),
     });
-    if (resultado === 'repetido') return NextResponse.json({ ok: true, repetido: true });
-    if (prospecto && estado) {
-      try {
-        const secuencia = ocurridoEn
-          ? await leerSecuenciaCalcom(prospecto.id, clave)
-          : { vigente: true, anterior: null };
-        await aplicarEstadoCalcom(prospecto, estado, externo, clave, ocurridoEn, secuencia);
-      } catch (error) {
-        // AUDITORÍA 24, BE-17: si algo falla después de sellar el evento, se
-        // suelta la reclamación para que el reintento pueda volver a aplicarlo.
-        await soltarReclamacion(clave, tipo, externo);
-        throw error;
-      }
+    if (error) throw new Error(`calcom tx: ${error.message}`);
+    const fila = (Array.isArray(data) ? data[0] : data) as ResultadoRpc | null;
+    if (!fila?.resultado) throw new Error('calcom tx: respuesta vacía');
+    if (fila.resultado === 'repetido') {
+      return NextResponse.json({ ok: true, repetido: true, resultado: fila.resultado });
     }
-    return NextResponse.json({ ok: true, prospectoId: prospecto?.id ?? null });
+    return NextResponse.json({
+      ok: true,
+      resultado: fila.resultado,
+      prospectoId: prospecto?.id ?? null,
+    });
   } catch (error) {
     logger.error('calcom.webhook.fallo', { tipo, externo, err: String(error) });
     return new NextResponse('Error al aplicar evento', { status: 500 });
@@ -131,120 +123,8 @@ export async function POST(req: Request) {
 
 async function encontrarProspecto(email: string | null): Promise<ProspectoActual | null> {
   if (!email) return null;
-  const { data, error } = await supabaseAdmin().from('prospecto').select('id, estado')
+  const { data, error } = await supabaseAdmin().from('prospecto').select('id')
     .eq('correo', email.toLowerCase()).is('duplicado_de', null).order('updated_at', { ascending: false }).limit(1).maybeSingle();
   if (error) throw new Error(`prospecto lookup: ${error.message}`);
   return data as ProspectoActual | null;
-}
-
-function compararEventos(a: EventoOrdenable, b: EventoOrdenable): number {
-  const porInstante = Date.parse(b.ocurrido_en) - Date.parse(a.ocurrido_en);
-  if (porInstante !== 0) return porInstante;
-  const porPrecedencia = (PRECEDENCIA_EVENTO[b.tipo] ?? -1) - (PRECEDENCIA_EVENTO[a.tipo] ?? -1);
-  if (porPrecedencia !== 0) return porPrecedencia;
-  return b.clave_idempotencia.localeCompare(a.clave_idempotencia);
-}
-
-/** El ledger decide el orden por `createdAt` firmado, no por orden de llegada.
- * En empate exacto gana la consecuencia más conservadora (cancel/no-show).
- * Leer después del INSERT hace que dos entregas concurrentes se vean entre
- * sí; el UPDATE optimista de abajo resuelve la carrera restante. */
-async function leerSecuenciaCalcom(
-  prospectoId: string,
-  claveActual: string,
-): Promise<{ vigente: boolean; anterior: EventoOrdenable | null }> {
-  const { data, error } = await supabaseAdmin().from('comercial_evento')
-    .select('clave_idempotencia, tipo, externo_id, ocurrido_en')
-    .eq('fuente', 'calcom')
-    .eq('prospecto_id', prospectoId)
-    .in('tipo', Object.keys(ESTADO_POR_EVENTO))
-    .order('ocurrido_en', { ascending: false })
-    .limit(50);
-  if (error) throw new Error(`calcom secuencia: ${error.message}`);
-  const eventos = ((data ?? []) as EventoOrdenable[])
-    .filter((e) => Number.isFinite(Date.parse(e.ocurrido_en)))
-    .sort(compararEventos);
-  return {
-    vigente: eventos[0]?.clave_idempotencia === claveActual,
-    anterior: eventos.find((e) => e.clave_idempotencia !== claveActual) ?? null,
-  };
-}
-
-function debeAplicarEstado(
-  actualCrudo: string,
-  destino: EstadoProspecto,
-  externo: string,
-  tieneInstanteFirmado: boolean,
-  secuencia: { vigente: boolean; anterior: EventoOrdenable | null },
-): boolean {
-  const actual = normalizarEstadoProspecto(actualCrudo);
-  if (actual === null || actual === destino || ESTADOS_NEGOCIO_PROTEGIDOS.has(actual)) return false;
-  if (tieneInstanteFirmado && !secuencia.vigente) return false;
-
-  // Un CREATED/RESCHEDULED sin orden firmado nunca reabre un desenlace de
-  // agenda. Con orden firmado solo lo hace si pertenece a OTRA reserva más
-  // nueva; un evento tardío de la misma reserva queda absorbido por el ledger.
-  if ((destino === 'appointment' || destino === 'rescheduled')
-      && (actual === 'rescheduled' || ESTADOS_AGENDA_TERMINALES.has(actual))) {
-    return tieneInstanteFirmado
-      && secuencia.vigente
-      && secuencia.anterior?.externo_id !== externo;
-  }
-  return true;
-}
-
-async function leerProspecto(id: string): Promise<ProspectoActual | null> {
-  const { data, error } = await supabaseAdmin().from('prospecto')
-    .select('id, estado').eq('id', id).is('duplicado_de', null).maybeSingle();
-  if (error) throw new Error(`prospecto relectura: ${error.message}`);
-  return data as ProspectoActual | null;
-}
-
-/** Aplica con compare-and-swap por estado. Si otra entrega gana la carrera,
- * relee una vez y vuelve a decidir sobre el estado vigente; nunca pisa un
- * avance comercial que apareció entre lectura y escritura. */
-async function aplicarEstadoCalcom(
-  inicial: ProspectoActual,
-  destino: EstadoProspecto,
-  externo: string,
-  clave: string,
-  ocurridoEn: string | null,
-  secuenciaInicial: { vigente: boolean; anterior: EventoOrdenable | null },
-): Promise<void> {
-  let prospecto: ProspectoActual | null = inicial;
-  let secuencia = secuenciaInicial;
-  for (let intento = 0; intento < 2 && prospecto; intento += 1) {
-    if (!debeAplicarEstado(prospecto.estado, destino, externo, ocurridoEn !== null, secuencia)) return;
-    const cambios = {
-      estado: destino,
-      cerrado_en: null,
-      updated_at: new Date().toISOString(),
-    };
-    const { data, error } = await supabaseAdmin().from('prospecto').update(cambios)
-      .eq('id', prospecto.id).eq('estado', prospecto.estado).select('id');
-    if (error) throw new Error(`prospecto: ${error.message}`);
-    if (Array.isArray(data) && data.length > 0) return;
-    prospecto = await leerProspecto(prospecto.id);
-    // La carrera pudo ser precisamente otra entrega de Cal.com. Volver a
-    // decidir con la foto vieja repetiría el overwrite que el CAS evitó.
-    if (prospecto && ocurridoEn) secuencia = await leerSecuenciaCalcom(prospecto.id, clave);
-  }
-}
-
-/**
- * Borra el renglón del libro que acabamos de escribir (AUDITORÍA 24, BE-17).
- *
- * Se llama SOLO cuando la escritura del libro fue nuestra (`'nuevo'`) y lo que
- * venía después falló: sin esto, la clave escrita convierte el reintento de
- * Cal.com en un `repetido` que contesta 200 sin haber aplicado nada.
- *
- * Si el borrado también falla no hay nada más que hacer desde aquí —el 500
- * sale igual—, pero se nombra: es la única señal de que ese evento se quedó
- * sellado sin aplicar y hay que correr `reconciliarReservasCalcom`.
- */
-async function soltarReclamacion(clave: string, tipo: string, externo: string): Promise<void> {
-  const { error } = await supabaseAdmin().from('comercial_evento').delete().eq('clave_idempotencia', clave);
-  if (error) {
-    logger.error('calcom.webhook.reclamacion_atorada', { tipo, externo, clave, err: error.message });
-  }
 }

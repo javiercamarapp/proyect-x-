@@ -20,6 +20,7 @@ import { generateStructured } from '@/lib/llm/openrouter';
 import { createLlmBudget } from '@/lib/llm/budget';
 import { giroDe, NOMBRE_GIRO } from '@/lib/admin/prospectos-mapa';
 import { pieAvisoProspectos } from '@/lib/likida/privacidad';
+import { normalizarEstadoProspecto } from '@/lib/likida/vendedores';
 // La PUERTA ÚNICA de datos de persona hacia el modelo (auditoría 19, legal
 // C2 / C.18): vive en lib/likida/prospectos para que TODO camino que arme un
 // prompt con datos de un prospecto pase por la misma puerta — este y el
@@ -89,6 +90,16 @@ export async function POST(req: Request) {
     : lectura;
   const { data: p, error: errLeer } = await lecturaViva.single();
   if (errLeer || !p) return NextResponse.json({ error: 'Ese prospecto no existe.' }, { status: 404 });
+
+  // Ganado/perdido es un desenlace, no otra oportunidad de gastar modelo.
+  // Los aliases históricos reciben el mismo trato que los estados canónicos.
+  const estado = normalizarEstadoProspecto(p.estado);
+  if (estado === 'won' || estado === 'lost') {
+    return NextResponse.json({
+      error: 'Ese prospecto ya está cerrado; no se genera otro primer toque.',
+      codigo: 'prospecto_terminal',
+    }, { status: 409 });
+  }
 
   const giro = giroDe(p.empresa, p.vacante, p.notas);
   // AUDITORÍA 18 (C2): a OpenRouter sale la EMPRESA, no la PERSONA. El nombre

@@ -18,6 +18,13 @@ export const COLOR_EMBUDO: Record<string, { color: string; nombre: string }> = {
   lost: { color: '#64748b', nombre: 'Perdido' },
 };
 
+/** Incluye aliases históricos para que la UI no ofrezca redacción en filas
+ * previas a la migración del embudo. */
+export function esProspectoTerminal(estado: string): boolean {
+  return estado === 'won' || estado === 'cerrado'
+    || estado === 'lost' || estado === 'perdido';
+}
+
 export type Giro =
   | 'transportista' | 'embotelladora' | 'abarrotes_mayoreo'
   | 'flota_propia' | 'logistica' | 'otro';
