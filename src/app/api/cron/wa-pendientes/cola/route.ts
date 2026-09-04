@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { Receiver } from '@upstash/qstash';
 import { logger } from '@/lib/logger';
 import { leerInterruptor } from '@/lib/likida/interruptores';
-import { drenarBandeja } from '../drenado';
+import { drenarBandeja, MAX_VUELTAS_QSTASH } from '../drenado';
 
 export const runtime = 'nodejs';
 // Su propio presupuesto, como el callback de facturar: la vuelta encolada no
@@ -13,10 +13,9 @@ export const maxDuration = 120;
 // EL CALLBACK DE QSTASH DEL DRENADO (ESC-1).
 //
 // El cron corre cada minuto y drena 40 mensajes; si el lote sale LLENO hay más
-// esperando, y encola aquí la vuelta siguiente en vez de dejarla para dentro
-// de un minuto. Cada vuelta puede encolar la siguiente hasta el techo de
-// `MAX_VUELTAS_QSTASH`, así que un pico de 800 mensajes se drena en el mismo
-// minuto en el que entró.
+// esperando, y encola aquí la vuelta siguiente en vez de dejarla para el cron
+// siguiente. Cada vuelta puede encolar una sucesora hasta el techo de
+// `MAX_VUELTAS_QSTASH`; no promete tiempo de pared porque OCR domina la latencia.
 //
 // PÚBLICO por diseño pero protegido por la FIRMA de QStash, igual que
 // `facturar/cola`: sin verificarla, cualquiera podría disparar el drenado —que
@@ -44,9 +43,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No se pudo verificar la firma' }, { status: 401 });
   }
 
-  let vuelta = 0;
+  let vuelta: number;
+  let cadenaId: string;
   try {
-    vuelta = Number((JSON.parse(raw) as { vuelta?: number }).vuelta ?? 0);
+    const body = JSON.parse(raw) as { vuelta?: unknown; cadenaId?: unknown };
+    vuelta = Number(body.vuelta);
+    if (!Number.isInteger(vuelta) || vuelta < 1 || vuelta > MAX_VUELTAS_QSTASH) {
+      return NextResponse.json({ error: `vuelta debe ser un entero entre 1 y ${MAX_VUELTAS_QSTASH}` }, { status: 400 });
+    }
+    if (typeof body.cadenaId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.cadenaId)) {
+      return NextResponse.json({ error: 'cadenaId inválido' }, { status: 400 });
+    }
+    cadenaId = body.cadenaId;
   } catch {
     return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
   }
@@ -68,7 +77,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ corrio: false, saltado: 'interruptor global' });
   }
 
-  const r = await drenarBandeja(inicioInvocacion, req, vuelta);
+  const r = await drenarBandeja(inicioInvocacion, req, vuelta, cadenaId);
   if (r.error !== undefined) {
     return NextResponse.json({ error: r.error, vuelta }, { status: 500 });
   }
@@ -78,6 +87,9 @@ export async function POST(req: NextRequest) {
     procesados: r.procesados,
     fallidos: r.fallidos,
     pospuestos: r.pospuestos,
+    reclamados: r.reclamados,
+    backlogDespues: r.backlogDespues,
+    continuacion: r.continuacion,
     ...(r.encolado ? { encolado: r.encolado } : {}),
   }, { status: r.fallidos > 0 ? 500 : 200 });
 }

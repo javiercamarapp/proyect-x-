@@ -1,17 +1,8 @@
 import { NextResponse } from 'next/server';
-import { Client as QstashClient } from '@upstash/qstash';
-import { processInbound, type ResultadoInbound } from '@/lib/likida/processor';
 import { leerInterruptor } from '@/lib/likida/interruptores';
-import {
-  pendientesPorDrenar, reclamarPendiente, marcarPendienteProcesado,
-  anotarFalloPendiente, devolverIntentoPendiente, cartasMuertas,
-} from '@/lib/likida/wa_pendientes';
-import { conPool } from '@/lib/likida/lotes';
 import { urgentesVencidas } from '@/lib/likida/agentes/cola';
 import { logger } from '@/lib/logger';
-import { LOTE, ANCHO_POOL, MAX_VUELTAS_QSTASH, drenarBandeja, type ResultadoDrenado } from './drenado';
-import { appUrl } from '@/lib/env';
-import { codigoDeError } from '@/lib/observability/sentry';
+import { drenarBandeja } from './drenado';
 import { alertarOperador } from '@/lib/observability/alerta';
 import { puertaCron, registrarLatido } from '@/lib/admin/salud';
 
@@ -107,8 +98,10 @@ export async function GET(req: Request) {
     procesados: r.procesados,
     fallidos: r.fallidos,
     pospuestos: r.pospuestos,
+    reclamados: r.reclamados,
+    backlogDespues: r.backlogDespues,
+    continuacion: r.continuacion,
     cartasMuertas: r.cartasMuertas,
     ...(r.encolado ? { encolado: r.encolado } : {}),
   }, { status: r.fallidos > 0 ? 500 : 200 });
 }
-
