@@ -70,6 +70,8 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => VIAJE),
   getOperador: vi.fn(async () => OPERADOR),
   saveLiquidacion,
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
 vi.mock('@/lib/supabase/admin', () => ({
@@ -155,8 +157,11 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
   it('en `liquidacion.pdf_path` se guarda el ejemplar del CONTRALOR, que es el registro', async () => {
     await cerrar();
     // El 4º argumento es el conteo de comprobantes que la 0158 compara dentro
-    // del candado del viaje (DAT-02): el papel y la base cuentan lo mismo.
-    expect(saveLiquidacion).toHaveBeenCalledWith('t1', LIQ, 't1/v1.pdf', LIQ.gastos.length);
+    // del candado del viaje (DAT-02); el 5º sella los insumos bajo el candado.
+    expect(saveLiquidacion).toHaveBeenCalledWith(
+      't1', LIQ, 't1/v1.pdf', LIQ.gastos.length,
+      { version: 1, hash: 'a'.repeat(64) },
+    );
   });
 
   it('el resultado declara que el PDF del operador se generó (de eso depende el envío)', async () => {

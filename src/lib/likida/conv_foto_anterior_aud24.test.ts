@@ -68,9 +68,11 @@ describe('fotoAnteriorSinProcesar', () => {
     expect(variantes).toContain('5219993700779');
   });
 
-  it('no cuenta los eventos ya agotados (intentos = 5): esos no los va a procesar nadie', async () => {
+  it('una foto agotada sigue siendo evidencia pendiente: no se filtra por intentos', async () => {
+    respuesta = { data: [{ id: 'foto-dead-intentos-5' }], error: null };
+    expect(await fotoAnteriorSinProcesar('5219993700779', MS)).toBe(true);
     await fotoAnteriorSinProcesar('5219993700779', MS);
-    expect(llamadas.filter((l) => l.metodo === 'lt').map((l) => l.args)).toContainEqual(['intentos', 5]);
+    expect(llamadas.filter((l) => l.metodo === 'lt').map((l) => l.args)).not.toContainEqual(['intentos', 5]);
   });
 
   it('sin hora de Meta NO se pregunta: no se adivina, y no se toca la base', async () => {
@@ -79,9 +81,9 @@ describe('fotoAnteriorSinProcesar', () => {
     expect(from).not.toHaveBeenCalled();
   });
 
-  it('FAIL-OPEN: una lectura caída no aplaza el cierre de todos los choferes', async () => {
+  it('FAIL-CLOSED: una lectura caída devuelve indeterminado, no "no hay foto"', async () => {
     respuesta = { data: null, error: { message: 'tope de consulta' } };
-    expect(await fotoAnteriorSinProcesar('5219993700779', MS)).toBe(false);
+    expect(await fotoAnteriorSinProcesar('5219993700779', MS)).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith('inbox.foto_anterior_ilegible', expect.anything());
   });
 });

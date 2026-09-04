@@ -106,6 +106,8 @@ vi.mock('@/lib/likida/repo', () => ({
   getOperador: vi.fn(async () => OPERADOR),
   getGastos: vi.fn(async () => GASTOS),
   saveLiquidacion: (...a: unknown[]) => saveLiquidacion(...(a as [])),
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: (e: unknown) => ['CU003', 'CU006'].includes(String((e as { code?: string } | null)?.code ?? '')),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
   // FASE 3: perfil vacío = sin declarar; desde_db.ts lo envuelve en catch.
   getPerfilCrudo: vi.fn(async () => ({})),
@@ -345,6 +347,7 @@ describe('la cadena entera: "listo" → tools → PDF → WhatsApp (solo el I/O 
       // El conteo de comprobantes que la 0158 compara dentro del candado del
       // viaje (DAT-02): el papel archivado y la base cuentan lo mismo.
       expect.any(Number),
+      { version: 1, hash: 'a'.repeat(64) },
     );
   });
 });

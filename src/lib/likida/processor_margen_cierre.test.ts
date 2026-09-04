@@ -172,13 +172,16 @@ describe('C2 — el reloj se vuelve a mirar DESPUÉS del agente', () => {
     expect(documentos()).toHaveLength(1);
   });
 
-  it('el aviso de barrera vencida también se omite, con log, cuando no hay margen', async () => {
+  it('la barrera vencida aplaza durablemente: no agente, cierre ni aviso', async () => {
     esperarIntake.mockResolvedValue(false);
     agenteQueTarda(12_000);
-    await processInbound(listo);
+    const resultado = await processInbound(listo);
     const avisos = textos().filter((t) => /Ojo: cuadré con los/i.test(t));
+    expect(resultado).toBe('sin_tiempo');
+    expect(runAgent).not.toHaveBeenCalled();
     expect(avisos).toHaveLength(0);
-    expect(logger.warn).toHaveBeenCalledWith('cierre.aviso_barrera_omitido_sin_margen', expect.objectContaining({ viaje: 'v1' }));
+    expect(documentos()).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledWith('intake.barrera_timeout', expect.objectContaining({ viaje: 'v1', cierreSolicitado: true }));
   });
 
   it('control: con margen de sobra, el jefe recibe su aviso y no hay sin_margen', async () => {
@@ -188,10 +191,12 @@ describe('C2 — el reloj se vuelve a mirar DESPUÉS del agente', () => {
     expect(logger.error).not.toHaveBeenCalledWith('cierre.sin_margen', expect.anything());
   });
 
-  it('control: la barrera vencida CON margen sigue avisando al chofer', async () => {
+  it('control: aun con margen, una barrera vencida nunca se convierte en permiso de cierre', async () => {
     esperarIntake.mockResolvedValue(false);
     runAgent.mockResolvedValue(cierre());
-    await processInbound(listo);
-    expect(textos().filter((t) => /Ojo: cuadré con los/i.test(t))).toHaveLength(1);
+    expect(await processInbound(listo)).toBe('sin_tiempo');
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(textos()).toHaveLength(0);
+    expect(documentos()).toHaveLength(0);
   });
 });

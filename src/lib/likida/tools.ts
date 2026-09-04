@@ -6,14 +6,16 @@
 // LLM ve los gastos ya extraídos como contexto y decide cuándo cuadrar/cerrar.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { randomUUID } from 'crypto';
 import { idLiquidacionDeViaje } from '@/lib/likida/liquidacion/id';
 import { registerTool, type ToolContext } from '@/lib/llm/tool-executor';
 import { cuadrarDesdeDB } from './cuadre/desde_db';
 import { copiasDeComprobante } from './cuadre/engine';
 import { estaApagado } from './interruptores';
 import { registrarCorrida } from './agentes/corridas';
-import { getViaje, getOperador, saveLiquidacion, conteoDeGastosCambio } from './repo';
+import {
+  getViaje, getOperador, saveLiquidacion, leerSnapshotInsumosCierre,
+  insumosDeCierreCambiaron,
+} from './repo';
 import { getConfig } from './config';
 import { generarLiquidacionPDF } from './liquidacion/pdf';
 import { getDatosFiscales } from '@/lib/saas/fiscal';
@@ -322,6 +324,10 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     // fotografiar UNA vez. Lo que se devuelve —y lo que la guardia del
     // processor narra por WhatsApp— tiene que ser la fotografía que de verdad
     // se archivó, nunca la primera.
+    // El sello se toma ANTES de leer/calcultar. La RPC no confía en él: lo
+    // recalcula bajo lock; su función es demostrar que todo lo que el motor y
+    // los PDF leyeron sigue siendo exactamente lo que se va a persistir.
+    let snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
     const [primerCuadre, viaje, operador] = await Promise.all([
       computeCuadre(ctx.tenantId, ctx.viajeId!),
       getViaje(ctx.viajeId!, ctx.tenantId),
@@ -428,16 +434,17 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     // distinto cada vez, y el último no sería más verdadero que el primero.
     let liquidacionId: string;
     try {
-      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length);
+      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length, snapshot);
     } catch (e) {
-      if (!conteoDeGastosCambio(e)) throw e;
-      logger.warn('cierre.gasto_en_la_ventana', {
+      if (!insumosDeCierreCambiaron(e)) throw e;
+      logger.warn('cierre.insumo_en_la_ventana', {
         tenantId: ctx.tenantId, viajeId: ctx.viajeId, gastosDelPrimerCuadre: liq.gastos.length,
       });
       // Segunda y última fotografía: cuadre nuevo, PDF nuevos, cierre nuevo.
+      snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
       liq = await computeCuadre(ctx.tenantId, ctx.viajeId!);
       await generarPdfs(liq);
-      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length);
+      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length, snapshot);
     }
     // ── LA CORRIDA SE ANOTA (0102 + 0115) ───────────────────────────────────
     // Después de persistir — la liquidación YA está cerrada — y con el

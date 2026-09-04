@@ -42,6 +42,8 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => ({ id: 'v1', folio: 'VJ-1', anticipo: 8000 })),
   getOperador: vi.fn(async () => ({ id: 'o1', nombre: 'Juan', telefono: '5219993700779' })),
   saveLiquidacion,
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
 vi.mock('@/lib/saas/fiscal', () => ({ getDatosFiscales: vi.fn(async () => null) }));
@@ -125,8 +127,12 @@ describe('el kill switch de agente:liquidacion (0110) — antes decorativo, ahor
   it('ENCENDIDO (sin fila, el default del catálogo): el cierre corre completo', async () => {
     const r = await cerrar();
     expect(r.success, r.error).toBe(true);
-    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02).
-    expect(saveLiquidacion).toHaveBeenCalledWith('t1', LIQ, 't1/v1.pdf', LIQ.gastos.length);
+    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02) y el
+    // 5º sella la versión/hash de los insumos económicos y fiscales.
+    expect(saveLiquidacion).toHaveBeenCalledWith(
+      't1', LIQ, 't1/v1.pdf', LIQ.gastos.length,
+      { version: 1, hash: 'a'.repeat(64) },
+    );
   });
 });
 

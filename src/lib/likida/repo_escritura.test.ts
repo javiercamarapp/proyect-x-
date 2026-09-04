@@ -22,7 +22,10 @@ vi.mock('@/lib/supabase/admin', () => ({
 }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
-const { addGasto, saveLiquidacion, conteoDeGastosCambio } = await import('./repo');
+const {
+  addGasto, saveLiquidacion, conteoDeGastosCambio, insumosDeCierreCambiaron,
+  leerSnapshotInsumosCierre,
+} = await import('./repo');
 
 describe('addGasto — el mapeo a columnas', () => {
   beforeEach(() => { insert.mockReset(); insert.mockResolvedValue({ error: null }); from.mockClear(); });
@@ -162,6 +165,15 @@ describe('saveLiquidacion — el cierre', () => {
     expect(rpc.mock.calls[0][1]).toMatchObject({ p_n_gastos: 6 });
   });
 
+  it('manda hash y versión del snapshot económico/fiscal', async () => {
+    const snapshot = { version: 1 as const, hash: 'a'.repeat(64) };
+    await saveLiquidacion('t1', liq, 'tenant-1/v1.pdf', 6, snapshot);
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_insumos_hash: snapshot.hash,
+      p_insumos_hash_version: 1,
+    });
+  });
+
   it('sin conteo, la RPC recibe null explícito: «no compruebes»', async () => {
     await saveLiquidacion('t1', liq);
     expect(rpc.mock.calls[0][1]).toMatchObject({ p_n_gastos: null });
@@ -175,6 +187,26 @@ describe('saveLiquidacion — el cierre', () => {
     const e = await saveLiquidacion('t1', liq, undefined, 1).catch((x) => x);
     expect(conteoDeGastosCambio(e)).toBe(true);
     expect(conteoDeGastosCambio(new Error('cualquier otra cosa'))).toBe(false);
+  });
+
+  it('CU006 snapshot_changed también conserva el código y habilita un solo recálculo', async () => {
+    rpc.mockResolvedValue({ data: null, error: { code: 'CU006', message: 'snapshot_changed' } });
+    const e = await saveLiquidacion('t1', liq, undefined, 1, {
+      version: 1, hash: 'b'.repeat(64),
+    }).catch((x) => x);
+    expect(insumosDeCierreCambiaron(e)).toBe(true);
+    expect(insumosDeCierreCambiaron(new Error('otro'))).toBe(false);
+  });
+
+  it('valida la forma del snapshot antes de confiar en el RPC', async () => {
+    rpc.mockResolvedValueOnce({ data: { version: 1, hash: 'c'.repeat(64) }, error: null });
+    await expect(leerSnapshotInsumosCierre('t1', 'v1')).resolves.toEqual({
+      version: 1, hash: 'c'.repeat(64),
+    });
+    expect(rpc).toHaveBeenCalledWith('cierre_insumos_snapshot', { p_tenant: 't1', p_viaje: 'v1' });
+
+    rpc.mockResolvedValueOnce({ data: { version: 1, hash: 'roto' }, error: null });
+    await expect(leerSnapshotInsumosCierre('t1', 'v1')).rejects.toThrow(/respuesta inválida/);
   });
 
   it('sin PDF, la liga va null explícito y no undefined', async () => {

@@ -514,11 +514,12 @@ export interface Huerfano {
  */
 export async function guardarHuerfano(
   tenantId: string, operadorId: string,
-  h: { gasto: Gasto; motivo: MotivoHuerfano; rutaImagen?: string },
+  h: { gasto: Gasto; motivo: MotivoHuerfano; rutaImagen?: string; viajeId?: string },
 ): Promise<boolean> {
   const { error } = await acotada(supabaseAdmin().from('comprobante_huerfano').insert({
     tenant_id: tenantId, operador_id: operadorId,
     gasto: h.gasto, motivo: h.motivo, ruta_imagen: h.rutaImagen ?? null,
+    ...(h.viajeId ? { viaje_id: h.viajeId } : {}),
   }), 'guardarHuerfano');
   if (violaIndice(error, 'uq_huerfano_img_hash')) {
     logger.info('huerfano.ya_estaba', { tenant: tenantId, operador: operadorId });
@@ -529,10 +530,10 @@ export async function guardarHuerfano(
 }
 
 /**
- * Los que siguen esperando. Devuelve `[]` ante un error de lectura, y eso es
- * deliberado: no poder leer la sala de espera no puede impedirle al operador
- * cerrar el viaje que sí tiene. Se pierde el ofrecimiento, no el comprobante —
- * las filas siguen ahí para el mensaje siguiente.
+ * Los que siguen esperando. El modo normal conserva el comportamiento
+ * best-effort de los ofrecimientos. El cierre usa `fallarCerrado`: no poder
+ * comprobar si hay una foto con OCR roto NO se puede interpretar como una sala
+ * vacía y convertir en liquidación irreversible.
  */
 export async function getHuerfanos(
   tenantId: string, operadorId: string,
@@ -542,6 +543,12 @@ export async function getHuerfanos(
      *  y a partir del 50º el chofer dejaba de ver los que SÍ tienen monto.
      *  Con esto el filtro va en la base, ANTES del `limit`. */
     soloConMonto?: boolean;
+    /** Restringe el incidente al viaje al que pertenecía la foto. */
+    viajeId?: string;
+    /** Solo las imágenes cuyo OCR falló y todavía no fueron resueltas. */
+    soloFalloOcr?: boolean;
+    /** En caminos irreversibles, propaga una lectura fallida en vez de `[]`. */
+    fallarCerrado?: boolean;
   } = {},
 ): Promise<Huerfano[]> {
   let q = supabaseAdmin()
@@ -551,10 +558,16 @@ export async function getHuerfanos(
     .is('resuelto_en', null);
   // `->` (jsonb) y no `->>` (texto): PostgREST compara el número como número.
   if (opciones.soloConMonto) q = q.gt('gasto->monto', 0);
+  if (opciones.viajeId) q = q.eq('viaje_id', opciones.viajeId);
+  if (opciones.soloFalloOcr) q = q.eq('motivo', 'fallo_ocr');
   const { data, error } = await acotada(q
     .order('creado_en', { ascending: true })
     .limit(50), 'getHuerfanos');
-  if (error || !data) return [];
+  if (error) {
+    if (opciones.fallarCerrado) throw new Error(`getHuerfanos: ${error.message}`);
+    return [];
+  }
+  if (!data) return [];
   return data.map((r) => ({
     id: r.id as string,
     gasto: r.gasto as Gasto,
@@ -1015,10 +1028,44 @@ export async function getGastos(viajeId: string, tenantId: string): Promise<Gast
  * emitir esa liquidación, y quien la llamó tiene que volver a fotografiar.
  */
 export const CIERRE_CONTEO_CAMBIO = 'CU003';
+/** La cantidad sigue igual, pero cambió algún insumo económico/fiscal. */
+export const CIERRE_SNAPSHOT_CAMBIO = 'CU006';
+
+export interface SnapshotInsumosCierre {
+  version: 1;
+  hash: string;
+}
 
 /** ¿El cierre rebotó porque entró un gasto entre el cuadre y el guardado? */
 export function conteoDeGastosCambio(e: unknown): boolean {
   return !!e && typeof e === 'object' && (e as { code?: string }).code === CIERRE_CONTEO_CAMBIO;
+}
+
+/** ¿Hay que volver a calcular porque la fotografía económica cambió? */
+export function insumosDeCierreCambiaron(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const code = (e as { code?: string }).code;
+  return code === CIERRE_CONTEO_CAMBIO || code === CIERRE_SNAPSHOT_CAMBIO;
+}
+
+/**
+ * Sello emitido por Postgres ANTES del cálculo. No es una autorización: la RPC
+ * de guardado recalcula el hash bajo sus locks y solo entonces lo compara.
+ */
+export async function leerSnapshotInsumosCierre(
+  tenantId: string,
+  viajeId: string,
+): Promise<SnapshotInsumosCierre> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('cierre_insumos_snapshot', {
+    p_tenant: tenantId,
+    p_viaje: viajeId,
+  }), 'leerSnapshotInsumosCierre');
+  if (error) throw new Error(`leerSnapshotInsumosCierre: ${error.message}`);
+  const snapshot = data as Partial<SnapshotInsumosCierre> | null;
+  if (snapshot?.version !== 1 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
+    throw new Error('leerSnapshotInsumosCierre: respuesta inválida de cierre_insumos_snapshot');
+  }
+  return { version: 1, hash: snapshot.hash };
 }
 
 /**
@@ -1070,6 +1117,8 @@ export async function saveLiquidacion(
    * lo que necesitan los llamadores que no fotografiaron gastos.
    */
   nGastos?: number,
+  /** Sello v1 que la RPC vuelve a calcular bajo lock. Opcional por compatibilidad. */
+  snapshot?: SnapshotInsumosCierre,
 ): Promise<string> {
   const admin = supabaseAdmin();
   // CR-1 / AUDIT_V3 money-path CRÍTICO: cierre ATÓMICO e idempotente. Antes eran
@@ -1092,6 +1141,8 @@ export async function saveLiquidacion(
     p_peaje: liq.peajeAcreditable,
     p_pdf_url: pdfUrl ?? null,
     p_n_gastos: nGastos ?? null,
+    p_insumos_hash: snapshot?.hash ?? null,
+    p_insumos_hash_version: snapshot?.version ?? null,
   }), 'saveLiquidacion');
   if (error) {
     // SE PRESERVA `code`, como en `addGasto` y `updateGastoCfdiXml`: sin él,

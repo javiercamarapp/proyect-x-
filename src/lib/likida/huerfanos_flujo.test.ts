@@ -233,8 +233,42 @@ describe('cuando por fin hay viaje, se pregunta antes de adjuntar', () => {
     getGastos.mockResolvedValue([]);
     guardarHuerfano.mockResolvedValue(true);
     addGasto.mockResolvedValue(undefined);
+    resolverHuerfanos.mockResolvedValue(true);
     subirComprobante.mockResolvedValue('ruta');
     runAgent.mockResolvedValue({ finalText: 'ok', toolCalls: [], model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+  });
+
+  it('un fallo OCR con viaje queda ligado al viaje y conserva el hash de la foto', async () => {
+    getHuerfanos.mockResolvedValue([]);
+    extraerComprobante.mockResolvedValue({
+      legible: false, motivo: 'fallo_tecnico',
+      gasto: { concepto: 'otro', monto: 0, ocrConfianza: 0 },
+      costo: { modelo: 'm', tokensIn: 1, tokensOut: 1, costoUsd: 0 },
+    });
+
+    await processInbound(foto);
+
+    expect(guardarHuerfano).toHaveBeenCalledWith('t1', 'o1', expect.objectContaining({
+      motivo: 'fallo_ocr', viajeId: 'v1',
+      gasto: expect.objectContaining({ imgHash: 'HASH' }),
+    }));
+  });
+
+  it('al reintentar y guardar la misma foto, resuelve durablemente su incidente OCR', async () => {
+    getHuerfanos.mockImplementation(async (_t, _o, opciones) =>
+      opciones?.soloFalloOcr
+        ? [{ id: 'ocr-1', gasto: { id: 'x', concepto: 'otro', monto: 0, imgHash: 'HASH' }, motivo: 'fallo_ocr' }]
+        : []);
+    extraerComprobante.mockResolvedValue({
+      legible: true,
+      gasto: { id: 'nuevo', concepto: 'diesel', monto: 1000, fecha: '2026-09-03', ocrConfianza: 0.95 },
+      costo: { modelo: 'm', tokensIn: 1, tokensOut: 1, costoUsd: 0 },
+    });
+
+    await processInbound(foto);
+
+    expect(addGasto).toHaveBeenCalled();
+    expect(resolverHuerfanos).toHaveBeenCalledWith('t1', ['ocr-1'], 'adjuntado', 'v1');
   });
 
   it('ofrece con la lista y la ruta, y NO adjunta nada todavía', async () => {
