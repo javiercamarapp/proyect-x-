@@ -485,24 +485,31 @@ export async function POST(req: NextRequest) {
   // líneas cierran el circuito: se sabe qué mensaje concreto no llegó y por qué.
   const estados = extractStatuses(payload);
   let fallosEstado = 0;
-  for (const e of estados) {
-    if (['delivered', 'read', 'failed'].includes(e.status)) {
-      try {
-        const resultado = await supabaseAdmin().rpc('registrar_estado_wa_meta', {
-          p_wamid: e.id, p_estado: e.status,
-          // T2 pertenece al evento de Meta, no al instante en que Vercel
-          // alcanzó a procesar este webhook (que puede venir reintentado).
-          p_ahora: instanteEstadoMeta(e.timestamp),
-          p_error: e.status === 'failed'
-            ? `${esReintentableMeta(e.errors?.[0]?.code) ? 'retryable:' : 'terminal:'}${e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? 'Meta failed'}`
-            : null,
-        });
-        if (resultado.error || resultado.data !== true) fallosEstado++;
-      } catch (err) {
-        fallosEstado++;
-        logger.error('wa.estado.persistencia_fallo', { id: e.id, estado: e.status, err: err instanceof Error ? err.message : String(err) });
-      }
+  const estadosPersistibles = estados.filter((e) => ['delivered', 'read', 'failed'].includes(e.status));
+  if (estadosPersistibles.length > 0) {
+    const lote = estadosPersistibles.map((e) => ({
+      wamid: e.id,
+      estado: e.status,
+      // T2 pertenece al evento de Meta, no al instante en que Vercel
+      // alcanzó a procesar este webhook (que puede venir reintentado).
+      ahora: instanteEstadoMeta(e.timestamp),
+      error: e.status === 'failed'
+        ? `${esReintentableMeta(e.errors?.[0]?.code) ? 'retryable:' : 'terminal:'}${e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? 'Meta failed'}`
+        : null,
+    }));
+    const esperados = new Set(lote.map((e) => e.wamid.trim())).size;
+    try {
+      const resultado = await supabaseAdmin().rpc('registrar_estados_wa_meta_lote', { p_estados: lote });
+      if (resultado.error || resultado.data !== esperados) fallosEstado++;
+    } catch (err) {
+      fallosEstado++;
+      logger.error('wa.estado.persistencia_fallo', {
+        estados: estadosPersistibles.length,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
+  }
+  for (const e of estados) {
     if (e.status === 'failed') {
       logger.error('wa.no_entregado', {
         id: e.id, para: e.recipient_id,

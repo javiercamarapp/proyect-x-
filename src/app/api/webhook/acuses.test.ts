@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // línea.
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-const rpc = vi.fn(async () => ({ data: true, error: null }));
+const rpc = vi.fn(async () => ({ data: 1, error: null }));
 vi.mock('@/lib/logger', () => ({ logger }));
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock('@/lib/likida/processor', () => ({ processInbound: vi.fn() }));
@@ -45,7 +45,15 @@ const conStatus = (status: string, extra: Record<string, unknown> = {}) => ({
   } }] }],
 });
 
-beforeEach(() => { logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset(); rpc.mockReset(); rpc.mockResolvedValue({ data: true, error: null }); });
+const conStatuses = (statuses: Array<Record<string, unknown>>) => ({
+  object: 'whatsapp_business_account',
+  entry: [{ id: '1395114249160000', changes: [{ field: 'messages', value: {
+    messaging_product: 'whatsapp',
+    statuses,
+  } }] }],
+});
+
+beforeEach(() => { logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset(); rpc.mockReset(); rpc.mockResolvedValue({ data: 1, error: null }); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('acuses de entrega de WhatsApp', () => {
@@ -72,7 +80,9 @@ describe('acuses de entrega de WhatsApp', () => {
 
   it('los acuses normales se registran sin gritar', async () => {
     await pedir(conStatus('delivered'));
-    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({ p_wamid: 'wamid.PDF123', p_estado: 'delivered' }));
+    expect(rpc).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({ wamid: 'wamid.PDF123', estado: 'delivered' })],
+    });
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith('wa.estado', { id: 'wamid.PDF123', estado: 'delivered' });
   });
@@ -80,10 +90,30 @@ describe('acuses de entrega de WhatsApp', () => {
   it('GPS R4: usa statuses[].timestamp Unix como T2 del receipt', async () => {
     await pedir(conStatus('delivered', { timestamp: '1700000000' }));
 
-    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({
-      p_wamid: 'wamid.PDF123',
-      p_ahora: '2023-11-14T22:13:20.000Z',
+    expect(rpc).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({
+        wamid: 'wamid.PDF123',
+        ahora: '2023-11-14T22:13:20.000Z',
+      })],
+    });
+  });
+
+  it('GPS R5: persiste 2,000 acuses en una sola RPC atomica', async () => {
+    rpc.mockResolvedValueOnce({ data: 2_000, error: null });
+    const statuses = Array.from({ length: 2_000 }, (_, i) => ({
+      id: `wamid.LOTE.${String(i).padStart(4, '0')}`,
+      status: i % 2 === 0 ? 'delivered' : 'read',
+      timestamp: '1788534000',
+      recipient_id: '5219993700779',
     }));
+
+    const res = await pedir(conStatuses(statuses));
+
+    expect(res.status).toBe(200);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    const [nombre, args] = rpc.mock.calls[0] as unknown as [string, { p_estados: unknown[] }];
+    expect(nombre).toBe('registrar_estados_wa_meta_lote');
+    expect(args.p_estados).toHaveLength(2_000);
   });
 
   it.each(['-1', '1700000000.5', 'no-es-unix', '999999999999'])('GPS R4: timestamp Meta inválido %s usa un fallback local explícito', async (timestamp) => {
@@ -92,10 +122,12 @@ describe('acuses de entrega de WhatsApp', () => {
 
     await pedir(conStatus('read', { timestamp }));
 
-    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({
-      p_wamid: 'wamid.PDF123',
-      p_ahora: '2026-09-04T15:16:17.000Z',
-    }));
+    expect(rpc).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({
+        wamid: 'wamid.PDF123',
+        ahora: '2026-09-04T15:16:17.000Z',
+      })],
+    });
   });
 
   it('la respuesta distingue mensajes de acuses', async () => {

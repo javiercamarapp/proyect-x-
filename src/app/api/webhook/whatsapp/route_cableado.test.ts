@@ -29,7 +29,7 @@ const SECRETO = 'app-secret-de-prueba';
 process.env.WHATSAPP_APP_SECRET = SECRETO;
 
 const processInbound = vi.fn(async () => {});
-const rpcEstado = vi.fn(async () => ({ data: true, error: null }));
+const rpcEstado = vi.fn(async () => ({ data: 1, error: null }));
 // Solo el mensaje: el segundo argumento de `processInbound` es el reloj de la
 // invocación (auditoría 18, C4) y lo prueba `route_pospuesto.test.ts`; aquí se
 // afirma QUÉ mensaje llega, no cuándo arrancó la invocación.
@@ -119,7 +119,7 @@ const payload = (from: string, mensaje: Record<string, unknown>) => JSON.stringi
 beforeEach(() => {
   processInbound.mockReset(); processInbound.mockImplementation(async () => {});
   flushObservabilidad.mockReset(); flushObservabilidad.mockImplementation(async () => {});
-  rpcEstado.mockReset(); rpcEstado.mockResolvedValue({ data: true, error: null });
+  rpcEstado.mockReset(); rpcEstado.mockResolvedValue({ data: 1, error: null });
   pendientes.length = 0;
 });
 
@@ -134,7 +134,9 @@ describe('acuses Meta — persistencia durable antes del 200', () => {
     const c = statusPayload('delivered');
     const res = await postear(c, firmar(c));
     expect(res.status).toBe(200);
-    expect(rpcEstado).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({ p_wamid: 'wamid.STATUS', p_estado: 'delivered' }));
+    expect(rpcEstado).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({ wamid: 'wamid.STATUS', estado: 'delivered' })],
+    });
   });
 
   it.each([
@@ -152,7 +154,9 @@ describe('acuses Meta — persistencia durable antes del 200', () => {
     const c = statusPayload('failed', 'wamid.FAILED');
     const res = await postear(c, firmar(c));
     expect(res.status).toBe(200);
-    expect(rpcEstado).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({ p_wamid: 'wamid.FAILED', p_estado: 'failed' }));
+    expect(rpcEstado).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({ wamid: 'wamid.FAILED', estado: 'failed' })],
+    });
   });
 
   it('estado desconocido no llama al RPC', async () => {
