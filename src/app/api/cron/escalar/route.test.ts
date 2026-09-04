@@ -39,6 +39,12 @@ const vigilarReglas = vi.fn(async () => ({ reglas: 0, disparadas: 0, avisos: 0, 
 vi.mock('@/lib/likida/reglas/vigilante', () => ({
   vigilarReglas: (...a: unknown[]) => vigilarReglas(...(a as [])),
 }));
+// 0323: el mismo cron horario hospeda el barrido durable de Cal.com para no
+// sumar otra invocación facturable ni depender de reintentos del proveedor.
+const ejecutarMantenimientoCalcom = vi.fn(async () => ({ configured: true, completa: true, revisadas: 0 }));
+vi.mock('@/lib/admin/calcom', () => ({
+  ejecutarMantenimientoCalcom: (...a: unknown[]) => ejecutarMantenimientoCalcom(...(a as [])),
+}));
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 vi.mock('@/lib/logger', () => ({ logger }));
 
@@ -93,12 +99,22 @@ describe('GET /api/cron/escalar — el cron ya no miente en verde', () => {
     logger.error.mockClear();
     logger.warn.mockClear();
     estaApagado.mockReset().mockResolvedValue(false);
+    ejecutarMantenimientoCalcom.mockClear();
   });
 
   it('con los dos motores sanos responde 200 y no molesta al operador', async () => {
     const res = await GET(peticion('Bearer secreto-de-prueba'));
     expect(res.status).toBe(200);
     expect(alertarOperador).not.toHaveBeenCalled();
+    expect(ejecutarMantenimientoCalcom).toHaveBeenCalledTimes(1);
+    expect(ejecutarMantenimientoCalcom).toHaveBeenCalledWith(expect.objectContaining({
+      callbackUrl: 'https://app.likida.ai/api/webhook/calcom',
+      venceEn: expect.any(Number),
+    }));
+    expect(escalarViajesSinAceptar.mock.invocationCallOrder[0])
+      .toBeLessThan(ejecutarMantenimientoCalcom.mock.invocationCallOrder[0]);
+    expect(ejecutarCobranzaGlobal.mock.invocationCallOrder[0])
+      .toBeLessThan(ejecutarMantenimientoCalcom.mock.invocationCallOrder[0]);
   });
 
   it('si la ESCALACIÓN revienta: 500, el error viaja en el cuerpo, y la cobranza CORRE igual', async () => {

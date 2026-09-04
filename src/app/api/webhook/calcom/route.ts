@@ -29,6 +29,11 @@ type CalcomEvent = {
 };
 
 type ProspectoActual = { id: string };
+type VinculoProspecto = {
+  prospecto: ProspectoActual | null;
+  correo: string | null;
+  error: 'sin_correo' | 'sin_prospecto' | 'correo_ambiguo' | null;
+};
 type ResultadoRpc = { resultado?: string; estado_prospecto?: string | null };
 
 function texto(v: unknown): string | null {
@@ -142,7 +147,7 @@ export async function POST(req: Request) {
   try {
     // Lookup is inside the retryable path too: a transient CRM read failure
     // must be a loud 500, never an unhandled rejection or a false 2xx.
-    const prospecto = await encontrarProspecto(participante.email);
+    const vinculo = await encontrarProspecto(participante.email);
     // 0323: ledger, orden, vínculo de booking y cambio de embudo viven en UNA
     // transacción PostgreSQL. Un error/rollback nunca queda sellado como 200 y
     // un duplicado concurrente espera a saber si el dueño hizo COMMIT.
@@ -150,13 +155,15 @@ export async function POST(req: Request) {
       p_clave: clave,
       p_tipo: tipo,
       p_externo: actual.canonica,
-      p_prospecto: prospecto?.id ?? null,
+      p_prospecto: vinculo.prospecto?.id ?? null,
       p_payload: evt.payload ?? {},
       p_creado_en: ocurridoEn,
       p_externo_anterior: anterior?.canonica ?? null,
       p_externos: actual.aliases,
       p_externos_anteriores: anterior?.aliases ?? [],
       p_no_show: noShow,
+      p_vinculo_correo: vinculo.correo,
+      p_error_vinculo: vinculo.error,
     });
     if (error) throw new Error(`calcom tx: ${error.message}`);
     const fila = (Array.isArray(data) ? data[0] : data) as ResultadoRpc | null;
@@ -165,19 +172,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, repetido: true, resultado: fila.resultado });
     }
     if (fila.resultado === 'sin_prospecto' || fila.resultado === 'cuarentena') {
-      // Estos estados son deliberadamente recuperables, pero no existe un
-      // reconciliador programado que los vuelva a presentar. El 503 obliga a
-      // Cal.com a reentregar; `esperando_vinculo` sí recibe 2xx porque el
-      // CREATED/RESCHEDULED posterior drena el ledger dentro de PostgreSQL.
+      // Ya existe una fila durable con correo/createdAt original y el barrido
+      // propio de 0323 puede reclamarla. Confirmamos recepción con 202: la
+      // recuperación no depende de que Cal.com interprete/reintente un 503.
       return NextResponse.json(
-        { ok: false, recuperable: true, resultado: fila.resultado },
-        { status: 503, headers: { 'Retry-After': '60' } },
+        { ok: true, recuperable: true, resultado: fila.resultado },
+        { status: 202 },
       );
     }
     return NextResponse.json({
       ok: true,
       resultado: fila.resultado,
-      prospectoId: prospecto?.id ?? null,
+      prospectoId: vinculo.prospecto?.id ?? null,
     });
   } catch (error) {
     logger.error('calcom.webhook.fallo', { tipo, externo: actual.canonica, err: String(error) });
@@ -185,10 +191,20 @@ export async function POST(req: Request) {
   }
 }
 
-async function encontrarProspecto(email: string | null): Promise<ProspectoActual | null> {
-  if (!email) return null;
+async function encontrarProspecto(email: string | null): Promise<VinculoProspecto> {
+  const correo = email?.trim().toLowerCase() || null;
+  if (!correo) return { prospecto: null, correo: null, error: 'sin_correo' };
+  // Dos filas bastan para distinguir 0/1/ambiguo. Nunca se decide por
+  // `updated_at`: con correos duplicados eso vinculaba una cita a una empresa
+  // arbitraria y la mutación parecía exitosa.
   const { data, error } = await supabaseAdmin().from('prospecto').select('id')
-    .eq('correo_normalizado', email.trim().toLowerCase()).is('duplicado_de', null).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    .eq('correo_normalizado', correo).is('duplicado_de', null).limit(2);
   if (error) throw new Error(`prospecto lookup: ${error.message}`);
-  return data as ProspectoActual | null;
+  const filas = (data ?? []) as ProspectoActual[];
+  if (filas.length === 1) return { prospecto: filas[0], correo, error: null };
+  if (filas.length > 1) {
+    logger.warn('calcom.webhook.correo_ambiguo', { correo, coincidencias: filas.length });
+    return { prospecto: null, correo, error: 'correo_ambiguo' };
+  }
+  return { prospecto: null, correo, error: 'sin_prospecto' };
 }

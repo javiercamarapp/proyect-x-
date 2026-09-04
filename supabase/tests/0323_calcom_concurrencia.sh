@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Prueba PostgreSQL real de las dos carreras que no puede simular Vitest:
+# Prueba PostgreSQL real de las carreras que no puede simular Vitest:
 # 1) duplicado B espera a A; si A hace ROLLBACK, B se vuelve dueño y aplica;
 # 2) eventos distintos del mismo prospecto se serializan y reevalúan estado.
+# 3) reentrega (evento→prospecto) contra enlazador (prospecto→drenaje) no
+#    forma un deadlock 40P01 y el ledger converge.
 set -euo pipefail
 
 host="${1:?uso: $0 HOST PORT DB}"
@@ -50,5 +52,24 @@ resultado_reagenda=$("${psql_cmd[@]}" -At -c "select resultado || ':' || estado_
 wait "$pid_cancel_b"
 test "$resultado_reagenda" = 'aplicado:cancelled'
 "${psql_cmd[@]}" -c "do \$\$ begin if not exists(select 1 from public.prospecto where id='$prospecto' and estado='cancelled' and calcom_booking_id='uid:B' and calcom_booking_aliases @> array['uid:B','id:201'] and calcom_evento_en='2026-08-21 12:00:00+00') then raise exception 'entrega invertida A/B terminó mal'; end if; if exists(select 1 from public.comercial_evento where prospecto_id='$prospecto' and estado_proceso='pendiente') then raise exception 'quedó pendiente huérfano'; end if; if not exists(select 1 from public.comercial_evento where clave_idempotencia='calcom:CONC:CANCELLED:B' and estado_proceso='aplicado') then raise exception 'CANCELLED(B) no se drenó'; end if; end \$\$;"
+
+# Interleaving que antes producía 40P01:
+#  * la reentrega conserva el lock de CANCELLED(B) y luego pide prospecto;
+#  * A→B conserva prospecto y el drenaje intenta CANCELLED(B).
+# Ninguna sesión puede ser víctima; al terminar, CANCELLED(B) queda aplicado.
+"${psql_cmd[@]}" -c "delete from public.comercial_evento where prospecto_id='$prospecto'; update public.prospecto set estado='contactado',calcom_booking_id=null,calcom_booking_aliases='{}',calcom_evento_en=null,calcom_evento_precedencia=null,calcom_estado_antes_no_show=null where id='$prospecto'; select resultado from public.aplicar_evento_calcom_tx('calcom:CONC:DEADLOCK:CREATED:A','BOOKING_CREATED','uid:A','$prospecto','{}','2026-08-22 10:00:00+00',null,array['uid:A'],'{}',null); select resultado from public.aplicar_evento_calcom_tx('calcom:CONC:DEADLOCK:CANCEL:B','BOOKING_CANCELLED','uid:B','$prospecto','{}','2026-08-22 12:00:00+00',null,array['uid:B'],'{}',null);"
+salida_reentrega=$(mktemp)
+salida_enlace=$(mktemp)
+trap 'limpiar; rm -f "$salida_reentrega" "$salida_enlace"' EXIT
+"${psql_cmd[@]}" -At -c "set lock_timeout='5s'; begin; select id from public.comercial_evento where clave_idempotencia='calcom:CONC:DEADLOCK:CANCEL:B' for update; select pg_sleep(1); select resultado || ':' || estado_prospecto from public.aplicar_evento_calcom_tx('calcom:CONC:DEADLOCK:CANCEL:B','BOOKING_CANCELLED','uid:B','$prospecto','{}','2026-08-22 12:00:00+00',null,array['uid:B'],'{}',null); commit;" >"$salida_reentrega" &
+pid_reentrega=$!
+sleep 0.2
+"${psql_cmd[@]}" -At -c "set lock_timeout='5s'; select resultado || ':' || estado_prospecto from public.aplicar_evento_calcom_tx('calcom:CONC:DEADLOCK:A-B','BOOKING_RESCHEDULED','uid:B','$prospecto','{}','2026-08-22 11:00:00+00','uid:A',array['uid:B'],array['uid:A'],null);" >"$salida_enlace" &
+pid_enlace=$!
+wait "$pid_reentrega"
+wait "$pid_enlace"
+grep -q 'aplicado:cancelled' "$salida_reentrega"
+grep -q 'aplicado:rescheduled' "$salida_enlace"
+"${psql_cmd[@]}" -c "do \$\$ begin if not exists(select 1 from public.prospecto where id='$prospecto' and estado='cancelled' and calcom_booking_id='uid:B' and calcom_evento_en='2026-08-22 12:00:00+00') then raise exception 'carrera reentrega/enlazador no convergió'; end if; if not exists(select 1 from public.comercial_evento where clave_idempotencia='calcom:CONC:DEADLOCK:CANCEL:B' and estado_proceso='aplicado') then raise exception 'reentrega sobrevivió pero no aplicó'; end if; end \$\$;"
 
 echo '0323_calcom_concurrencia: PASS'

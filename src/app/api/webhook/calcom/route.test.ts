@@ -12,10 +12,12 @@ type RpcArgs = {
   p_externos: string[];
   p_externos_anteriores: string[];
   p_no_show: boolean | null;
+  p_vinculo_correo: string | null;
+  p_error_vinculo: string | null;
 };
 
 const db = vi.hoisted(() => ({
-  prospecto: { id: 'p-landing-1' } as { id: string } | null,
+  prospectos: [{ id: 'p-landing-1' }] as Array<{ id: string }>,
   lookupError: false,
   rpcFailures: 0,
   rpcResultado: 'aplicado',
@@ -32,9 +34,9 @@ function prospectoBuilder() {
     is: () => b,
     order: () => b,
     limit: () => b,
-    maybeSingle: async () => db.lookupError
+    then: (resolve: (value: unknown) => unknown) => resolve(db.lookupError
       ? { data: null, error: { message: 'CRM read failed' } }
-      : { data: db.prospecto, error: null },
+      : { data: db.prospectos, error: null }),
   };
   return b;
 }
@@ -86,7 +88,7 @@ const EVENTO = JSON.stringify({
 
 beforeEach(() => {
   process.env.CALCOM_WEBHOOK_SECRET = SECRET;
-  db.prospecto = { id: 'p-landing-1' };
+  db.prospectos = [{ id: 'p-landing-1' }];
   db.lookupError = false;
   db.rpcFailures = 0;
   db.rpcResultado = 'aplicado';
@@ -121,6 +123,8 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
         p_externos: ['id:booking-1'],
         p_externos_anteriores: [],
         p_no_show: null,
+        p_vinculo_correo: 'lead@landing.mx',
+        p_error_vinculo: null,
       },
     }]);
   });
@@ -216,7 +220,7 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     expect(db.filtrosEq).toContainEqual(['correo_normalizado', 'lead@landing.mx']);
   });
 
-  it('createdAt futuro se pasa firmado y la cuarentena pide reentrega', async () => {
+  it('createdAt futuro se acepta tras quedar durable para el barrido propio', async () => {
     db.rpcResultado = 'cuarentena';
     const cuerpo = JSON.stringify({
       triggerEvent: 'BOOKING_CREATED', bookingId: 'futuro',
@@ -224,17 +228,29 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
       payload: { attendees: [{ email: 'lead@landing.mx' }] },
     });
     const r = await postear(cuerpo);
-    expect(r.status).toBe(503);
-    expect(r.headers.get('retry-after')).toBe('60');
+    expect(r.status).toBe(202);
+    expect(r.headers.get('retry-after')).toBeNull();
     expect(db.rpcCalls[0].args.p_creado_en).toBe('2099-01-01T00:00:00.000Z');
   });
 
-  it('sin_prospecto pide reentrega automática y no se sella con 2xx', async () => {
+  it('sin_prospecto contesta 202 porque el ledger durable tiene barrido propio', async () => {
     const resultado = 'sin_prospecto';
     db.rpcResultado = resultado;
     const r = await postear(EVENTO);
-    expect(r.status).toBe(503);
-    expect(r.headers.get('retry-after')).toBe('60');
+    expect(r.status).toBe(202);
+    expect(await r.json()).toMatchObject({ ok: true, recuperable: true, resultado });
+  });
+
+  it('correo ambiguo nunca elige por updated_at: registra un ledger recuperable y observable', async () => {
+    db.prospectos = [{ id: 'p-viejo' }, { id: 'p-nuevo' }];
+    db.rpcResultado = 'sin_prospecto';
+    const r = await postear(EVENTO);
+    expect(r.status).toBe(202);
+    expect(db.rpcCalls[0].args).toMatchObject({
+      p_prospecto: null,
+      p_vinculo_correo: 'lead@landing.mx',
+      p_error_vinculo: 'correo_ambiguo',
+    });
   });
 
   it('esperando_vinculo sí confirma 2xx porque una reserva posterior drena el ledger', async () => {
@@ -264,7 +280,7 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
   it('rollback de la RPC nunca contesta 200 falso y el reintento puede aplicar', async () => {
     db.rpcFailures = 1;
     expect((await postear(EVENTO)).status).toBe(500);
-    expect(db.keys).not.toContain('calcom:BOOKING_CREATED:booking-1');
+    expect(db.keys).not.toContain('calcom:BOOKING_CREATED:id:booking-1');
 
     const reintento = await postear(EVENTO);
     expect(reintento.status).toBe(200);

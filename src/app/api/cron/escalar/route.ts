@@ -8,6 +8,7 @@ import { codigoDeError } from '@/lib/observability/sentry';
 import { alertarOperador } from '@/lib/observability/alerta';
 import { puertaCron, registrarLatido, leerLatido, type EstadoLatido } from '@/lib/admin/salud';
 import { conRelojDuro } from '../_reloj_duro';
+import { appUrl } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -265,6 +266,28 @@ export async function GET(req: Request) {
       }
     }
 
+    // 0323: CRM corre DESPUÉS de los dos motores operativos. Sus 30 s nunca
+    // consumen los 40 s reservados a aceptación ni adelantan el deadline de
+    // cobranza. Si queda poco reloj, el cursor durable continúa la hora
+    // siguiente. Sigue dentro de este cron y respeta el kill switch global.
+    enVuelo = 'calcom';
+    try {
+      const { ejecutarMantenimientoCalcom } = await import('@/lib/admin/calcom');
+      const calcom = await ejecutarMantenimientoCalcom({
+        callbackUrl: `${appUrl()}/api/webhook/calcom`,
+        venceEn: Math.min(Date.now() + 30_000, venceDuro),
+      });
+      logger.info('cron.calcom.ok', { ...calcom });
+      resultado.calcom = calcom;
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      const codigo = codigoDeError(e);
+      logger.error('cron.calcom.falló', { error, codigo });
+      await alertarOperador('cron.calcom', { error, codigo });
+      resultado.calcom = { error };
+      huboFallo = true;
+    }
+
     // ── EL TERCER BARRIDO: LOS RELOJES LEGALES (Fase 6) ─────────────────────
     // Vencimientos de flota (30/7/0 días, un aviso por umbral — el sello es la
     // 0202) y los relojes colgados de una incidencia de siniestro/robo/bloqueo
@@ -323,6 +346,7 @@ export async function GET(req: Request) {
       resultado.reglas = { error };
       huboFallo = true;
     }
+
     enVuelo = null;
   };
 

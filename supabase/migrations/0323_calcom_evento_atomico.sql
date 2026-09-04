@@ -45,7 +45,12 @@ alter table public.comercial_evento
   add column if not exists orden_en timestamptz,
   add column if not exists externo_aliases text[] not null default '{}'::text[],
   add column if not exists externo_anterior_aliases text[] not null default '{}'::text[],
-  add column if not exists calcom_no_show boolean;
+  add column if not exists calcom_no_show boolean,
+  add column if not exists orden_original_en timestamptz,
+  add column if not exists vinculo_correo text,
+  add column if not exists vinculo_error text,
+  add column if not exists reintentos smallint not null default 0,
+  add column if not exists reintentar_despues timestamptz not null default clock_timestamp();
 
 alter table public.comercial_evento
   drop constraint if exists comercial_evento_estado_proceso_dominio;
@@ -63,11 +68,179 @@ comment on column public.comercial_evento.externo_aliases is
   'UID e id numérico namespaced que identifican la misma reserva Cal.com.';
 comment on column public.comercial_evento.externo_anterior_aliases is
   'En RESCHEDULED, rescheduleUid y rescheduleId namespaced de la reserva anterior.';
+comment on column public.comercial_evento.orden_original_en is
+  'createdAt firmado aun durante cuarentena; permite reintentar al vencer sin pedir otra entrega a Cal.com.';
+comment on column public.comercial_evento.vinculo_correo is
+  'Correo normalizado del attendee para que el barrido durable resuelva sin depender del webhook original.';
+comment on column public.comercial_evento.vinculo_error is
+  'Diagnóstico durable del vínculo (sin_correo, sin_prospecto o correo_ambiguo).';
 
-create index if not exists comercial_evento_calcom_recuperable_idx
-  on public.comercial_evento (prospecto_id, orden_en, creado_en)
+-- 0323 no está desplegada; DROP permite corregir también bases locales que
+-- alcanzaron a crear la primera versión del índice bajo el mismo nombre.
+drop index if exists public.comercial_evento_calcom_recuperable_idx;
+create index comercial_evento_calcom_recuperable_idx
+  on public.comercial_evento (reintentar_despues, creado_en, id)
   where fuente = 'calcom'
     and estado_proceso in ('pendiente', 'esperando_vinculo', 'sin_prospecto', 'cuarentena');
+
+-- Durabilidad del reconciliador Bookings v2. Una ventana conserva límites
+-- estables mientras el cursor avanza; sólo al consumirla completa se mueve el
+-- watermark. Un crash conserva ventana/cursor y el lease fencing evita que el
+-- worker viejo cierre el trabajo del nuevo.
+create table if not exists public.calcom_sincronizacion_estado (
+  singleton boolean primary key default true check (singleton),
+  watermark_en timestamptz not null default (clock_timestamp() - interval '30 days'),
+  ventana_hasta_en timestamptz,
+  cursor_siguiente text,
+  claim_token uuid,
+  lease_expires_at timestamptz,
+  webhook_verificado_en timestamptz,
+  webhook_id text,
+  ultimo_error text,
+  updated_at timestamptz not null default clock_timestamp(),
+  check ((claim_token is null) = (lease_expires_at is null))
+);
+
+alter table public.calcom_sincronizacion_estado enable row level security;
+revoke all on table public.calcom_sincronizacion_estado from public, anon, authenticated;
+insert into public.calcom_sincronizacion_estado(singleton) values (true)
+on conflict (singleton) do nothing;
+
+create or replace function public.iniciar_sincronizacion_calcom(
+  p_lease_seconds integer default 100
+)
+returns table(
+  claim_token uuid,
+  desde_en timestamptz,
+  ventana_hasta_en timestamptz,
+  cursor_siguiente text,
+  debe_provisionar boolean
+)
+language plpgsql
+security definer
+set search_path=''
+as $$
+declare
+  v public.calcom_sincronizacion_estado%rowtype;
+  v_token uuid := gen_random_uuid();
+begin
+  if p_lease_seconds < 10 or p_lease_seconds > 300 then
+    raise exception 'lease Cal.com fuera de rango' using errcode='CR004';
+  end if;
+  select * into v from public.calcom_sincronizacion_estado where singleton for update;
+  if v.claim_token is not null and v.lease_expires_at > clock_timestamp() then
+    return;
+  end if;
+  update public.calcom_sincronizacion_estado s
+     set claim_token=v_token,
+         lease_expires_at=clock_timestamp()+make_interval(secs=>p_lease_seconds),
+         ventana_hasta_en=coalesce(s.ventana_hasta_en, clock_timestamp()),
+         ultimo_error=null,
+         updated_at=clock_timestamp()
+   where s.singleton
+   returning s.* into v;
+  return query select v_token,
+    greatest(v.watermark_en-interval '5 minutes', 'epoch'::timestamptz),
+    v.ventana_hasta_en, v.cursor_siguiente,
+    v.webhook_verificado_en is null
+      or v.webhook_verificado_en < clock_timestamp()-interval '24 hours';
+end;
+$$;
+
+create or replace function public.guardar_cursor_sincronizacion_calcom(
+  p_claim_token uuid,
+  p_cursor text,
+  p_lease_seconds integer default 100
+) returns boolean
+language plpgsql security definer set search_path=''
+as $$
+begin
+  if p_claim_token is null or nullif(btrim(p_cursor),'') is null
+     or p_lease_seconds < 10 or p_lease_seconds > 300 then return false; end if;
+  update public.calcom_sincronizacion_estado
+     set cursor_siguiente=p_cursor,
+         lease_expires_at=clock_timestamp()+make_interval(secs=>p_lease_seconds),
+         updated_at=clock_timestamp()
+   where singleton and claim_token=p_claim_token
+     and lease_expires_at > clock_timestamp();
+  return found;
+end;
+$$;
+
+create or replace function public.registrar_webhook_sincronizacion_calcom(
+  p_claim_token uuid, p_webhook_id text
+) returns boolean
+language plpgsql security definer set search_path=''
+as $$
+begin
+  update public.calcom_sincronizacion_estado
+     set webhook_id=p_webhook_id, webhook_verificado_en=clock_timestamp(),
+         updated_at=clock_timestamp()
+   where singleton and claim_token=p_claim_token
+     and lease_expires_at > clock_timestamp();
+  return found;
+end;
+$$;
+
+create or replace function public.pausar_sincronizacion_calcom(
+  p_claim_token uuid
+) returns boolean
+language plpgsql security definer set search_path=''
+as $$
+begin
+  update public.calcom_sincronizacion_estado
+     set claim_token=null, lease_expires_at=null, updated_at=clock_timestamp()
+   where singleton and claim_token=p_claim_token
+     and lease_expires_at > clock_timestamp();
+  return found;
+end;
+$$;
+
+create or replace function public.fallar_sincronizacion_calcom(
+  p_claim_token uuid, p_error text
+) returns boolean
+language plpgsql security definer set search_path=''
+as $$
+begin
+  update public.calcom_sincronizacion_estado
+     set claim_token=null, lease_expires_at=null,
+         ultimo_error=left(coalesce(p_error,'fallo desconocido'),1000),
+         updated_at=clock_timestamp()
+   where singleton and claim_token=p_claim_token;
+  return found;
+end;
+$$;
+
+create or replace function public.finalizar_sincronizacion_calcom(
+  p_claim_token uuid
+) returns boolean
+language plpgsql security definer set search_path=''
+as $$
+begin
+  update public.calcom_sincronizacion_estado
+     set watermark_en=greatest(watermark_en, ventana_hasta_en),
+         ventana_hasta_en=null, cursor_siguiente=null,
+         claim_token=null, lease_expires_at=null, ultimo_error=null,
+         updated_at=clock_timestamp()
+   where singleton and claim_token=p_claim_token
+     and lease_expires_at > clock_timestamp()
+     and ventana_hasta_en is not null;
+  return found;
+end;
+$$;
+
+revoke all on function public.iniciar_sincronizacion_calcom(integer) from public, anon, authenticated;
+revoke all on function public.guardar_cursor_sincronizacion_calcom(uuid,text,integer) from public, anon, authenticated;
+revoke all on function public.registrar_webhook_sincronizacion_calcom(uuid,text) from public, anon, authenticated;
+revoke all on function public.pausar_sincronizacion_calcom(uuid) from public, anon, authenticated;
+revoke all on function public.fallar_sincronizacion_calcom(uuid,text) from public, anon, authenticated;
+revoke all on function public.finalizar_sincronizacion_calcom(uuid) from public, anon, authenticated;
+grant execute on function public.iniciar_sincronizacion_calcom(integer) to service_role;
+grant execute on function public.guardar_cursor_sincronizacion_calcom(uuid,text,integer) to service_role;
+grant execute on function public.registrar_webhook_sincronizacion_calcom(uuid,text) to service_role;
+grant execute on function public.pausar_sincronizacion_calcom(uuid) to service_role;
+grant execute on function public.fallar_sincronizacion_calcom(uuid,text) to service_role;
+grant execute on function public.finalizar_sincronizacion_calcom(uuid) to service_role;
 
 -- Si una base local alcanzó a ejecutar la primera versión no desplegada de
 -- 0323, se elimina su overload de siete argumentos: conservar dos máquinas de
@@ -75,6 +248,9 @@ create index if not exists comercial_evento_calcom_recuperable_idx
 -- eventos recuperables como repetidos.
 drop function if exists public.aplicar_evento_calcom_tx(
   text, text, text, uuid, jsonb, timestamptz, text
+);
+drop function if exists public.aplicar_evento_calcom_tx(
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
 );
 
 create or replace function public.aplicar_evento_calcom_tx(
@@ -87,7 +263,9 @@ create or replace function public.aplicar_evento_calcom_tx(
   p_externo_anterior text default null,
   p_externos text[] default '{}'::text[],
   p_externos_anteriores text[] default '{}'::text[],
-  p_no_show boolean default null
+  p_no_show boolean default null,
+  p_vinculo_correo text default null,
+  p_error_vinculo text default null
 )
 returns table(resultado text, estado_prospecto text)
 language plpgsql
@@ -162,12 +340,14 @@ begin
   insert into public.comercial_evento (
     clave_idempotencia, fuente, tipo, prospecto_id, externo_id, payload,
     ocurrido_en, orden_en, estado_proceso, externo_aliases,
-    externo_anterior_aliases, calcom_no_show
+    externo_anterior_aliases, calcom_no_show, orden_original_en,
+    vinculo_correo, vinculo_error
   ) values (
     p_clave, 'calcom', v_tipo, p_prospecto, p_externo, coalesce(p_payload, '{}'::jsonb),
     case when v_futuro then clock_timestamp() else coalesce(p_creado_en, clock_timestamp()) end,
     case when v_futuro then null else p_creado_en end,
-    'pendiente', v_aliases, v_aliases_anteriores, p_no_show
+    'pendiente', v_aliases, v_aliases_anteriores, p_no_show, p_creado_en,
+    nullif(lower(btrim(p_vinculo_correo)), ''), p_error_vinculo
   )
   on conflict (clave_idempotencia) do nothing
   returning id into v_evento_id;
@@ -206,7 +386,10 @@ begin
            estado_proceso = 'pendiente', procesado_en = null, error = null,
            externo_aliases = v_aliases,
            externo_anterior_aliases = v_aliases_anteriores,
-           calcom_no_show = p_no_show
+           calcom_no_show = p_no_show,
+           orden_original_en = p_creado_en,
+           vinculo_correo = coalesce(nullif(lower(btrim(p_vinculo_correo)), ''), vinculo_correo),
+           vinculo_error = p_error_vinculo
      where id = v_evento_id;
   end if;
 
@@ -222,7 +405,9 @@ begin
 
   if p_prospecto is null then
     update public.comercial_evento
-       set estado_proceso = 'sin_prospecto', procesado_en = clock_timestamp(), error = 'sin_prospecto'
+       set estado_proceso = 'sin_prospecto', procesado_en = clock_timestamp(),
+           error = coalesce(nullif(p_error_vinculo, ''), 'sin_prospecto'),
+           vinculo_error = coalesce(nullif(p_error_vinculo, ''), 'sin_prospecto')
      where id = v_evento_id;
     return query select 'sin_prospecto'::text, null::text;
     return;
@@ -269,7 +454,21 @@ begin
 
   if p_creado_en is not null and v_ultimo_en is not null and (
     p_creado_en < v_ultimo_en
-    or (p_creado_en = v_ultimo_en and v_precedencia <= coalesce(v_ultima_precedencia, -1))
+    or (
+      p_creado_en = v_ultimo_en
+      and v_precedencia <= coalesce(v_ultima_precedencia, -1)
+      -- Cal.com puede emitir A→B y B→C con el mismo createdAt. No es un
+      -- empate ambiguo si la reserva anterior del segundo evento es EXACTAMENTE
+      -- la vigente y su reserva nueva es distinta: los aliases forman una
+      -- arista causal. Esta excepción no admite CREATED ni una reentrega de A→B
+      -- sobre C, por lo que un terminal posterior no puede resucitar.
+      and not (
+        v_tipo = 'BOOKING_RESCHEDULED'
+        and v_precedencia = coalesce(v_ultima_precedencia, -1)
+        and v_reserva_anterior
+        and not v_misma_reserva
+      )
+    )
   ) then
     update public.comercial_evento
        set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'evento_fuera_de_orden'
@@ -403,7 +602,11 @@ begin
        )
      order by ce.orden_en asc nulls last, ce.creado_en, ce.id
      limit 1
-     for update;
+     -- Orden global efectivo: el camino directo puede poseer evento y pedir
+     -- prospecto; este drenaje ya posee prospecto, por lo que JAMÁS espera un
+     -- evento en vuelo. El dueño del evento lo reevalúa al obtener prospecto.
+     -- Sin SKIP LOCKED ambas sesiones formaban el ciclo 40P01.
+     for update skip locked;
     exit when not found;
 
     v_pend_precedencia := case v_pend.tipo
@@ -422,7 +625,16 @@ begin
     end if;
     if v_ultimo_en is not null and (
       v_pend.orden_en < v_ultimo_en
-      or (v_pend.orden_en = v_ultimo_en and v_pend_precedencia <= coalesce(v_ultima_precedencia, -1))
+      or (
+        v_pend.orden_en = v_ultimo_en
+        and v_pend_precedencia <= coalesce(v_ultima_precedencia, -1)
+        and not (
+          v_pend.tipo = 'BOOKING_RESCHEDULED'
+          and v_pend_precedencia = coalesce(v_ultima_precedencia, -1)
+          and v_pend.externo_anterior_aliases && v_booking_aliases
+          and not (v_pend.externo_aliases && v_booking_aliases)
+        )
+      )
     ) then
       update public.comercial_evento set estado_proceso='ignorado',
         procesado_en=clock_timestamp(), error='evento_fuera_de_orden'
@@ -502,12 +714,111 @@ end;
 $$;
 
 revoke all on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean, text, text
 ) from public, anon, authenticated;
 grant execute on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean, text, text
 ) to service_role;
 
 comment on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean, text, text
 ) is '0323: registra/aplica Cal.com atómicamente; UID e id numérico son aliases namespaced, los eventos adelantados esperan vínculo, y reentregas recuperan sin_prospecto/cuarentena/pendiente.';
+
+create or replace function public.reconciliar_eventos_calcom_pendientes(
+  p_limite integer default 250
+)
+returns table(revisados integer, recuperados integer, restantes integer)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v record;
+  v_prospecto uuid;
+  v_coincidencias integer;
+  v_resultado text;
+  v_revisados integer := 0;
+  v_recuperados integer := 0;
+begin
+  if p_limite < 1 or p_limite > 1000 then
+    raise exception 'límite Cal.com fuera de rango' using errcode='CR003';
+  end if;
+
+  -- Claim no bloqueante. La fila permanece lockeada hasta resolverla; otro
+  -- barrido la salta y no repite la misma transición.
+  for v in
+    select ce.*
+      from public.comercial_evento ce
+     where ce.fuente='calcom'
+       and ce.estado_proceso in ('sin_prospecto','cuarentena')
+       and ce.reintentar_despues <= clock_timestamp()
+       and (
+         ce.estado_proceso='sin_prospecto'
+         or ce.orden_original_en is null
+         or ce.orden_original_en <= clock_timestamp() + interval '5 minutes'
+       )
+     order by ce.reintentar_despues, ce.creado_en, ce.id
+     limit p_limite
+     for update skip locked
+  loop
+    v_revisados := v_revisados + 1;
+    v_prospecto := null;
+    v_coincidencias := 0;
+
+    if v.prospecto_id is not null and exists (
+      select 1 from public.prospecto p
+       where p.id=v.prospecto_id and p.duplicado_de is null
+    ) then
+      v_prospecto := v.prospecto_id;
+      v_coincidencias := 1;
+    elsif v.vinculo_correo is not null then
+      select count(*), min(p.id::text)::uuid
+        into v_coincidencias, v_prospecto
+        from public.prospecto p
+       where p.correo_normalizado=v.vinculo_correo
+         and p.duplicado_de is null;
+    end if;
+
+    if v_coincidencias <> 1 then
+      update public.comercial_evento
+         set vinculo_error = case when v_coincidencias > 1 then 'correo_ambiguo'
+                                  when v.vinculo_correo is null then 'sin_correo'
+                                  else 'sin_prospecto' end,
+             error = case when v_coincidencias > 1 then 'correo_ambiguo'
+                          when v.vinculo_correo is null then 'sin_correo'
+                          else 'sin_prospecto' end,
+             reintentos = least(reintentos + 1, 32767)::smallint,
+             reintentar_despues = clock_timestamp() + interval '15 minutes'
+       where id=v.id;
+      continue;
+    end if;
+
+    select a.resultado into v_resultado
+      from public.aplicar_evento_calcom_tx(
+        v.clave_idempotencia, v.tipo, v.externo_id, v_prospecto, v.payload,
+        v.orden_original_en, null, v.externo_aliases,
+        v.externo_anterior_aliases, v.calcom_no_show,
+        v.vinculo_correo, null
+      ) a;
+    if v_resultado in ('aplicado','ignorado','repetido') then
+      v_recuperados := v_recuperados + 1;
+    end if;
+  end loop;
+
+  select count(*)::integer into restantes
+    from public.comercial_evento ce
+   where ce.fuente='calcom'
+     and ce.estado_proceso in ('sin_prospecto','cuarentena');
+  revisados := v_revisados;
+  recuperados := v_recuperados;
+  return next;
+end;
+$$;
+
+revoke all on function public.reconciliar_eventos_calcom_pendientes(integer)
+  from public, anon, authenticated;
+grant execute on function public.reconciliar_eventos_calcom_pendientes(integer)
+  to service_role;
+
+comment on function public.reconciliar_eventos_calcom_pendientes(integer) is
+  '0323: reclama con SKIP LOCKED y recupera ledger Cal.com sin depender de reentregas HTTP; nunca elige un correo ambiguo.';
