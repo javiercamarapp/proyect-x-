@@ -1,12 +1,7 @@
 import { randomUUID } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
-import { inicioDiaMx, finDiaMx } from '@/lib/formato';
 import { acotada } from '../presupuesto';
-import { asegurarDiaJornada, asentarMarca, diaMxDe } from './repo';
-// AUDITORÍA 24, LEG-1: la compuerta vive en privacidad.ts y la comparten
-// jornada, poller de GPS y poller de cámara.
-import { tieneAvisoPrevio } from '../privacidad';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL DERIVADOR — convertir lo que Likida YA sabe en marcas con origen.
@@ -64,6 +59,7 @@ export const PLAZO_DERIVACION_MS = 45_000;
 const LEASE_JORNADA_SECONDS = 180;
 const REINTENTO_FALLO_SECONDS = 300;
 const REVISITA_EXITOSA_SECONDS = 3_600;
+const TAMANO_LOTE_PROCESO = 50;
 
 export interface ResultadoDerivacion {
   /** Pares (operador, día) que la corrida se propuso revisar. */
@@ -111,25 +107,48 @@ interface Trabajo {
   aceptadoEn: string | null;
   viajeId: string;
   claimToken: string;
+  zonaHoraria: string;
+}
+
+/** Día natural de un instante en una zona IANA. Postgres es la autoridad para
+ * persistir el bucket; este helper sólo cubre el fallback de despliegue y hace
+ * explícito que el servidor no debe usar su zona local. */
+export function diaEnZona(momento: Date, zonaHoraria: string): string {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(momento);
+  const valor = (tipo: Intl.DateTimeFormatPartTypes) =>
+    partes.find((p) => p.type === tipo)?.value;
+  const dia = `${valor('year')}-${valor('month')}-${valor('day')}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new Error(`zona IANA inválida: ${zonaHoraria}`);
+  return dia;
 }
 
 /**
  * Arma la lista de trabajo: un renglón por (operador, día) tocado por un viaje
  * de la ventana.
  *
- * La RPC 0319 sincroniza `viaje`, deduplica por expediente y reclama con
- * `FOR UPDATE SKIP LOCKED`. El progreso se confirma por claim, después del
- * intento; un corte libera el resto y una caída se recupera al vencer el lease.
+ * La 0325 separa la sincronización del claim. El UPSERT de fuentes termina
+ * antes de intentar `SKIP LOCKED`, de modo que dos crons no esperan el mismo
+ * transactionid antes de llegar al candado no bloqueante.
  */
 async function listaDeTrabajo(
-  desde: string,
-  hasta: string,
+  ahora: Date,
+  dias: number,
 ): Promise<{ trabajos: Trabajo[]; truncada: boolean; owner: string; error: string | null }> {
   const owner = `jornada:${randomUUID()}`;
+  const sincronizada = await acotada(
+    supabaseAdmin().rpc('sincronizar_jornadas_por_derivar', {
+      p_ahora: ahora.toISOString(), p_dias: dias,
+    }),
+    'jornada.derivar.sincronizar',
+  );
+  if (sincronizada.error) {
+    return { trabajos: [], truncada: false, owner, error: sincronizada.error.message };
+  }
+
   const { data, error } = await acotada(
     supabaseAdmin().rpc('reclamar_jornadas_por_derivar', {
-      p_desde: inicioDiaMx(desde),
-      p_hasta: finDiaMx(hasta),
       p_limite: TOPE_VIAJES_POR_CORRIDA,
       p_owner: owner,
       p_lease_seconds: LEASE_JORNADA_SECONDS,
@@ -141,14 +160,13 @@ async function listaDeTrabajo(
   type Fila = {
     id: string; tenant_id: string; operador_id: string;
     unidad_id: string | null; unidad_ids?: string[] | null; aceptado_en: string; dia: string;
-    claim_token: string; hay_mas: boolean;
+    zona_horaria?: string | null; claim_token: string; hay_mas: boolean;
   };
   const filas = (data ?? []) as unknown as Fila[];
   const truncada = filas.some((f) => f.hay_mas === true);
   const trabajos: Trabajo[] = filas.map((f) => {
-    // `dia` viene calculado por Postgres en America/Mexico_City. El fallback
-    // mantiene compatibilidad con una respuesta vieja durante deploy.
-    const dia = f.dia || diaMxDe(new Date(f.aceptado_en));
+    const zonaHoraria = f.zona_horaria || 'America/Mexico_City';
+    const dia = f.dia || diaEnZona(new Date(f.aceptado_en), zonaHoraria);
     return {
       tenantId: String(f.tenant_id),
       operadorId: String(f.operador_id),
@@ -160,26 +178,10 @@ async function listaDeTrabajo(
       aceptadoEn: f.aceptado_en,
       viajeId: String(f.id),
       claimToken: String(f.claim_token),
+      zonaHoraria,
     };
   });
   return { trabajos, truncada, owner, error: null };
-}
-
-async function finalizarTrabajo(
-  t: Trabajo,
-  owner: string,
-  exito: boolean,
-  error: string | null,
-): Promise<boolean> {
-  const { data, error: falloRpc } = await acotada(supabaseAdmin().rpc('finalizar_jornada_derivacion', {
-    p_claim_token: t.claimToken,
-    p_owner: owner,
-    p_exito: exito,
-    p_error: error,
-    p_retraso_seconds: exito ? REVISITA_EXITOSA_SECONDS : REINTENTO_FALLO_SECONDS,
-  }), 'jornada.derivar.finalizar');
-  if (falloRpc) return false;
-  return data === true || (Array.isArray(data) && data[0] === true);
 }
 
 async function liberarNoIntentados(owner: string, trabajos: Trabajo[]): Promise<boolean> {
@@ -193,58 +195,27 @@ async function liberarNoIntentados(owner: string, trabajos: Trabajo[]): Promise<
   return Number.isFinite(liberados) && liberados === trabajos.length;
 }
 
-/**
- * ¿A este operador ya se le puso el aviso de privacidad a disposición?
- *
- * AUDITORÍA 22, LEG-C1 (CRÍTICO). Fallar cerrado en los dos bordes: si la
- * lectura falla, la respuesta es NO. Un error de red no puede volverse permiso
- * para construirle a alguien un expediente laboral sin haberle avisado.
- *
- * Memoiza por corrida: la lista de trabajo trae un renglón por (operador, día)
- * y el mismo operador aparece muchas veces en la ventana.
- */
-const avisoPorOperador = new Map<string, boolean>();
+interface ResultadoLote {
+  claim_token: string;
+  exito: boolean;
+  asentados: number;
+  ya_estaban: number;
+  dia_sin_gps: boolean;
+  sin_aviso: boolean;
+  error: string | null;
+}
 
-interface ExtremoGps { momento: string; unidadId: string }
-
-/** La primera y la última posición de todas las unidades que el operador tuvo
- * asignadas ese día. El id de la unidad viaja con cada extremo para conservar
- * la procedencia material de la marca. */
-async function extremosGps(
-  tenantId: string,
-  unidadIds: string[],
-  dia: string,
-): Promise<{ primera: ExtremoGps | null; ultima: ExtremoGps | null; error: string | null }> {
-  if (unidadIds.length === 0) return { primera: null, ultima: null, error: null };
-  const admin = supabaseAdmin();
-  const desde = inicioDiaMx(dia);
-  const hasta = finDiaMx(dia);
-  const base = () => admin.from('posicion').select('id, medida_en, unidad_id')
-    .eq('tenant_id', tenantId).in('unidad_id', unidadIds)
-    .gte('medida_en', desde).lte('medida_en', hasta);
-
-  // REN-A2: las dos consultas son INDEPENDIENTES —la primera posición del día y
-  // la última— y se hacían en serie. En un bucle que ya es N+1 y con un reloj
-  // de 45 s encima, cada viaje de red de más sale de la cuota de trabajos que
-  // la corrida alcanza a derivar.
-  const [pri, ult] = await Promise.all([
-    acotada(base().order('medida_en', { ascending: true }).order('id', { ascending: true }).limit(1).maybeSingle(), 'jornada.gps.primera'),
-    acotada(base().order('medida_en', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(), 'jornada.gps.ultima'),
-  ]);
-  if (pri.error) return { primera: null, ultima: null, error: pri.error.message };
-  if (ult.error) return { primera: null, ultima: null, error: ult.error.message };
-
-  return {
-    primera: pri.data ? {
-      momento: String((pri.data as { medida_en: string }).medida_en),
-      unidadId: String((pri.data as { unidad_id: string }).unidad_id),
-    } : null,
-    ultima: ult.data ? {
-      momento: String((ult.data as { medida_en: string }).medida_en),
-      unidadId: String((ult.data as { unidad_id: string }).unidad_id),
-    } : null,
-    error: null,
-  };
+async function procesarLote(owner: string, lote: Trabajo[]): Promise<{
+  filas: ResultadoLote[]; error: string | null;
+}> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('procesar_jornadas_derivadas', {
+    p_owner: owner,
+    p_claim_tokens: lote.map((t) => t.claimToken),
+    p_retraso_exito_seconds: REVISITA_EXITOSA_SECONDS,
+    p_retraso_fallo_seconds: REINTENTO_FALLO_SECONDS,
+  }), 'jornada.derivar.procesar_lote');
+  if (error) return { filas: [], error: error.message };
+  return { filas: (data ?? []) as unknown as ResultadoLote[], error: null };
 }
 
 /**
@@ -268,18 +239,15 @@ export async function derivarJornadas(args: {
 } = {}): Promise<ResultadoDerivacion> {
   const ahora = args.ahora ?? new Date();
   const dias = args.dias ?? DIAS_QUE_BARRE;
-  const hasta = diaMxDe(ahora);
-  const desde = diaMxDe(new Date(ahora.getTime() - (dias - 1) * 86_400_000));
+  const hasta = diaEnZona(ahora, 'America/Mexico_City');
+  const desde = diaEnZona(new Date(ahora.getTime() - (dias - 1) * 86_400_000), 'America/Mexico_City');
 
   const r: ResultadoDerivacion = {
     revisados: 0, asentados: 0, yaEstaban: 0, fallos: [], cortadosPorReloj: 0,
     diasSinGps: 0, listaTruncada: false, sinAvisoPrevio: 0,
   };
 
-  // La memo es por CORRIDA: entre una y otra el aviso pudo haberse puesto.
-  avisoPorOperador.clear();
-
-  const { trabajos, truncada, owner, error } = await listaDeTrabajo(desde, hasta);
+  const { trabajos, truncada, owner, error } = await listaDeTrabajo(ahora, dias);
   if (error) {
     // Fallar cerrado y DECIRLO: sin la lista de trabajo no hay nada que
     // derivar, y devolver un resultado en ceros se leería como «no había nada
@@ -296,102 +264,39 @@ export async function derivarJornadas(args: {
     });
   }
 
-  let intentados = 0;
+  const intentables: Trabajo[] = [];
+  for (const t of trabajos) {
+    if (args.venceEn !== undefined && Date.now() >= args.venceEn) break;
+    intentables.push(t);
+  }
+  const intentados = intentables.length;
+  r.cortadosPorReloj = trabajos.length - intentados;
+  if (r.cortadosPorReloj > 0) {
+    logger.warn('jornada.derivar.corte_por_reloj', { pendientes: r.cortadosPorReloj, desde, hasta });
+  }
+
   try {
-    for (const t of trabajos) {
-      if (args.venceEn !== undefined && Date.now() >= args.venceEn) {
-        r.cortadosPorReloj = trabajos.length - intentados;
-        logger.warn('jornada.derivar.corte_por_reloj', { pendientes: r.cortadosPorReloj, desde, hasta });
-        break;
+    for (let i = 0; i < intentables.length; i += TAMANO_LOTE_PROCESO) {
+      const lote = intentables.slice(i, i + TAMANO_LOTE_PROCESO);
+      const procesado = await procesarLote(owner, lote);
+      if (procesado.error) {
+        // Respuesta ambigua: no liberar. Si Postgres sí confirmó, ya quedó ACK;
+        // si no, el lease recupera. Reintentar aquí abriría doble escritor.
+        for (const t of lote) r.fallos.push(`ack ${t.operadorId}/${t.dia}: ${procesado.error}`);
+        continue;
       }
-      intentados++;
-      const fallosAntes = r.fallos.length;
-      const sinAvisoAntes = r.sinAvisoPrevio;
-      try {
-
-    // ── LEG-C1: NO SE TRATA ANTES DE AVISAR ───────────────────────────────
-    // Fallar cerrado. Derivar la jornada de alguien que nunca recibió el aviso
-    // es exactamente lo que el art. 16 prohíbe, y el expuesto es el operador
-    // mientras la sancionable es la flota (art. 14). No se deriva y se cuenta.
-    //
-    // Va ANTES de `asegurarDiaJornada` a propósito: crear el expediente ya es
-    // tratamiento, aunque no lleve marcas.
-        if (!(await tieneAvisoPrevio(t.tenantId, t.operadorId, avisoPorOperador))) {
-          r.sinAvisoPrevio++;
-          continue;
-        }
-
-        const expediente = await asegurarDiaJornada(t.tenantId, t.operadorId, t.dia);
-        if ('error' in expediente) {
-          r.fallos.push(`expediente ${t.operadorId}/${t.dia}: ${expediente.error}`);
-          continue;
-        }
-        const jornadaId = expediente.id;
-
-    // ── (a) El inicio derivado del hito de aceptación del viaje ───────────
-        if (t.aceptadoEn) {
-          const res = await asentarMarca({
-        jornadaId,
-        tenantId: t.tenantId,
-        tipo: 'inicio_jornada',
-        momento: new Date(t.aceptadoEn),
-        procedencia: 'hito_viaje',
-        origenRef: `viaje:${t.viajeId}:aceptado_en`,
-        viajeId: t.viajeId,
-        unidadId: t.unidadId,
-        detalle: { hecho: 'el operador aceptó el viaje por WhatsApp', cota: 'inferior' },
-          });
-          contar(r, res, `inicio hito ${t.viajeId}`);
-        }
-
-    // ── (b) Los extremos del GPS de la unidad ─────────────────────────────
-        if (t.unidadIds.length === 0) continue;
-        const gps = await extremosGps(t.tenantId, t.unidadIds, t.dia);
-        if (gps.error) {
-          r.fallos.push(`gps ${t.unidadIds.join(',')}/${t.dia}: ${gps.error}`);
-          continue;
-        }
-        if (gps.primera === null) {
-      // Se CUENTA. Que no haya posiciones no significa que no hubo jornada:
-      // significa que no hubo de dónde derivarla, y el panel lo dice.
-          r.diasSinGps++;
-          continue;
-        }
-
-        const res1 = await asentarMarca({
-      jornadaId,
-      tenantId: t.tenantId,
-      tipo: 'inicio_jornada',
-      momento: new Date(gps.primera.momento),
-      procedencia: 'gps',
-      origenRef: `gps:${gps.primera.unidadId}:${t.dia}:primera:${gps.primera.momento}`,
-      unidadId: gps.primera.unidadId,
-      viajeId: t.viajeId,
-      detalle: { hecho: 'primera posición de la unidad ese día', cota: 'inferior' },
-        });
-        contar(r, res1, `inicio gps ${t.unidadId}/${t.dia}`);
-
-        if (gps.ultima !== null && gps.ultima.momento !== gps.primera.momento) {
-          const res2 = await asentarMarca({
-        jornadaId,
-        tenantId: t.tenantId,
-        tipo: 'fin_jornada',
-        momento: new Date(gps.ultima.momento),
-        procedencia: 'gps',
-        origenRef: `gps:${gps.ultima.unidadId}:${t.dia}:ultima:${gps.ultima.momento}`,
-        unidadId: gps.ultima.unidadId,
-        viajeId: t.viajeId,
-        detalle: { hecho: 'última posición de la unidad ese día', cota: 'inferior' },
-          });
-          contar(r, res2, `fin gps ${t.unidadId}/${t.dia}`);
-        }
-      } catch (e) {
-        r.fallos.push(`trabajo ${t.operadorId}/${t.dia}: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        const exito = r.fallos.length === fallosAntes && r.sinAvisoPrevio === sinAvisoAntes;
-        const detalle = exito ? null : r.fallos.at(-1) ?? 'aviso de privacidad pendiente';
-        if (!(await finalizarTrabajo(t, owner, exito, detalle))) {
-          r.fallos.push(`ack ${t.operadorId}/${t.dia}: claim perdido o base ilegible`);
+      const recibidos = new Set<string>();
+      for (const fila of procesado.filas) {
+        recibidos.add(String(fila.claim_token));
+        r.asentados += Number(fila.asentados) || 0;
+        r.yaEstaban += Number(fila.ya_estaban) || 0;
+        if (fila.dia_sin_gps) r.diasSinGps++;
+        if (fila.sin_aviso) r.sinAvisoPrevio++;
+        else if (!fila.exito || fila.error) r.fallos.push(`trabajo ${fila.claim_token}: ${fila.error ?? 'fallo sin detalle'}`);
+      }
+      for (const t of lote) {
+        if (!recibidos.has(t.claimToken)) {
+          r.fallos.push(`ack ${t.operadorId}/${t.dia}: claim perdido o lease vencido`);
         }
       }
     }
@@ -403,10 +308,4 @@ export async function derivarJornadas(args: {
   }
 
   return r;
-}
-
-function contar(r: ResultadoDerivacion, res: 'asentado' | 'ya_estaba' | 'fallo', etiqueta: string): void {
-  if (res === 'asentado') r.asentados++;
-  else if (res === 'ya_estaba') r.yaEstaban++;
-  else r.fallos.push(etiqueta);
 }

@@ -121,7 +121,6 @@ function sincronizarTrabajos(): void {
 
 function resolverClaimJornada(args: { p_limite?: number; p_owner?: string }): { data: unknown; error: { message: string } | null } {
   if (errorViajes) return { data: null, error: errorViajes };
-  sincronizarTrabajos();
   const candidatos = [...trabajos.values()]
     .filter((t) => !t.hecho && t.claimToken === null)
     .sort((a, b) => a.fila.aceptado_en.localeCompare(b.fila.aceptado_en) || a.fila.id.localeCompare(b.fila.id));
@@ -136,14 +135,106 @@ function resolverClaimJornada(args: { p_limite?: number; p_owner?: string }): { 
     data: pagina.map((t) => ({
       ...t.fila, unidad_ids: t.unidadIds, input_version: t.inputVersion,
       dia: t.dia, claim_token: t.claimToken, intentos: t.intentos,
+      zona_horaria: 'America/Mexico_City',
       hay_mas: candidatos.length > pagina.length,
     })),
     error: null,
   };
 }
 
-function resolverRpc(nombre: string, args: Record<string, unknown>): { data: unknown; error: { message: string } | null } {
+async function resolverProceso(args: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }> {
+  const tokens = new Set(args.p_claim_tokens as string[]);
+  const lote = [...trabajos.values()].filter((t) => t.claimOwner === args.p_owner && t.claimToken && tokens.has(t.claimToken));
+  const filas: Array<Record<string, unknown>> = [];
+
+  for (const t of lote) {
+    const claimToken = t.claimToken as string;
+    let asentados = 0;
+    let yaEstaban = 0;
+    let diaSinGps = false;
+    let sinAviso = false;
+    let fallo: string | null = null;
+
+    if (errorAviso) {
+      logger.error('privacidad.aviso_previo_ilegible', expect.anything());
+      sinAviso = true;
+    } else if (conAviso !== null && !conAviso.has(t.fila.operador_id)) {
+      sinAviso = true;
+    } else {
+      try {
+        const expediente = await asegurarDiaJornada(t.fila.tenant_id, t.fila.operador_id, t.dia);
+        if ('error' in expediente) fallo = `expediente ${t.fila.operador_id}/${t.dia}: ${expediente.error}`;
+        else {
+          const contar = (r: 'asentado' | 'ya_estaba' | 'fallo', etiqueta: string) => {
+            if (r === 'asentado') asentados++;
+            else if (r === 'ya_estaba') yaEstaban++;
+            else fallo = etiqueta;
+          };
+          contar(await asentarMarca({
+            jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'inicio_jornada',
+            momento: new Date(t.fila.aceptado_en), procedencia: 'hito_viaje',
+            origenRef: `viaje:${t.fila.id}:aceptado_en`, viajeId: t.fila.id,
+            unidadId: t.fila.unidad_id,
+          }), `inicio hito ${t.fila.id}`);
+
+          if (t.unidadIds.length > 0) {
+            if (errorGps) fallo = `gps ${t.unidadIds.join(',')}/${t.dia}: ${errorGps.message}`;
+            else {
+              const puntos = t.unidadIds.flatMap((unidadId) =>
+                (posiciones.get(`${unidadId}|${t.dia}`) ?? []).map((momento) => ({ momento, unidadId })),
+              ).sort((a, b) => a.momento.localeCompare(b.momento) || a.unidadId.localeCompare(b.unidadId));
+              if (puntos.length === 0) diaSinGps = true;
+              else {
+                const primera = puntos[0];
+                const ultima = puntos[puntos.length - 1];
+                contar(await asentarMarca({
+                  jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'inicio_jornada',
+                  momento: new Date(primera.momento), procedencia: 'gps',
+                  origenRef: `gps:${primera.unidadId}:${t.dia}:primera:${primera.momento}`,
+                  unidadId: primera.unidadId, viajeId: t.fila.id,
+                }), `inicio gps ${t.fila.unidad_id}/${t.dia}`);
+                if (ultima.momento !== primera.momento) {
+                  contar(await asentarMarca({
+                    jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'fin_jornada',
+                    momento: new Date(ultima.momento), procedencia: 'gps',
+                    origenRef: `gps:${ultima.unidadId}:${t.dia}:ultima:${ultima.momento}`,
+                    unidadId: ultima.unidadId, viajeId: t.fila.id,
+                  }), `fin gps ${t.fila.unidad_id}/${t.dia}`);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        fallo = `trabajo ${t.fila.operador_id}/${t.dia}: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+
+    if (fallarAckUnaVez) {
+      fallarAckUnaVez = false;
+      return { data: null, error: { message: 'ACK interrumpido' } };
+    }
+    t.hecho = fallo === null && !sinAviso;
+    t.claimToken = null;
+    t.claimOwner = null;
+    filas.push({
+      claim_token: claimToken,
+      exito: fallo === null && !sinAviso,
+      asentados, ya_estaban: yaEstaban, dia_sin_gps: diaSinGps,
+      sin_aviso: sinAviso, error: fallo ?? (sinAviso ? 'aviso de privacidad pendiente' : null),
+    });
+  }
+  return { data: filas, error: null };
+}
+
+async function resolverRpc(nombre: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }> {
+  if (nombre === 'sincronizar_jornadas_por_derivar') {
+    if (errorViajes) return { data: null, error: errorViajes };
+    sincronizarTrabajos();
+    return { data: trabajos.size, error: null };
+  }
   if (nombre === 'reclamar_jornadas_por_derivar') return resolverClaimJornada(args);
+  if (nombre === 'procesar_jornadas_derivadas') return resolverProceso(args);
   if (nombre === 'finalizar_jornada_derivacion') {
     if (fallarAckUnaVez) {
       fallarAckUnaVez = false;
@@ -205,7 +296,7 @@ function builder(tabla: string) {
 vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
     from: (t: string) => builder(t),
-    rpc: (nombre: string, args: Record<string, unknown>) => Promise.resolve(resolverRpc(nombre, args)),
+    rpc: (nombre: string, args: Record<string, unknown>) => resolverRpc(nombre, args),
   }),
 }));
 
@@ -222,7 +313,7 @@ vi.mock('./repo', async (importOriginal) => ({
   asentarMarca: (m: unknown) => asentarMarca(m),
 }));
 
-import { derivarJornadas, TOPE_VIAJES_POR_CORRIDA } from './derivar';
+import { derivarJornadas, diaEnZona, TOPE_VIAJES_POR_CORRIDA } from './derivar';
 
 /** Mediodía de México del 20-ago-2026: el ancla de toda la suite. */
 const AHORA = new Date('2026-08-20T18:00:00Z');
@@ -248,6 +339,19 @@ beforeEach(() => {
   conAviso = null;
   errorAviso = null;
   resultadoAsiento = 'asentado';
+});
+
+describe('diaEnZona — bucket IANA del tenant', () => {
+  it('separa Tijuana y Sonora alrededor de medianoche invernal', () => {
+    const instante = new Date('2026-01-01T07:30:00.000Z');
+    expect(diaEnZona(instante, 'America/Tijuana')).toBe('2025-12-31');
+    expect(diaEnZona(instante, 'America/Hermosillo')).toBe('2026-01-01');
+  });
+
+  it('aplica la regla IANA de horario estacional, no un offset inventado', () => {
+    expect(diaEnZona(new Date('2026-07-01T06:30:00.000Z'), 'America/Tijuana')).toBe('2026-06-30');
+    expect(diaEnZona(new Date('2026-07-01T06:30:00.000Z'), 'America/Hermosillo')).toBe('2026-06-30');
+  });
 });
 
 describe('derivarJornadas — el reloj de la corrida', () => {
