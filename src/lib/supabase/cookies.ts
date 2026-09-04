@@ -26,10 +26,14 @@
 /**
  * Lo que se le impone a la cookie de sesión, encima de lo que ponga el SDK.
  *
- * Solo `httpOnly`: `path`, `sameSite`, `maxAge` y el nombre siguen siendo los
- * del SDK. Tocar `sameSite` o `domain` desde aquí sería reescribir a mano un
- * contrato de auth que el SDK ya resuelve —y `sameSite: 'lax'` es además lo
- * que permite volver del magic link con la sesión puesta—. `secure` lo pone
- * Next solo en HTTPS; forzarlo aquí rompería `npm run dev` en http://localhost.
+ * `Secure` se fuerza en producción: HSTS ayuda al navegador, pero no sustituye
+ * el atributo de la cookie. En local queda apagado para que `npm run dev`
+ * funcione sobre http://localhost. `SameSite=Lax` conserva el retorno del
+ * magic link y `path=/` evita cookies de sesión con alcances distintos.
  */
-export const COOKIES_DE_SESION = { httpOnly: true } as const;
+export const COOKIES_DE_SESION = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+} as const;

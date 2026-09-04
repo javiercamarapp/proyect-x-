@@ -37,6 +37,9 @@ function fuentes(dir: string, out: string[] = []): string[] {
 describe('la cookie de sesión no la lee el navegador', () => {
   it('se impone httpOnly sobre el default del SDK', () => {
     expect(COOKIES_DE_SESION.httpOnly).toBe(true);
+    expect(COOKIES_DE_SESION.sameSite).toBe('lax');
+    expect(COOKIES_DE_SESION.path).toBe('/');
+    expect(COOKIES_DE_SESION.secure).toBe(process.env.NODE_ENV === 'production');
   });
 
   it('el default del SDK instalado SIGUE siendo httpOnly:false (si cambia, esto sobra)', () => {

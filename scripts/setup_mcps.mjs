@@ -77,5 +77,6 @@ const config = {
   }
 };
 
-fs.writeFileSync(mcpConfigFile, JSON.stringify(config, null, 2), 'utf8');
+fs.writeFileSync(mcpConfigFile, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+fs.chmodSync(mcpConfigFile, 0o600);
 console.log('MCP config saved successfully at:', mcpConfigFile);
