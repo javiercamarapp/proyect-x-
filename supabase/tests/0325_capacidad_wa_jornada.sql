@@ -442,7 +442,7 @@ begin
   select count(*) into v_n
     from public.procesar_jornadas_derivadas(
       '0325-post-inicial',
-      (select array_agg(claim_token) from audit_post_claim_inicial_0325), 0, 0
+      (select array_agg(claim_token) from audit_post_claim_inicial_0325), 1, 0
     ) p where p.exito;
   if v_n <> 5 then raise exception 'precondición post-éxito procesó % de 5', v_n; end if;
 end;
@@ -557,6 +557,341 @@ begin
             or nullif(btrim(anulado_motivo), '') is null)
        and tenant_id = '32500000-0000-4000-8000-000000000080'
   ) then raise exception 'anulación automática sin firma/motivo auditable'; end if;
+end;
+$$;
+
+-- ── RED→GREEN: una corrección histórica sobrevive a la purga ────────
+-- El journal es la lista acotada de días que deben reconstruirse. No vale
+-- volver a escanear toda la tabla de viajes ni conservar la cola para siempre.
+delete from public.jornada_derivacion_trabajo;
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000090', 'Histórico purgado 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000091', '32500000-0000-4000-8000-000000000090',
+   'Op histórico', '523250000091', '2026-01-01'),
+  ('32510000-0000-4000-8000-000000000092', '32500000-0000-4000-8000-000000000090',
+   'Op GPS histórico', '523250000092', '2026-01-01');
+insert into public.unidad(id, tenant_id, numero_economico) values
+  ('32530000-0000-4000-8000-000000000099', '32500000-0000-4000-8000-000000000090', 'HIST-GPS');
+insert into public.viaje(id, tenant_id, operador_id, unidad_id, avisado_en, aceptado_en) values
+  ('32520000-0000-4000-8000-000000000091', '32500000-0000-4000-8000-000000000090',
+   '32510000-0000-4000-8000-000000000091', null, '2026-06-01 11:59+00', '2026-06-01 12:00+00'),
+  ('32520000-0000-4000-8000-000000000092', '32500000-0000-4000-8000-000000000090',
+   '32510000-0000-4000-8000-000000000092', '32530000-0000-4000-8000-000000000099',
+   '2026-06-01 11:59+00', '2026-06-01 12:00+00');
+insert into public.posicion(tenant_id, unidad_id, lat, lng, medida_en, proveedor) values
+  ('32500000-0000-4000-8000-000000000090', '32530000-0000-4000-8000-000000000099',
+   20, -89, '2026-06-01 10:00+00', '0325-historico'),
+  ('32500000-0000-4000-8000-000000000090', '32530000-0000-4000-8000-000000000099',
+   20, -89, '2026-06-01 23:00+00', '0325-historico');
+
+select public.sincronizar_jornadas_por_derivar('2026-06-01 18:00+00', 1);
+create temporary table audit_historico_inicial_0325 as
+select * from public.reclamar_jornadas_por_derivar(2, '0325-historico-inicial', 180);
+do $$
+begin
+  if (select count(*) from public.procesar_jornadas_derivadas(
+        '0325-historico-inicial',
+        (select array_agg(claim_token) from audit_historico_inicial_0325), 1, 300
+      ) p where p.exito) <> 2 then
+    raise exception 'precondición histórica no derivó la jornada';
+  end if;
+end;
+$$;
+
+-- Cerrar y obtener conformidad es estado VIVO, no permiso para presentar una
+-- versión vieja tras cambiar la evidencia. La invalidación debe conservar el
+-- sello anterior en historial y reabrir el expediente vigente.
+update public.jornada_dia
+   set estado = 'cerrado',
+       cerrado_en = '2026-06-02 12:00+00',
+       cerrado_por_email = 'contralor.historico@transportes.test',
+       conforme_operador_en = '2026-06-02 13:00+00',
+       conforme_wa_message_id = 'wamid.0325-conforme-historico'
+ where tenant_id = '32500000-0000-4000-8000-000000000090'
+   and operador_id = '32510000-0000-4000-8000-000000000091'
+   and dia = '2026-06-01';
+
+-- La retención elimina el trabajo exitoso. La mutación posterior es la que
+-- debe dejar una invalidación durable y puntual para (tenant, operador, día).
+select public.sincronizar_jornadas_por_derivar('2026-09-04 12:00+00', 1);
+do $$
+begin
+  if exists (select 1 from public.jornada_derivacion_trabajo
+              where tenant_id='32500000-0000-4000-8000-000000000090') then
+    raise exception 'precondición histórica: la cola no fue purgada';
+  end if;
+end;
+$$;
+update public.viaje set aceptado_en = '2026-06-01 14:00+00'
+ where id = '32520000-0000-4000-8000-000000000091';
+delete from public.posicion
+ where tenant_id='32500000-0000-4000-8000-000000000090'
+   and unidad_id='32530000-0000-4000-8000-000000000099';
+select public.sincronizar_jornadas_por_derivar('2026-09-04 12:00+00', 1);
+
+create temporary table audit_historico_final_0325 as
+select * from public.reclamar_jornadas_por_derivar(2, '0325-historico-final', 180);
+do $$
+declare v_jornada uuid;
+begin
+  if (select count(*) from audit_historico_final_0325
+       where tenant_id='32500000-0000-4000-8000-000000000090') <> 2 then
+    raise exception 'corrección histórica purgada no reabrió trabajo';
+  end if;
+  if (select count(*) from public.procesar_jornadas_derivadas(
+        '0325-historico-final',
+        (select array_agg(claim_token) from audit_historico_final_0325), 3600, 300
+      ) p where p.exito) <> 2 then
+    raise exception 'corrección histórica reabierta no se procesó';
+  end if;
+
+  select id into strict v_jornada from public.jornada_dia
+   where tenant_id='32500000-0000-4000-8000-000000000090'
+     and operador_id='32510000-0000-4000-8000-000000000091'
+     and dia='2026-06-01';
+  if (select momento from public.jornada_asiento
+       where jornada_id=v_jornada and tipo='inicio_jornada' and anulado_en is null)
+       <> '2026-06-01 14:00+00' then
+    raise exception 'corrección histórica no reemplazó el extremo vivo';
+  end if;
+  if not exists (select 1 from public.jornada_asiento
+                  where jornada_id=v_jornada and momento='2026-06-01 12:00+00'
+                    and anulado_en is not null)
+     or not exists (select 1 from public.jornada_asiento
+                     where jornada_id=v_jornada and momento='2026-06-01 14:00+00'
+                       and corrige_a is not null) then
+    raise exception 'corrección histórica perdió soft-history/corrige_a';
+  end if;
+  if exists (select 1 from public.jornada_dia
+              where id=v_jornada
+                and (estado <> 'abierto' or cerrado_en is not null
+                     or cerrado_por is not null or cerrado_por_email is not null
+                     or conforme_operador_en is not null
+                     or conforme_wa_message_id is not null)) then
+    raise exception 'evidencia corregida conservó cierre/conformidad vivos';
+  end if;
+  if not exists (
+    select 1 from public.jornada_revision_historial h
+     where h.jornada_id=v_jornada
+       and h.estado_anterior='cerrado'
+       and h.cerrado_por_email_anterior='contralor.historico@transportes.test'
+       and h.conforme_wa_message_id_anterior='wamid.0325-conforme-historico'
+       and h.invalidado_motivo is not null
+  ) then raise exception 'invalidación no conservó el sello anterior'; end if;
+
+  select id into strict v_jornada from public.jornada_dia
+   where tenant_id='32500000-0000-4000-8000-000000000090'
+     and operador_id='32510000-0000-4000-8000-000000000092'
+     and dia='2026-06-01';
+  if exists (select 1 from public.jornada_asiento
+              where jornada_id=v_jornada and procedencia='gps' and anulado_en is null)
+     or not exists (select 1 from public.jornada_asiento
+                     where jornada_id=v_jornada and procedencia='gps' and anulado_en is not null)
+     or (select count(*) from public.jornada_asiento
+          where jornada_id=v_jornada and tipo='inicio_jornada' and anulado_en is null) <> 1
+     or (select procedencia from public.jornada_asiento
+          where jornada_id=v_jornada and tipo='inicio_jornada' and anulado_en is null) <> 'hito_viaje' then
+    raise exception 'contracción GPS histórica purgada no reabrió/falló cerrado';
+  end if;
+end;
+$$;
+
+-- ── RED→GREEN: unidad compartida sin intervalo falla cerrado ───────
+delete from public.jornada_derivacion_trabajo;
+delete from public.tenant where id in (
+  '32500000-0000-4000-8000-000000000080',
+  '32500000-0000-4000-8000-000000000090'
+);
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000100', 'GPS compartido 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000101', '32500000-0000-4000-8000-000000000100', 'Op compartido A', '523250000101', '2026-01-01'),
+  ('32510000-0000-4000-8000-000000000102', '32500000-0000-4000-8000-000000000100', 'Op compartido B', '523250000102', '2026-01-01');
+insert into public.unidad(id, tenant_id, numero_economico) values
+  ('32530000-0000-4000-8000-000000000101', '32500000-0000-4000-8000-000000000100', 'COMP-0325');
+insert into public.viaje(id, tenant_id, operador_id, unidad_id, avisado_en, aceptado_en) values
+  ('32520000-0000-4000-8000-000000000101', '32500000-0000-4000-8000-000000000100', '32510000-0000-4000-8000-000000000101', '32530000-0000-4000-8000-000000000101', '2026-09-02 13:59+00', '2026-09-02 14:00+00'),
+  ('32520000-0000-4000-8000-000000000102', '32500000-0000-4000-8000-000000000100', '32510000-0000-4000-8000-000000000102', '32530000-0000-4000-8000-000000000101', '2026-09-02 21:59+00', '2026-09-02 22:00+00');
+insert into public.posicion(tenant_id, unidad_id, lat, lng, medida_en, proveedor) values
+  ('32500000-0000-4000-8000-000000000100', '32530000-0000-4000-8000-000000000101', 20, -89, '2026-09-02 12:00+00', '0325-compartido'),
+  ('32500000-0000-4000-8000-000000000100', '32530000-0000-4000-8000-000000000101', 20, -89, '2026-09-03 03:00+00', '0325-compartido');
+select public.sincronizar_jornadas_por_derivar('2026-09-03 05:00+00', 2);
+create temporary table audit_compartido_claim_0325 as
+select * from public.reclamar_jornadas_por_derivar(2, '0325-compartido', 180);
+create temporary table audit_compartido_resultado_0325 as
+select * from public.procesar_jornadas_derivadas(
+  '0325-compartido', (select array_agg(claim_token) from audit_compartido_claim_0325), 3600, 300
+);
+do $$
+begin
+  if (select count(*) from audit_compartido_resultado_0325 where exito and dia_sin_gps) <> 2 then
+    raise exception 'unidad compartida no reportó GPS ambiguo/fail-closed para ambos operadores';
+  end if;
+  if exists (
+    select 1 from public.jornada_asiento a
+    join public.jornada_dia d on d.id=a.jornada_id and d.tenant_id=a.tenant_id
+     where d.tenant_id='32500000-0000-4000-8000-000000000100'
+       and a.procedencia='gps' and a.anulado_en is null
+  ) then raise exception 'unidad compartida atribuyó 06–21 a uno o ambos operadores'; end if;
+  if exists (
+    select 1 from public.jornada_asiento a
+    join public.jornada_dia d on d.id=a.jornada_id and d.tenant_id=a.tenant_id
+    join public.viaje v on v.operador_id=d.operador_id and v.tenant_id=d.tenant_id
+     where d.tenant_id='32500000-0000-4000-8000-000000000100'
+       and a.tipo='inicio_jornada' and a.anulado_en is null
+       and (a.procedencia <> 'hito_viaje' or a.momento <> v.aceptado_en)
+  ) then raise exception 'fail-closed no conservó el hito propio de cada operador'; end if;
+end;
+$$;
+
+-- ── RED→GREEN: procedencia GPS multiunidad nunca cruza viaje/unidad ──
+delete from public.jornada_derivacion_trabajo;
+delete from public.tenant where id='32500000-0000-4000-8000-000000000100';
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000110', 'GPS multiunidad 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000111', '32500000-0000-4000-8000-000000000110', 'Op multiunidad', '523250000111', '2026-01-01');
+insert into public.unidad(id, tenant_id, numero_economico) values
+  ('32530000-0000-4000-8000-000000000111', '32500000-0000-4000-8000-000000000110', 'MULTI-A'),
+  ('32530000-0000-4000-8000-000000000112', '32500000-0000-4000-8000-000000000110', 'MULTI-B');
+insert into public.viaje(id, tenant_id, operador_id, unidad_id, avisado_en, aceptado_en, estatus) values
+  ('32520000-0000-4000-8000-000000000111', '32500000-0000-4000-8000-000000000110', '32510000-0000-4000-8000-000000000111', '32530000-0000-4000-8000-000000000111', '2026-09-02 13:59+00', '2026-09-02 14:00+00', 'liquidado'),
+  ('32520000-0000-4000-8000-000000000112', '32500000-0000-4000-8000-000000000110', '32510000-0000-4000-8000-000000000111', '32530000-0000-4000-8000-000000000112', '2026-09-02 19:59+00', '2026-09-02 20:00+00', 'abierto');
+insert into public.posicion(tenant_id, unidad_id, lat, lng, medida_en, proveedor) values
+  ('32500000-0000-4000-8000-000000000110', '32530000-0000-4000-8000-000000000111', 20, -89, '2026-09-02 12:00+00', '0325-multi'),
+  ('32500000-0000-4000-8000-000000000110', '32530000-0000-4000-8000-000000000112', 20, -89, '2026-09-03 02:00+00', '0325-multi');
+select public.sincronizar_jornadas_por_derivar('2026-09-03 05:00+00', 2);
+create temporary table audit_multi_claim_0325 as
+select * from public.reclamar_jornadas_por_derivar(1, '0325-multi', 180);
+select * from public.procesar_jornadas_derivadas(
+  '0325-multi', (select array_agg(claim_token) from audit_multi_claim_0325), 3600, 300
+);
+do $$
+begin
+  if exists (
+    select 1 from public.jornada_asiento a
+    join public.jornada_dia d on d.id=a.jornada_id and d.tenant_id=a.tenant_id
+    join public.viaje v on v.id=a.viaje_id and v.tenant_id=a.tenant_id
+     where d.tenant_id='32500000-0000-4000-8000-000000000110'
+       and a.procedencia='gps' and a.anulado_en is null
+       and v.unidad_id is distinct from a.unidad_id
+  ) then raise exception 'asiento GPS multiunidad referencia viaje de otra unidad'; end if;
+end;
+$$;
+
+-- ── RED→GREEN: nunca-procesados dominan revisitas y éxito=0 falla ──
+delete from public.jornada_derivacion_trabajo;
+delete from public.tenant where id='32500000-0000-4000-8000-000000000110';
+insert into public.tenant(id, nombre, zona_horaria) values
+  ('32500000-0000-4000-8000-000000000200', 'Revisita 0325', 'America/Mexico_City'),
+  ('32500000-0000-4000-8000-000000000300', 'Nunca procesado 0325', 'America/Mexico_City');
+insert into public.operador(id, tenant_id, nombre, telefono, aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000201', '32500000-0000-4000-8000-000000000200', 'Op revisita', '523250000201', '2026-01-01'),
+  ('32510000-0000-4000-8000-000000000301', '32500000-0000-4000-8000-000000000300', 'Op nuevo', '523250000301', '2026-01-01');
+insert into public.viaje(id, tenant_id, operador_id, avisado_en, aceptado_en) values
+  ('32520000-0000-4000-8000-000000000201', '32500000-0000-4000-8000-000000000200', '32510000-0000-4000-8000-000000000201', '2026-09-02 13:59+00', '2026-09-02 14:00+00'),
+  ('32520000-0000-4000-8000-000000000301', '32500000-0000-4000-8000-000000000300', '32510000-0000-4000-8000-000000000301', '2026-09-02 13:59+00', '2026-09-02 14:00+00');
+select public.sincronizar_jornadas_por_derivar('2026-09-02 18:00+00', 1);
+update public.jornada_derivacion_trabajo
+   set procesado_al_menos_una_vez = (tenant_id='32500000-0000-4000-8000-000000000200'),
+       processed_version = case when tenant_id='32500000-0000-4000-8000-000000000200' then input_version else null end,
+       siguiente_intento_en = '-infinity';
+create temporary table audit_prioridad_0325 as
+select * from public.reclamar_jornadas_por_derivar(1, '0325-prioridad', 180);
+do $$
+declare v_token uuid;
+begin
+  if (select tenant_id from audit_prioridad_0325) <> '32500000-0000-4000-8000-000000000300' then
+    raise exception 'revisita adelantó a un trabajo nunca procesado';
+  end if;
+  select claim_token into strict v_token from audit_prioridad_0325;
+  begin
+    perform public.procesar_jornadas_derivadas('0325-prioridad', array[v_token], 0, 300);
+    raise exception 'procesador aceptó retraso de éxito cero';
+  exception when sqlstate '22023' then null;
+  end;
+  begin
+    perform public.finalizar_jornada_derivacion(v_token, '0325-prioridad', true, null, 0);
+    raise exception 'ACK exitoso aceptó retraso cero';
+  exception when sqlstate '22023' then null;
+  end;
+end;
+$$;
+
+-- ── DST real + aislamiento de las nuevas superficies ─────────────────
+delete from public.jornada_derivacion_trabajo;
+delete from public.tenant where id in (
+  '32500000-0000-4000-8000-000000000200',
+  '32500000-0000-4000-8000-000000000300'
+);
+insert into public.tenant(id,nombre,zona_horaria) values
+  ('32500000-0000-4000-8000-000000000400', 'DST Tijuana 0325', 'America/Tijuana'),
+  ('32500000-0000-4000-8000-000000000401', 'Tenant cruzado 0325', 'America/Hermosillo');
+insert into public.operador(id,tenant_id,nombre,telefono,aviso_privacidad_en) values
+  ('32510000-0000-4000-8000-000000000401', '32500000-0000-4000-8000-000000000400', 'DST primavera', '523250000401', '2026-01-01'),
+  ('32510000-0000-4000-8000-000000000402', '32500000-0000-4000-8000-000000000400', 'DST otoño', '523250000402', '2026-01-01'),
+  ('32510000-0000-4000-8000-000000000403', '32500000-0000-4000-8000-000000000401', 'Otro tenant', '523250000403', '2026-01-01');
+insert into public.viaje(id,tenant_id,operador_id,avisado_en,aceptado_en) values
+  ('32520000-0000-4000-8000-000000000401', '32500000-0000-4000-8000-000000000400', '32510000-0000-4000-8000-000000000401', '2026-03-08 08:29+00', '2026-03-08 08:30+00'),
+  ('32520000-0000-4000-8000-000000000402', '32500000-0000-4000-8000-000000000400', '32510000-0000-4000-8000-000000000402', '2026-11-01 07:29+00', '2026-11-01 07:30+00');
+select public.sincronizar_jornadas_por_derivar('2026-03-08 20:00+00',1);
+select public.sincronizar_jornadas_por_derivar('2026-11-01 20:00+00',1);
+
+do $$
+declare v_horas_primavera numeric; v_horas_otono numeric;
+begin
+  select extract(epoch from (
+    ('2026-03-09'::date::timestamp at time zone 'America/Tijuana') -
+    ('2026-03-08'::date::timestamp at time zone 'America/Tijuana')
+  ))/3600 into v_horas_primavera;
+  select extract(epoch from (
+    ('2026-11-02'::date::timestamp at time zone 'America/Tijuana') -
+    ('2026-11-01'::date::timestamp at time zone 'America/Tijuana')
+  ))/3600 into v_horas_otono;
+  if (v_horas_primavera,v_horas_otono) is distinct from (23::numeric,25::numeric) then
+    raise exception 'buckets DST esperaban 23h/25h, obtuvieron %/%',v_horas_primavera,v_horas_otono;
+  end if;
+  if (select dia from public.jornada_derivacion_trabajo
+       where operador_id='32510000-0000-4000-8000-000000000401') <> '2026-03-08'
+     or (select dia from public.jornada_derivacion_trabajo
+          where operador_id='32510000-0000-4000-8000-000000000402') <> '2026-11-01' then
+    raise exception 'sync no conservó el día local en frontera DST';
+  end if;
+
+  begin
+    insert into public.jornada_derivacion_invalida(tenant_id,operador_id,dia,motivo)
+    values ('32500000-0000-4000-8000-000000000400',
+            '32510000-0000-4000-8000-000000000403','2026-03-08','cruce');
+    raise exception 'journal aceptó operador de otro tenant';
+  exception when foreign_key_violation then null;
+  end;
+
+  if not (select bool_and(c.relrowsecurity)
+            from pg_catalog.pg_class c
+           where c.oid in ('public.jornada_derivacion_invalida'::regclass,
+                           'public.jornada_revision_historial'::regclass)) then
+    raise exception 'tabla nueva de jornada sin RLS';
+  end if;
+  if has_table_privilege('anon','public.jornada_derivacion_invalida','select')
+     or has_table_privilege('authenticated','public.jornada_derivacion_invalida','select')
+     or has_table_privilege('anon','public.jornada_revision_historial','select')
+     or has_table_privilege('authenticated','public.jornada_revision_historial','select') then
+    raise exception 'journal/historial expuesto a rol de navegador';
+  end if;
+  if has_function_privilege('anon','public.registrar_invalidacion_jornada(uuid,uuid,date,text)','execute')
+     or has_function_privilege('authenticated','public.invalidar_sellos_jornada(uuid,uuid,text,text,text)','execute') then
+    raise exception 'helper SECURITY DEFINER expuesto a rol de navegador';
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_proc p
+     where p.oid in (
+       'public.registrar_invalidacion_jornada(uuid,uuid,date,text)'::regprocedure,
+       'public.registrar_clave_jornada_viaje(uuid,uuid,uuid,timestamptz,text)'::regprocedure,
+       'public.registrar_clave_jornada_posicion(uuid,uuid,timestamptz,text)'::regprocedure,
+       'public.invalidar_sellos_jornada(uuid,uuid,text,text,text)'::regprocedure
+     ) and (not p.prosecdef or not (p.proconfig @> array['search_path=""']))
+  ) then raise exception 'helper sin SECURITY DEFINER/search_path vacío'; end if;
 end;
 $$;
 

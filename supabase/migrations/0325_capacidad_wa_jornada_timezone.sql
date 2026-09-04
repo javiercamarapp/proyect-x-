@@ -204,6 +204,310 @@ create index if not exists jornada_derivacion_retencion_idx
   on public.jornada_derivacion_trabajo (dia, tenant_id, operador_id)
   where procesado_al_menos_una_vez and claim_token is null;
 
+-- Resolver si una unidad es exclusiva del operador durante el día exige
+-- tenant+unidad+rango; `viaje_unidad_idx` no alcanza y escanea otras flotas.
+create index if not exists viaje_unidad_dia_ambiguidad_idx
+  on public.viaje (tenant_id, unidad_id, aceptado_en, operador_id)
+  where unidad_id is not null and aceptado_en is not null;
+
+-- La cola de trabajo se purga: no puede ser también el journal de cambios.
+-- Esta tabla sólo conserva claves alteradas hasta que sync las reconstruye.
+-- Una clave procesada expira; una mutación futura la vuelve a abrir por UPSERT.
+create table if not exists public.jornada_derivacion_invalida (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenant(id) on delete cascade,
+  operador_id uuid not null,
+  dia date not null,
+  motivo text not null,
+  creado_en timestamptz not null default clock_timestamp(),
+  procesado_en timestamptz,
+  constraint jornada_derivacion_invalida_operador_fkey
+    foreign key (operador_id, tenant_id)
+    references public.operador(id, tenant_id) on delete cascade,
+  constraint jornada_derivacion_invalida_clave unique (tenant_id, operador_id, dia)
+);
+
+create index if not exists jornada_derivacion_invalida_pendiente_idx
+  on public.jornada_derivacion_invalida (creado_en, id)
+  where procesado_en is null;
+create index if not exists jornada_derivacion_invalida_retencion_idx
+  on public.jornada_derivacion_invalida (procesado_en, id)
+  where procesado_en is not null;
+
+alter table public.jornada_derivacion_invalida enable row level security;
+revoke all on public.jornada_derivacion_invalida from public, anon, authenticated;
+grant select on public.jornada_derivacion_invalida to service_role;
+
+comment on table public.jornada_derivacion_invalida is
+  'Journal operativo acotado por (tenant,operador,día). Sobrevive a la purga de la cola y hace que UPDATE/DELETE/backfill histórico reabra exactamente el expediente afectado, sin scan global.';
+
+-- Cierre y conformidad son el sello de UNA versión de la evidencia. Si ésta
+-- cambia, el estado vivo se reabre; el sello anterior no se destruye: se copia
+-- aquí con sus instantáneas de autor y mensaje.
+create table if not exists public.jornada_revision_historial (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenant(id) on delete cascade,
+  jornada_id uuid not null,
+  input_version_anterior text,
+  input_version_nueva text,
+  estado_anterior text not null,
+  cerrado_en_anterior timestamptz,
+  cerrado_por_anterior uuid,
+  cerrado_por_email_anterior text,
+  conforme_operador_en_anterior timestamptz,
+  conforme_wa_message_id_anterior text,
+  invalidado_en timestamptz not null default clock_timestamp(),
+  invalidado_motivo text not null,
+  constraint jornada_revision_historial_jornada_fkey
+    foreign key (jornada_id, tenant_id)
+    references public.jornada_dia(id, tenant_id) on delete cascade,
+  constraint jornada_revision_historial_estado_check
+    check (estado_anterior in ('abierto', 'cerrado')),
+  constraint jornada_revision_historial_motivo_check
+    check (nullif(btrim(invalidado_motivo), '') is not null)
+);
+
+create index if not exists jornada_revision_historial_jornada_idx
+  on public.jornada_revision_historial (jornada_id, invalidado_en desc, id);
+
+alter table public.jornada_revision_historial enable row level security;
+revoke all on public.jornada_revision_historial from public, anon, authenticated;
+grant select on public.jornada_revision_historial to service_role;
+
+comment on table public.jornada_revision_historial is
+  'Historial append-only de cierres/conformidades invalidados por evidencia posterior. El expediente vivo se reabre, pero la firma, el correo y el wamid anteriores permanecen auditables.';
+
+create or replace function public.registrar_invalidacion_jornada(
+  p_tenant_id uuid,
+  p_operador_id uuid,
+  p_dia date,
+  p_motivo text
+) returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_tenant_id is null or p_operador_id is null or p_dia is null then return; end if;
+  insert into public.jornada_derivacion_invalida as i (
+    tenant_id, operador_id, dia, motivo
+  ) values (
+    p_tenant_id, p_operador_id, p_dia,
+    left(coalesce(nullif(btrim(p_motivo), ''), 'cambio de evidencia'), 500)
+  )
+  on conflict on constraint jornada_derivacion_invalida_clave do update
+     set procesado_en = null,
+         creado_en = clock_timestamp(),
+         motivo = left(excluded.motivo, 500);
+end;
+$$;
+
+create or replace function public.registrar_clave_jornada_viaje(
+  p_tenant_id uuid,
+  p_operador_id uuid,
+  p_unidad_id uuid,
+  p_aceptado_en timestamptz,
+  p_motivo text
+) returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_zona text;
+  v_dia date;
+  v_operador uuid;
+begin
+  if p_tenant_id is null or p_operador_id is null or p_aceptado_en is null then return; end if;
+  select t.zona_horaria into v_zona from public.tenant t where t.id=p_tenant_id;
+  if v_zona is null then return; end if;
+  v_dia := (p_aceptado_en at time zone v_zona)::date;
+
+  perform public.registrar_invalidacion_jornada(
+    p_tenant_id, p_operador_id, v_dia, p_motivo
+  );
+
+  -- Cambiar una asignación vuelve ambigua/no ambigua la misma unidad para los
+  -- demás operadores del día. Todos deben recalcular, no sólo la fila mutada.
+  if p_unidad_id is not null then
+    for v_operador in
+      select distinct v.operador_id
+        from public.viaje v
+       where v.tenant_id=p_tenant_id
+         and v.unidad_id=p_unidad_id
+         and v.aceptado_en is not null
+         and v.aceptado_en >= (v_dia::timestamp at time zone v_zona)
+         and v.aceptado_en < ((v_dia + 1)::timestamp at time zone v_zona)
+    loop
+      perform public.registrar_invalidacion_jornada(
+        p_tenant_id, v_operador, v_dia, p_motivo || ':unidad-compartida'
+      );
+    end loop;
+  end if;
+end;
+$$;
+
+create or replace function public.journal_jornada_desde_viaje()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare v_zona text;
+begin
+  if tg_op in ('UPDATE', 'DELETE') then
+    perform public.registrar_clave_jornada_viaje(
+      old.tenant_id, old.operador_id, old.unidad_id, old.aceptado_en,
+      'viaje:' || tg_op || ':antes'
+    );
+  end if;
+
+  if tg_op in ('UPDATE', 'INSERT') and new.aceptado_en is not null then
+    select t.zona_horaria into v_zona from public.tenant t where t.id=new.tenant_id;
+    -- El barrido reciente ya materializa altas del día. El journal se reserva
+    -- para mutaciones y backfills de días anteriores: no amplifica 50k altas.
+    if tg_op='UPDATE'
+       or v_zona is null
+       or (new.aceptado_en at time zone v_zona)::date
+            < (clock_timestamp() at time zone v_zona)::date then
+      perform public.registrar_clave_jornada_viaje(
+        new.tenant_id, new.operador_id, new.unidad_id, new.aceptado_en,
+        'viaje:' || tg_op || ':después'
+      );
+    end if;
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists viaje_journal_jornada on public.viaje;
+create trigger viaje_journal_jornada
+after insert or delete or update of tenant_id, operador_id, unidad_id, aceptado_en
+on public.viaje for each row execute function public.journal_jornada_desde_viaje();
+
+create or replace function public.registrar_clave_jornada_posicion(
+  p_tenant_id uuid,
+  p_unidad_id uuid,
+  p_medida_en timestamptz,
+  p_motivo text
+) returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_zona text;
+  v_dia date;
+  v_operador uuid;
+begin
+  if p_tenant_id is null or p_unidad_id is null or p_medida_en is null then return; end if;
+  select t.zona_horaria into v_zona from public.tenant t where t.id=p_tenant_id;
+  if v_zona is null then return; end if;
+  v_dia := (p_medida_en at time zone v_zona)::date;
+  for v_operador in
+    select distinct v.operador_id
+      from public.viaje v
+     where v.tenant_id=p_tenant_id
+       and v.unidad_id=p_unidad_id
+       and v.aceptado_en is not null
+       and v.aceptado_en >= (v_dia::timestamp at time zone v_zona)
+       and v.aceptado_en < ((v_dia + 1)::timestamp at time zone v_zona)
+  loop
+    perform public.registrar_invalidacion_jornada(
+      p_tenant_id, v_operador, v_dia, p_motivo
+    );
+  end loop;
+end;
+$$;
+
+create or replace function public.journal_jornada_desde_posicion()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare v_zona text;
+begin
+  if tg_op in ('UPDATE', 'DELETE') then
+    perform public.registrar_clave_jornada_posicion(
+      old.tenant_id, old.unidad_id, old.medida_en, 'posicion:' || tg_op || ':antes'
+    );
+  end if;
+  if tg_op in ('UPDATE', 'INSERT') then
+    select t.zona_horaria into v_zona from public.tenant t where t.id=new.tenant_id;
+    -- Las posiciones del día viven en una cola reciente y se revisitan. Un
+    -- backfill histórico, UPDATE o DELETE sí necesita el journal durable.
+    if tg_op='UPDATE'
+       or v_zona is null
+       or (new.medida_en at time zone v_zona)::date
+            < (clock_timestamp() at time zone v_zona)::date then
+      perform public.registrar_clave_jornada_posicion(
+        new.tenant_id, new.unidad_id, new.medida_en, 'posicion:' || tg_op || ':después'
+      );
+    end if;
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists posicion_journal_jornada on public.posicion;
+create trigger posicion_journal_jornada
+after insert or delete or update of tenant_id, unidad_id, medida_en
+on public.posicion for each row execute function public.journal_jornada_desde_posicion();
+
+create or replace function public.invalidar_sellos_jornada(
+  p_jornada_id uuid,
+  p_tenant_id uuid,
+  p_input_version_anterior text,
+  p_input_version_nueva text,
+  p_motivo text
+) returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare v_dia public.jornada_dia%rowtype;
+begin
+  select d.* into v_dia
+    from public.jornada_dia d
+   where d.id=p_jornada_id and d.tenant_id=p_tenant_id
+   for update;
+  if not found then return false; end if;
+  if v_dia.estado <> 'cerrado'
+     and v_dia.conforme_operador_en is null
+     and v_dia.conforme_wa_message_id is null then
+    return false;
+  end if;
+
+  insert into public.jornada_revision_historial (
+    tenant_id, jornada_id, input_version_anterior, input_version_nueva,
+    estado_anterior, cerrado_en_anterior, cerrado_por_anterior,
+    cerrado_por_email_anterior, conforme_operador_en_anterior,
+    conforme_wa_message_id_anterior, invalidado_motivo
+  ) values (
+    p_tenant_id, p_jornada_id, p_input_version_anterior, p_input_version_nueva,
+    v_dia.estado, v_dia.cerrado_en, v_dia.cerrado_por,
+    v_dia.cerrado_por_email, v_dia.conforme_operador_en,
+    v_dia.conforme_wa_message_id,
+    left(coalesce(nullif(btrim(p_motivo), ''), 'cambió la evidencia derivada'), 500)
+  );
+
+  update public.jornada_dia d
+     set estado='abierto', cerrado_en=null, cerrado_por=null,
+         cerrado_por_email=null, conforme_operador_en=null,
+         conforme_wa_message_id=null
+   where d.id=p_jornada_id and d.tenant_id=p_tenant_id;
+  return true;
+end;
+$$;
+
+revoke all on function public.registrar_invalidacion_jornada(uuid, uuid, date, text) from public, anon, authenticated;
+revoke all on function public.registrar_clave_jornada_viaje(uuid, uuid, uuid, timestamptz, text) from public, anon, authenticated;
+revoke all on function public.journal_jornada_desde_viaje() from public, anon, authenticated;
+revoke all on function public.registrar_clave_jornada_posicion(uuid, uuid, timestamptz, text) from public, anon, authenticated;
+revoke all on function public.journal_jornada_desde_posicion() from public, anon, authenticated;
+revoke all on function public.invalidar_sellos_jornada(uuid, uuid, text, text, text) from public, anon, authenticated;
+
 create or replace function public.sincronizar_jornadas_por_derivar(
   p_ahora timestamptz default clock_timestamp(),
   p_dias integer default 3
@@ -215,11 +519,136 @@ as $$
 declare
   v_afectadas integer;
   v_eliminadas integer;
+  v_invalidadas integer := 0;
+  v_invalida record;
+  v_trabajo_existe boolean;
+  v_version_previa text;
+  v_fuente_viaje_id uuid;
+  v_fuente_unidad_id uuid;
+  v_fuente_unidad_ids uuid[];
+  v_fuente_aceptado_en timestamptz;
+  v_fuente_version text;
+  v_jornada_id uuid;
 begin
   if p_ahora is null then raise exception 'jornada sync timestamp is required'; end if;
   if p_dias < 1 or p_dias > 31 then
     raise exception 'jornada sync days must be between 1 and 31';
   end if;
+
+  -- Consumir primero el journal puntual. No se bloquea una fila del journal
+  -- antes de su trabajo: el orden cola→journal evita invertir el mutex del
+  -- procesador (cola→viajes→posiciones→expediente). Un lease vivo deja la
+  -- invalidación pendiente para la siguiente corrida.
+  for v_invalida in
+    select i.id, i.tenant_id, i.operador_id, i.dia, i.motivo
+      from public.jornada_derivacion_invalida i
+     where i.procesado_en is null
+     order by i.creado_en, i.id
+     limit 10000
+  loop
+    select exists (
+      select 1 from public.jornada_derivacion_trabajo j
+       where (j.tenant_id,j.operador_id,j.dia)=
+             (v_invalida.tenant_id,v_invalida.operador_id,v_invalida.dia)
+    ) into v_trabajo_existe;
+    v_version_previa := null;
+
+    if v_trabajo_existe then
+      select j.viajes_version
+        into v_version_previa
+        from public.jornada_derivacion_trabajo j
+       where (j.tenant_id,j.operador_id,j.dia)=
+             (v_invalida.tenant_id,v_invalida.operador_id,v_invalida.dia)
+         and (j.claim_token is null or j.lease_expires_at <= clock_timestamp())
+       for update skip locked;
+      if not found then continue; end if;
+    end if;
+
+    perform 1 from public.jornada_derivacion_invalida i
+     where i.id=v_invalida.id and i.procesado_en is null
+     for update skip locked;
+    if not found then continue; end if;
+
+    select (array_agg(v.id order by v.aceptado_en, v.id))[1],
+           (array_agg(v.unidad_id order by v.aceptado_en, v.id)
+             filter (where v.unidad_id is not null))[1],
+           coalesce(array_agg(distinct v.unidad_id order by v.unidad_id)
+             filter (where v.unidad_id is not null), array[]::uuid[]),
+           min(v.aceptado_en),
+           md5(string_agg(
+             concat_ws(':', v.id::text, coalesce(v.unidad_id::text, '-'), v.aceptado_en::text),
+             ',' order by v.aceptado_en, v.id
+           ))
+      into v_fuente_viaje_id, v_fuente_unidad_id, v_fuente_unidad_ids,
+           v_fuente_aceptado_en, v_fuente_version
+      from public.viaje v
+      join public.tenant t on t.id=v.tenant_id
+     where v.tenant_id=v_invalida.tenant_id
+       and v.operador_id=v_invalida.operador_id
+       and v.aceptado_en is not null
+       and v.aceptado_en >= (v_invalida.dia::timestamp at time zone t.zona_horaria)
+       and v.aceptado_en < ((v_invalida.dia + 1)::timestamp at time zone t.zona_horaria);
+
+    if v_fuente_version is null then
+      v_jornada_id := null;
+      select d.id into v_jornada_id
+        from public.jornada_dia d
+       where (d.tenant_id,d.operador_id,d.dia)=
+             (v_invalida.tenant_id,v_invalida.operador_id,v_invalida.dia)
+       for update;
+      if v_jornada_id is not null then
+        perform public.invalidar_sellos_jornada(
+          v_jornada_id, v_invalida.tenant_id, v_version_previa, null,
+          'reconciliación automática: la evidencia histórica dejó de sostener el día; '
+          || v_invalida.motivo
+        );
+        update public.jornada_asiento a
+           set anulado_en=clock_timestamp(),
+               anulado_por_email='sistema:derivador-jornada@likida.internal',
+               anulado_motivo=left(
+                 'reconciliación automática histórica sin fuente: ' || v_invalida.motivo, 500
+               )
+         where a.jornada_id=v_jornada_id and a.tenant_id=v_invalida.tenant_id
+           and a.procedencia in ('hito_viaje','gps') and a.anulado_en is null;
+      end if;
+      delete from public.jornada_derivacion_trabajo j
+       where (j.tenant_id,j.operador_id,j.dia)=
+             (v_invalida.tenant_id,v_invalida.operador_id,v_invalida.dia);
+    else
+      insert into public.jornada_derivacion_trabajo as j (
+        tenant_id, operador_id, dia, viaje_id, unidad_id, unidad_ids,
+        aceptado_en, viajes_version, input_version
+      ) values (
+        v_invalida.tenant_id, v_invalida.operador_id, v_invalida.dia,
+        v_fuente_viaje_id, v_fuente_unidad_id, v_fuente_unidad_ids,
+        v_fuente_aceptado_en, v_fuente_version, v_fuente_version
+      )
+      on conflict on constraint jornada_derivacion_trabajo_pkey do update
+         set viaje_id=excluded.viaje_id,
+             unidad_id=excluded.unidad_id,
+             unidad_ids=excluded.unidad_ids,
+             aceptado_en=excluded.aceptado_en,
+             viajes_version=excluded.viajes_version,
+             siguiente_intento_en='-infinity',
+             updated_at=clock_timestamp()
+       where j.claim_token is null or j.lease_expires_at <= clock_timestamp();
+    end if;
+
+    update public.jornada_derivacion_invalida i
+       set procesado_en=clock_timestamp()
+     where i.id=v_invalida.id and i.procesado_en is null;
+    if found then v_invalidadas := v_invalidadas + 1; end if;
+  end loop;
+
+  -- El journal no es archivo legal: ya existe historial append-only en los
+  -- asientos/sellos. Borrar sólo claves procesadas mantiene el costo acotado.
+  with viejas as (
+    select i.id from public.jornada_derivacion_invalida i
+     where i.procesado_en < clock_timestamp() - interval '7 days'
+     order by i.procesado_en, i.id
+     for update skip locked limit 10000
+  )
+  delete from public.jornada_derivacion_invalida i using viejas v where i.id=v.id;
 
   -- La cola es reconstruible. Una fuente desaparecida (`aceptado_en=NULL`) o
   -- movida de día invalida el trabajo aunque ya haya envejecido fuera del
@@ -264,6 +693,13 @@ begin
      where o.fuente_obsoleta
      order by d.id
      for update of d
+  ), sellos_invalidados as materialized (
+    select d.id,
+           public.invalidar_sellos_jornada(
+             d.id, d.tenant_id, d.viajes_version, null,
+             'reconciliación automática: la fuente de viajes dejó de sostener el día'
+           ) as invalidado
+      from dias_cercados d
   ), asientos_anulados as (
     update public.jornada_asiento a
        set anulado_en = clock_timestamp(),
@@ -277,6 +713,7 @@ begin
        and a.tenant_id = d.tenant_id
        and a.procedencia in ('hito_viaje', 'gps')
        and a.anulado_en is null
+       and (select count(*) from sellos_invalidados) >= 0
     returning a.id
   )
   delete from public.jornada_derivacion_trabajo j
@@ -340,7 +777,7 @@ begin
           excluded.aceptado_en, excluded.viajes_version);
 
   get diagnostics v_afectadas = row_count;
-  return v_afectadas + v_eliminadas;
+  return v_afectadas + v_eliminadas + v_invalidadas;
 end;
 $$;
 
@@ -404,7 +841,9 @@ begin
     select j.tenant_id, j.operador_id, j.dia, e.turno_tenant
       from public.jornada_derivacion_trabajo j
       join elegibles e using (tenant_id, operador_id, dia)
-     order by e.turno_tenant, j.tenant_id
+     -- Nunca una revisita desplaza trabajo que jamás tuvo primer intento. La
+     -- ronda por tenant se conserva dentro de cada clase para evitar monopolio.
+     order by j.procesado_al_menos_una_vez, e.turno_tenant, j.tenant_id
      for update of j skip locked
      limit p_limite
   ), limites as materialized (
@@ -423,18 +862,34 @@ begin
            l.tenant_id, l.operador_id, l.dia, p.medida_en, p.unidad_id
       from limites l
       join public.posicion p
-        on p.tenant_id = l.tenant_id
+       on p.tenant_id = l.tenant_id
        and p.unidad_id = any(l.unidad_ids)
        and p.medida_en >= l.desde and p.medida_en < l.hasta
+       and not exists (
+         select 1 from public.viaje otro
+          where otro.tenant_id=l.tenant_id
+            and otro.unidad_id=p.unidad_id
+            and otro.operador_id <> l.operador_id
+            and otro.aceptado_en is not null
+            and otro.aceptado_en >= l.desde and otro.aceptado_en < l.hasta
+       )
      order by l.tenant_id, l.operador_id, l.dia, p.medida_en, p.id
   ), gps_ultimo as materialized (
     select distinct on (l.tenant_id, l.operador_id, l.dia)
            l.tenant_id, l.operador_id, l.dia, p.medida_en, p.unidad_id
       from limites l
       join public.posicion p
-        on p.tenant_id = l.tenant_id
+       on p.tenant_id = l.tenant_id
        and p.unidad_id = any(l.unidad_ids)
        and p.medida_en >= l.desde and p.medida_en < l.hasta
+       and not exists (
+         select 1 from public.viaje otro
+          where otro.tenant_id=l.tenant_id
+            and otro.unidad_id=p.unidad_id
+            and otro.operador_id <> l.operador_id
+            and otro.aceptado_en is not null
+            and otro.aceptado_en >= l.desde and otro.aceptado_en < l.hasta
+       )
      order by l.tenant_id, l.operador_id, l.dia, p.medida_en desc, p.id desc
   ), fuentes as materialized (
     select l.*,
@@ -486,7 +941,7 @@ begin
               )
          ) as hay_mas
     from reclamados r
-   order by r.turno_tenant, r.tenant_id;
+   order by r.procesado_al_menos_una_vez, r.turno_tenant, r.tenant_id;
 end;
 $$;
 
@@ -629,6 +1084,7 @@ declare
   v_viaje_id_actual uuid;
   v_unidad_id_actual uuid;
   v_unidad_ids_actual uuid[];
+  v_unidad_ids_gps_actual uuid[];
   v_aceptado_en_actual timestamptz;
   v_gps_primera_en_actual timestamptz;
   v_gps_primera_unidad_id_actual uuid;
@@ -637,6 +1093,8 @@ declare
   v_inicio_momento_actual timestamptz;
   v_inicio_procedencia_actual text;
   v_inicio_unidad_id_actual uuid;
+  v_inicio_viaje_id_actual uuid;
+  v_automaticos_cambiados integer;
 begin
   if nullif(btrim(p_owner), '') is null then
     raise exception 'jornada derivacion lease owner is required';
@@ -645,9 +1103,10 @@ begin
      or cardinality(p_claim_tokens) > 100 then
     raise exception 'jornada derivacion processing batch must be between 1 and 100';
   end if;
-  if p_retraso_exito_seconds < 0 or p_retraso_exito_seconds > 86400
+  if p_retraso_exito_seconds < 1 or p_retraso_exito_seconds > 86400
      or p_retraso_fallo_seconds < 0 or p_retraso_fallo_seconds > 86400 then
-    raise exception 'jornada derivacion retry delay is invalid';
+    raise exception 'jornada derivacion success delay must be between 1 and 86400; failure delay between 0 and 86400'
+      using errcode = '22023';
   end if;
 
   for v in
@@ -701,11 +1160,23 @@ begin
       v_gps_primera_unidad_id_actual := null;
       v_gps_ultima_en_actual := null;
       v_gps_ultima_unidad_id_actual := null;
-      if cardinality(v_unidad_ids_actual) > 0 then
+      select coalesce(array_agg(u.unidad_id order by u.unidad_id), array[]::uuid[])
+        into v_unidad_ids_gps_actual
+        from unnest(coalesce(v_unidad_ids_actual, array[]::uuid[])) as u(unidad_id)
+       where not exists (
+         select 1 from public.viaje otro
+          where otro.tenant_id=v.tenant_id
+            and otro.unidad_id=u.unidad_id
+            and otro.operador_id <> v.operador_id
+            and otro.aceptado_en is not null
+            and otro.aceptado_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
+            and otro.aceptado_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria)
+       );
+      if cardinality(v_unidad_ids_gps_actual) > 0 then
         perform 1
           from public.posicion p
          where p.tenant_id = v.tenant_id
-           and p.unidad_id = any(v_unidad_ids_actual)
+           and p.unidad_id = any(v_unidad_ids_gps_actual)
            and p.medida_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
            and p.medida_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria)
          order by p.id
@@ -718,7 +1189,7 @@ begin
                v_gps_ultima_en_actual, v_gps_ultima_unidad_id_actual
           from public.posicion p
          where p.tenant_id = v.tenant_id
-           and p.unidad_id = any(v_unidad_ids_actual)
+           and p.unidad_id = any(v_unidad_ids_gps_actual)
            and p.medida_en >= (v.dia::timestamp at time zone v.claim_zona_horaria)
            and p.medida_en < ((v.dia + 1)::timestamp at time zone v.claim_zona_horaria);
       end if;
@@ -731,11 +1202,15 @@ begin
       v_inicio_momento_actual := v_aceptado_en_actual;
       v_inicio_procedencia_actual := 'hito_viaje';
       v_inicio_unidad_id_actual := v_unidad_id_actual;
+      v_inicio_viaje_id_actual := v_viaje_id_actual;
       if v_gps_primera_en_actual is not null
          and v_gps_primera_en_actual < v_aceptado_en_actual then
         v_inicio_momento_actual := v_gps_primera_en_actual;
         v_inicio_procedencia_actual := 'gps';
         v_inicio_unidad_id_actual := v_gps_primera_unidad_id_actual;
+        -- Sin intervalo de asignación no se inventa qué viaje produjo una
+        -- posición. La unidad sí está probada; viaje_id queda honestamente NULL.
+        v_inicio_viaje_id_actual := null;
       end if;
 
       v_jornada_id := null;
@@ -757,6 +1232,13 @@ begin
                  )
            where a.jornada_id = v_jornada_id and a.tenant_id = v.tenant_id
              and a.procedencia in ('hito_viaje', 'gps') and a.anulado_en is null;
+          get diagnostics v_automaticos_cambiados = row_count;
+          if v_automaticos_cambiados > 0 then
+            perform public.invalidar_sellos_jornada(
+              v_jornada_id, v.tenant_id, v.processed_version, null,
+              'reconciliación automática: ningún viaje aceptado sostiene ya el día'
+            );
+          end if;
         end if;
       elsif v.claim_aviso_previo is not true then
         v_error := 'aviso de privacidad pendiente';
@@ -787,15 +1269,22 @@ begin
              (a.tipo = 'inicio_jornada' and
                (a.momento, a.procedencia, a.viaje_id, a.unidad_id) is distinct from
                (v_inicio_momento_actual, v_inicio_procedencia_actual,
-                v_viaje_id_actual, v_inicio_unidad_id_actual))
+                v_inicio_viaje_id_actual, v_inicio_unidad_id_actual))
              or
              (a.tipo = 'fin_jornada' and
                (v_gps_ultima_en_actual is null
                 or v_gps_ultima_en_actual = v_gps_primera_en_actual
                 or (a.momento, a.procedencia, a.viaje_id, a.unidad_id) is distinct from
                    (v_gps_ultima_en_actual, 'gps'::text,
-                    v_viaje_id_actual, v_gps_ultima_unidad_id_actual)))
+                    null::uuid, v_gps_ultima_unidad_id_actual)))
            );
+        get diagnostics v_automaticos_cambiados = row_count;
+        if v_automaticos_cambiados > 0 then
+          perform public.invalidar_sellos_jornada(
+            v_jornada_id, v.tenant_id, v.processed_version, v_input_version_actual,
+            'reconciliación automática: cambió la evidencia derivada de la jornada'
+          );
+        end if;
 
         v_resultado := public.asentar_extremo_jornada_derivado(
           v_jornada_id, v.tenant_id, 'inicio_jornada', v_aceptado_en_actual,
@@ -814,7 +1303,7 @@ begin
             v_jornada_id, v.tenant_id, 'inicio_jornada', v_gps_primera_en_actual,
             'gps', concat('gps:', v_gps_primera_unidad_id_actual, ':', v.dia,
                           ':primera:', v_gps_primera_en_actual),
-            v_viaje_id_actual, v_gps_primera_unidad_id_actual,
+            null, v_gps_primera_unidad_id_actual,
             jsonb_build_object('hecho', 'primera posición de la unidad ese día', 'cota', 'inferior',
                                'zona_horaria', v.claim_zona_horaria,
                                'derivacion_input_version', v_input_version_actual)
@@ -828,7 +1317,7 @@ begin
               v_jornada_id, v.tenant_id, 'fin_jornada', v_gps_ultima_en_actual,
               'gps', concat('gps:', v_gps_ultima_unidad_id_actual, ':', v.dia,
                             ':ultima:', v_gps_ultima_en_actual),
-              v_viaje_id_actual, v_gps_ultima_unidad_id_actual,
+              null, v_gps_ultima_unidad_id_actual,
               jsonb_build_object('hecho', 'última posición de la unidad ese día', 'cota', 'inferior',
                                  'zona_horaria', v.claim_zona_horaria,
                                  'derivacion_input_version', v_input_version_actual)
@@ -882,8 +1371,10 @@ as $$
 declare v_actualizadas integer;
 begin
   if p_claim_token is null or nullif(btrim(p_owner), '') is null then return false; end if;
-  if p_retraso_seconds < 0 or p_retraso_seconds > 86400 then
-    raise exception 'jornada derivacion retry delay must be between 0 and 86400';
+  if p_retraso_seconds < 0 or p_retraso_seconds > 86400
+     or (p_exito and p_retraso_seconds < 1) then
+    raise exception 'jornada derivacion ACK success delay must be between 1 and 86400; failure delay between 0 and 86400'
+      using errcode = '22023';
   end if;
   update public.jornada_derivacion_trabajo j
      set procesado_al_menos_una_vez = j.procesado_al_menos_una_vez or p_exito,

@@ -13,8 +13,10 @@ salida_dir="$(mktemp -d)"
 salida_a="$salida_dir/a.txt"
 salida_b="$salida_dir/b.txt"
 salida_update="$salida_dir/update.txt"
+salida_insert="$salida_dir/insert.txt"
 pid_a=''
 pid_update=''
+pid_insert=''
 
 limpiar() {
   if [[ -n "$pid_a" ]]; then
@@ -24,6 +26,10 @@ limpiar() {
   if [[ -n "$pid_update" ]]; then
     kill "$pid_update" 2>/dev/null || true
     wait "$pid_update" 2>/dev/null || true
+  fi
+  if [[ -n "$pid_insert" ]]; then
+    kill "$pid_insert" 2>/dev/null || true
+    wait "$pid_insert" 2>/dev/null || true
   fi
   "${psql_cmd[@]}" -c "set statement_timeout='10s'; set lock_timeout='2s'; delete from public.tenant where id='$tenant';" >/dev/null || true
   rm -rf "$salida_dir"
@@ -102,3 +108,35 @@ test "$jornadas_fence" = '1'
 test "$automaticos_vivos" = '0'
 test "$automaticos_anulados" = '1'
 echo "0325_jornada_fence: PASS (updater=$estado_update, cola=$cola_fence, jornada=$jornadas_fence, auto_vivos=$automaticos_vivos, auto_anulados=$automaticos_anulados)"
+
+# Un INSERT no puede ser cercado con FOR SHARE sobre filas que aún no existen.
+# Debe terminar sin esperar al procesador y, tras su commit, el sync/journal
+# tiene que reabrir la misma clave hasta procesar la nueva versión.
+limpiar_datos
+"${psql_cmd[@]}" -c "update public.jornada_derivacion_trabajo set siguiente_intento_en='infinity' where tenant_id='$tenant' and operador_id<>'$operador_fence';" >/dev/null
+token_fence="$("${psql_cmd[@]}" -c "select claim_token from public.reclamar_jornadas_por_derivar(1,'worker-insert-fence',180);")"
+test -n "$token_fence"
+
+"${psql_cmd[@]}" -c "set application_name='0325-processor-insert'; begin; set local statement_timeout='5s'; select exito from public.procesar_jornadas_derivadas('worker-insert-fence',array['$token_fence'::uuid],3600,300); select pg_sleep(2); commit;" >"$salida_a" &
+pid_a=$!
+sleep 0.2
+
+viaje_insert="$("${psql_cmd[@]}" -c "select md5('0325-conc-v-insert')::uuid;")"
+"${psql_cmd[@]}" -c "set application_name='0325-inserter-fence'; set statement_timeout='1s'; insert into public.viaje(id,tenant_id,operador_id,avisado_en,aceptado_en,estatus) values('$viaje_insert','$tenant','$operador_fence','2026-09-03 13:59+00','2026-09-03 14:00+00','liquidado'); select 'insert-ok';" >"$salida_insert" &
+pid_insert=$!
+wait "$pid_insert"
+pid_insert=''
+test "$(grep -Ec '^insert-ok$' "$salida_insert")" = '1'
+
+wait "$pid_a"
+pid_a=''
+test "$(grep -Ec '^t$' "$salida_a")" = '1'
+
+"${psql_cmd[@]}" -c "select public.sincronizar_jornadas_por_derivar('2026-09-03 18:00+00',1);" >/dev/null
+cola_reabierta="$("${psql_cmd[@]}" -c "select count(*) from public.jornada_derivacion_trabajo where tenant_id='$tenant' and operador_id='$operador_fence' and siguiente_intento_en <= clock_timestamp() and viajes_version is distinct from processed_version;")"
+test "$cola_reabierta" = '1'
+token_reabierto="$("${psql_cmd[@]}" -c "select claim_token from public.reclamar_jornadas_por_derivar(1,'worker-insert-replay',180);")"
+test -n "$token_reabierto"
+replay_ok="$("${psql_cmd[@]}" -c "select count(*) from public.procesar_jornadas_derivadas('worker-insert-replay',array['$token_reabierto'::uuid],3600,300) where exito;")"
+test "$replay_ok" = '1'
+echo "0325_jornada_insert_fence: PASS (insert<1s, cola_reabierta=$cola_reabierta, replay=$replay_ok)"
