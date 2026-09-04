@@ -67,6 +67,10 @@ export interface ParametrosEmision {
   /** Clave c_FormaPago (01, 03, 99…). Con PPD se fuerza a 99 — regla del
    *  Anexo 20, no una preferencia. */
   formaPago: string;
+  /** Hora LOCAL de México para el destino (`YYYY-MM-DDTHH:mm`) o una fecha
+   * RFC3339 con offset. Es obligatoria para timbrar; nunca se estima a partir
+   * de kilómetros porque eso inventaría un dato fiscal. */
+  fechaLlegadaEstimada?: string | null;
 }
 
 export type ResultadoCfdi =
@@ -83,6 +87,21 @@ export type ResultadoCfdi =
 
 const dinero = (n: number): number => Math.round(n * 100) / 100;
 const attr = (n: number): string => n.toFixed(2);
+
+function fechaLlegadaSat(valor: string | null | undefined): string | null {
+  const crudo = valor?.trim();
+  if (!crudo) return null;
+  // eslint-disable-next-line security/detect-unsafe-regex -- formato fijo, sin cuantificadores anidados ni entrada recursiva
+  const local = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2}))?$/.exec(crudo);
+  if (local) {
+    const canonica = `${local[1]}:${local[2] ?? '00'}`;
+    // Likida opera en la zona de Mérida/México (UTC-06, sin horario de
+    // verano). El round-trip también rechaza 31-feb y horas imposibles.
+    const d = new Date(`${canonica}-06:00`);
+    return !Number.isNaN(d.getTime()) && fechaHoraSat(d.toISOString()) === canonica ? canonica : null;
+  }
+  return fechaHoraSat(crudo);
+}
 
 /**
  * El CFDI de ingreso COMPLETO y sin sellar, listo para el `issue` del PAC.
@@ -146,6 +165,16 @@ export function armarCfdiTimbrable(
   // El PAC rebotaría cada uno con su código; decirlos ANTES ahorra el viaje.
   const d = v.datos;
   const cc = v.datosCliente;
+  const llegada = fechaLlegadaSat(emision.fechaLlegadaEstimada);
+  const salida = d.viaje.fechaInicio === null ? null : fechaHoraSat(d.viaje.fechaInicio);
+  if (llegada === null) {
+    faltantes.push('Fecha y hora estimada de llegada — captúrala antes de timbrar; Carta Porte la exige en el destino.');
+  } else if (salida !== null && llegada <= salida) {
+    faltantes.push('La fecha estimada de llegada debe ser posterior a la salida del viaje.');
+  }
+  if (cc.transpInternac === true) {
+    faltantes.push('El transporte internacional todavía no está soportado para timbrado directo: faltan los datos aduaneros obligatorios. Timbra este viaje en tu facturador.');
+  }
   if (cc.transpInternac === null) faltantes.push('TranspInternac sin declarar en el viaje — decláralo (el timbre lo exige).');
   if (cc.origenCp === null) faltantes.push('CP del origen (dato del cliente) — sin él, la Ubicación de origen rebota.');
   if (cc.destinoCp === null) faltantes.push('CP del destino (dato del cliente).');
@@ -158,7 +187,7 @@ export function armarCfdiTimbrable(
   if (d.unidad?.configVehicular == null) faltantes.push('Configuración vehicular de la unidad (C2, T3S2…) — captúralo en Unidades.');
 
   // El complemento con sus propios candados (borrador validado, etc.).
-  const comp = nodoComplementoCcp(v, idCcp);
+  const comp = nodoComplementoCcp(v, idCcp, llegada === null ? undefined : { fechaLlegadaSat: llegada });
   if (!comp.ok) return { ok: false, faltantes: [...faltantes, ...comp.motivos] };
 
   if (faltantes.length > 0) return { ok: false, faltantes };
