@@ -1,6 +1,6 @@
 # Auditoría enterprise Likida — matriz y workflow continuo
 
-**Fecha de corte:** 2026-09-03
+**Fecha de corte:** 2026-09-04
 
 **Objetivo de capacidad:** al menos 5 clientes, 5,000 camiones/operadores y 50,000 viajes/mes
 **Estado actual:** NO-GO hasta cerrar los P0/P1 y ejecutar los gates de salida
@@ -31,16 +31,39 @@ deployment requieren una promoción separada, reversible y observada.
 
 ## Rubros y agentes
 
-| Rubro | Qué debe probar | Evidencia mínima |
+Las dos referencias entregadas el 4-sep hacen explícita la rúbrica completa de
+un SaaS real. Ningún rubro se absorbe en un genérico “código”: cada uno obtiene
+auditor adversarial, constructor distinto y reauditoría independiente.
+
+| Rubro obligatorio | Qué debe romper/probar | Evidencia mínima para 10/10 |
 | --- | --- | --- |
-| Flujo E2E | WhatsApp → persistencia → OCR → cuadre → cierre → revisión → PDF → entrega → export/timbrado | fallos inyectados en cada frontera; convergencia sin duplicar |
-| Seguridad e identidad | sesión, MFA/AAL2, roles, RLS, CSRF, webhooks, SSRF, secretos, aislamiento tenant | 401/403 y cero efectos laterales; tests de tenant cruzado |
-| Datos/Postgres | migraciones, constraints, RLS, locks, claims, snapshots, índices, restore | SQL transaccional y verificaciones fail-closed |
-| Capacidad/concurrencia | 5,000 unidades, 50k viajes, 100k–200k documentos, ráfagas, 429, retries, backpressure | p95/p99, backlog, conexiones, error y costo |
-| Fiscal/legal | CFDI, Carta Porte, deducibilidad, retenciones, DPA/SLA/privacidad/ARCO | reglas con fuente/versionado y aprobación humana |
-| Vercel/release | preview, smoke, promote, rollback, crons, límites de funciones | workflow verde real y rollback ensayado |
-| Observabilidad | Sentry, logs correlacionados, colas, cartas muertas, alertas y SLO | incidente detectable y trazable de entrada a resolución |
-| Integraciones | Meta, OpenRouter, QStash, PAC, GPS, ERP y correo | contrato, timeout, idempotencia y reconciliación |
+| Diseño de sistema | límites, dependencias, datos fuente, consistencia, fallos y costo | diagrama vigente, ADR y escenarios de degradación demostrados |
+| Arquitectura | separación tenant/control-plane, contratos entre módulos, ciclos y puntos únicos | dependencias verificadas, invariantes y recuperación por frontera |
+| Frontend/producto | todos los roles, rutas, botones, formularios, carga/vacío/error/éxito y accesibilidad | matriz de navegación más E2E visual en navegador elegido por el usuario |
+| APIs y backend | autenticación, validación, idempotencia, timeout, reintento y efectos ambiguos | pruebas de contrato/propiedad y fallos inyectados en cada endpoint crítico |
+| Base y almacenamiento | migraciones, constraints, RLS, locks, claims, snapshots, índices, buckets y restore | SQL real PG17, base limpia, upgrade desde prod y restore medido |
+| Auth y permisos | sesión, MFA/AAL2, roles, RLS, CSRF, webhooks, SSRF, secretos y tenant cruzado | 401/403, cero efecto lateral y matriz allow/deny por actor |
+| Hosting y cloud | Vercel/Supabase, regiones, límites, crons, funciones, cuotas y degradación | configuración cotejada con planes reales, canary y rollback |
+| CI/CD y control de versión | supply chain, checks requeridos, previews, migraciones, promoción y rollback | workflow GitHub verde, SHA trazable y despliegue reproducible |
+| Seguridad | OWASP, SAST/SCA, secretos, cifrado, abuso, privacidad, auditoría y respuesta | cero P0/P1, advisors tratados y pentest externo identificado como gate |
+| Rate limiting | IP/usuario/tenant/proveedor, bursts, cuotas compartidas y bypass distribuido | pruebas paralelas que respetan equidad y devuelven retry observable |
+| Caché y CDN | claves por tenant/rol, invalidación, stale data, PII y headers | pruebas de no-fuga, coherencia tras escritura y hit/miss medido |
+| Errores y logs | correlación, redacción de PII, códigos accionables, DLQ y retención | un incidente se sigue end-to-end sin exponer secretos |
+| Monitoreo y alertas | SLO, métricas, backlog, salud de proveedores, alertas y on-call | alerta disparada/recibida, runbook ejecutado y falsa recuperación impedida |
+| Testing | unitario, integración, contrato, SQL, E2E, regresión, property/fuzz y mutación selectiva | cobertura de riesgos, no sólo porcentaje, y pruebas rojas conservadas |
+| Escalamiento | 5 tenants, 5,000 unidades, 50k viajes, 150k documentos, burst/soak/backfill | p95/p99, backlog, conexiones, error y costo dentro de umbrales |
+| Flujo operacional completo | WhatsApp → OCR → cuadre → cierre → revisión → PDF → entrega → export/timbrado | convergencia sin pérdida/duplicado después de fallar cada frontera |
+| Fiscal/legal y terceros | CFDI, Carta Porte, retenciones, DPA/SLA/ARCO, Meta, QStash, PAC, GPS, ERP y correo | reglas versionadas; contrato, reconciliación y aprobación humana externa |
+
+Un “10/10” sólo puede declararse cuando todos los rubros tienen evidencia
+vigente y no queda P0/P1 abierto. Las credenciales reales, cuotas contratadas,
+pentest, opinión fiscal/legal, on-call y firma del cliente son gates externos:
+el repositorio puede prepararlos y detectar que faltan, pero no falsificarlos.
+
+El método y los prompts reproducibles extraídos de ambas referencias están en
+`PROMPT-MAESTRO-AUDITORIA-ENTERPRISE.md`. Son parte del criterio de revisión,
+en especial la clasificación PASS/FAIL/TRUNCATED/NO-ARTIFACT/SKIPPED y el
+control de baseline que evita adjudicar a un cambio una falla concurrente.
 
 ## Matriz de cuentas y responsabilidades
 
@@ -172,37 +195,48 @@ resultado anterior no certifica código que cambió después.
 - Sentry y QStash: no hay herramientas MCP expuestas en esta sesión. Su
   comportamiento se inspecciona por configuración/código y dobles controlados;
   la evidencia viva queda pendiente hasta contar con conectores autorizados.
+- Advisors Supabase al corte del 4-sep: 111 avisos de seguridad (105 tablas
+  internas deny-all sin policy, 4 helpers `SECURITY DEFINER` ejecutables por
+  `authenticated`, `unaccent` en `public` y protección de contraseñas filtradas
+  desactivada) y 247 de rendimiento (155 FK sin índice, 65 índices sin uso, 24
+  policies permisivas duplicadas, 2 `auth_rls_initplan` y Auth con 10 conexiones
+  absolutas). Los conteos son inventario, no 111/247 vulnerabilidades: cada
+  aviso debe clasificarse por intención y workload antes de modificar esquema.
+- `pg_stat_statements` acumula desde 25-jul: la antigua consulta del mapa de
+  prospectos escribió 18,175,449 bloques temporales (~145 GB) en 5,632 llamadas;
+  una lectura de gasto tenant+fecha ordenada por id promedia 1,093.9 ms y escribió
+  4,763,607 bloques (~38 GB). Varias rutas locales ya migraron a agregados/RPC;
+  falta demostrar en preview que el código nuevo elimina las firmas, no asumirlo
+  a partir del source.
+- La salud viva todavía admite verdes no comparables: `facturar=ok` reportó 30
+  pendientes, 2 intentados y modo ensayo; `portales-vivos=ok` reportó 13 rotos;
+  `gps=ok` reportó cero flotas. El gate de observabilidad debe separar sano,
+  parcial, no configurado y sin artefacto.
 
 ## Hallazgos de la revisión de constructor en curso
 
-- GPS (P0, devuelto a un constructor distinto): la primera implementación
-  durable pasó 98/98 pruebas focales y PG17, pero la reauditoría adversarial
-  demostró seis huecos que bloquean release: payload inválido perdido al
-  avanzar watermark; outbox de choques detenido por 401/403/429/credencial
-  corrupta; poison-pill que hambrea choques posteriores; tail actual detrás de
-  hasta 30 días de backfill; huérfano/privacidad congelando el cursor global; y
-  autorización histórica evaluada contra el conductor actual en vez del
-  conductor point-in-time; además, la carrera real demostró que el `INSERT ...
-  ON CONFLICT` previo al `SKIP LOCKED` bloquea al segundo worker, y las filas
-  huérfanas creadas por la versión anterior no se reconcilian al actualizar. El
-  criterio nuevo exige carril reciente prioritario, inbox/cuarentena durable,
-  backoff/DLQ, compuerta temporal por evento, migración de huérfanos y claim
-  caliente sin aprovisionamiento bloqueante.
-- WhatsApp/jornada (P1 en reauditoría): el selector round-robin conserva cadenas
-  causales. En PostgreSQL 17, 13,000 mensajes se listaron en 13.163 ms y un lote
-  de 50 jornadas con dos extremos GPS terminó en 14.590 ms. Dos sesiones reales
-  reclamaron 400 + 400 trabajos en menos de un segundo, sin solapes. La revisión
-  independiente detectó que el caller consulta `venceEn` antes de armar la lista
-  pero no entre sus hasta ocho RPC de proceso; puede rebasar el presupuesto por
-  decenas de segundos. También está intentando invalidar fuentes borradas o
-  movidas de día antes de aceptar la ola.
-- Cal.com (P1/P2 reabierto por reauditoría): 25/25 Vitest y los arnés PG17
-  atómico/concurrente base pasan, pero se reprodujeron dos P1: A→B→C se rompe
-  si dos reschedules comparten `createdAt`, y una reentrega concurrente con el
-  enlazador puede formar un deadlock `40P01` por orden inverso de locks. Además,
-  el lookup por correo ambiguo, el provisionamiento no idempotente y el falso
-  reconciliador manual quedan como P2 hasta tener identidad durable y barrido
-  propio; el `503` no se considera garantía de reentrega del proveedor.
+- GPS (NO-GO; nuevo constructor activo): la ola durable quedó en `9d4a808e` y
+  pasó 218 pruebas, SQL PG17 y dos workers, pero la segunda reauditoría encontró
+  un P0 y cuatro P1. Safety Events no pide `includeAsset=true` —default oficial
+  false—, por lo que un `Crash` queda sin unidad y termina en DLQ mientras el
+  watermark puede avanzar. La asistencia recalcula con `hoyMx` y sólo viajes
+  abiertos; `avisado=false` se sella como éxito; las métricas de cuarentena/DLQ
+  se pierden antes del cron/UI; y la cuarentena pre-aviso todavía conserva
+  referencias individualizables. Samsara/Meta reales y una carga GPS E2E siguen
+  `SKIPPED/BLOCKED`, jamás contadas como verde.
+- WhatsApp/jornada (corrección `3e664248`, reauditoría final activa): la fuente
+  NULL, cambio de día/unidad, aceptación posterior y contracción GPS ya anulan
+  únicamente asientos automáticos, conservan humanos e historia `corrige_a`.
+  Root repitió 108 pruebas, typecheck/ESLint, SQL 0325+0319 y dos sesiones.
+  Medición raíz: 13,000 WA en 13.399 ms, poda 50,000→1 en 211.355 ms y lote de
+  50 en 22.710 ms; 400+400 claims sin repetidos y updater bloqueado por el fence.
+- Cal.com (NO-GO; segundo constructor activo): `42c97e0b` cerró causalidad,
+  deadlock, caller, cursor y provisioning y pasó 61 pruebas/SQL/concurrencia,
+  pero el reauditor reprodujo cinco P1: terminal sin CREATED perdido en
+  `esperando_vinculo`; status oficial `rejected` traducido a CREATED; deadline
+  rebasado dentro de una página; secretos marcador aceptados por HMAC; y correo
+  `vinculo_correo` que evade la purga. El cron tampoco marca incompletitud como
+  parcial. Cal.com real, 429/5xx y backlog 24 h siguen omitidos explícitamente.
 - CI (cerrado localmente; pendiente de una corrida GitHub): la auditoría
   runtime clasifica CVE vs. caída del registry, reintenta con tiempo acotado y
   corre después de typecheck/tests/build/smoke. Un 503 sigue dejando el job
