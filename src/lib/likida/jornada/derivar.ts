@@ -38,12 +38,12 @@ import { tieneAvisoPrevio } from '../privacidad';
 // derivadas — devuelve `dato_insuficiente`. La derivación levanta banderas;
 // nunca las baja.
 //
-// ── Y POR QUÉ LA DECLARACIÓN LE GANA SIN UN SOLO `if` ────────────────────
+// ── Y POR QUÉ LA DECLARACIÓN LE GANA ─────────────────────────────────────
 //
-// El índice `jornada_asiento_marca_unica` (0241) admite UN inicio y UN fin
-// vivos por día. Si el operador ya declaró el suyo, el insert derivado rebota
-// con 23505 y `asentarMarca` devuelve `ya_estaba`. La precedencia es una
-// restricción de la base, no una comparación en este archivo.
+// La RPC `asentar_extremo_jornada_derivado` (0319) serializa sobre el
+// expediente: puede versionar otra cota automática, pero devuelve `ya_estaba`
+// ante una declaración/captura humana. El índice
+// `jornada_asiento_marca_unica` (0241) sigue impidiendo dos extremos vivos.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Cuántos días hacia atrás barre una corrida. Los hitos y las posiciones no
@@ -105,6 +105,7 @@ interface Trabajo {
   tenantId: string;
   operadorId: string;
   unidadId: string | null;
+  unidadIds: string[];
   dia: string;
   /** El instante de `aceptado_en` si cae en este día. */
   aceptadoEn: string | null;
@@ -139,7 +140,7 @@ async function listaDeTrabajo(
 
   type Fila = {
     id: string; tenant_id: string; operador_id: string;
-    unidad_id: string | null; aceptado_en: string; dia: string;
+    unidad_id: string | null; unidad_ids?: string[] | null; aceptado_en: string; dia: string;
     claim_token: string; hay_mas: boolean;
   };
   const filas = (data ?? []) as unknown as Fila[];
@@ -152,6 +153,9 @@ async function listaDeTrabajo(
       tenantId: String(f.tenant_id),
       operadorId: String(f.operador_id),
       unidadId: f.unidad_id ? String(f.unidad_id) : null,
+      unidadIds: Array.isArray(f.unidad_ids)
+        ? f.unidad_ids.map(String)
+        : f.unidad_id ? [String(f.unidad_id)] : [],
       dia,
       aceptadoEn: f.aceptado_en,
       viajeId: String(f.id),
@@ -201,17 +205,22 @@ async function liberarNoIntentados(owner: string, trabajos: Trabajo[]): Promise<
  */
 const avisoPorOperador = new Map<string, boolean>();
 
-/** La primera y la última posición de una unidad en un día de México. */
+interface ExtremoGps { momento: string; unidadId: string }
+
+/** La primera y la última posición de todas las unidades que el operador tuvo
+ * asignadas ese día. El id de la unidad viaja con cada extremo para conservar
+ * la procedencia material de la marca. */
 async function extremosGps(
   tenantId: string,
-  unidadId: string,
+  unidadIds: string[],
   dia: string,
-): Promise<{ primera: string | null; ultima: string | null; error: string | null }> {
+): Promise<{ primera: ExtremoGps | null; ultima: ExtremoGps | null; error: string | null }> {
+  if (unidadIds.length === 0) return { primera: null, ultima: null, error: null };
   const admin = supabaseAdmin();
   const desde = inicioDiaMx(dia);
   const hasta = finDiaMx(dia);
-  const base = () => admin.from('posicion').select('medida_en')
-    .eq('tenant_id', tenantId).eq('unidad_id', unidadId)
+  const base = () => admin.from('posicion').select('id, medida_en, unidad_id')
+    .eq('tenant_id', tenantId).in('unidad_id', unidadIds)
     .gte('medida_en', desde).lte('medida_en', hasta);
 
   // REN-A2: las dos consultas son INDEPENDIENTES —la primera posición del día y
@@ -219,15 +228,21 @@ async function extremosGps(
   // de 45 s encima, cada viaje de red de más sale de la cuota de trabajos que
   // la corrida alcanza a derivar.
   const [pri, ult] = await Promise.all([
-    acotada(base().order('medida_en', { ascending: true }).limit(1).maybeSingle(), 'jornada.gps.primera'),
-    acotada(base().order('medida_en', { ascending: false }).limit(1).maybeSingle(), 'jornada.gps.ultima'),
+    acotada(base().order('medida_en', { ascending: true }).order('id', { ascending: true }).limit(1).maybeSingle(), 'jornada.gps.primera'),
+    acotada(base().order('medida_en', { ascending: false }).order('id', { ascending: false }).limit(1).maybeSingle(), 'jornada.gps.ultima'),
   ]);
   if (pri.error) return { primera: null, ultima: null, error: pri.error.message };
   if (ult.error) return { primera: null, ultima: null, error: ult.error.message };
 
   return {
-    primera: pri.data ? String((pri.data as { medida_en: string }).medida_en) : null,
-    ultima: ult.data ? String((ult.data as { medida_en: string }).medida_en) : null,
+    primera: pri.data ? {
+      momento: String((pri.data as { medida_en: string }).medida_en),
+      unidadId: String((pri.data as { unidad_id: string }).unidad_id),
+    } : null,
+    ultima: ult.data ? {
+      momento: String((ult.data as { medida_en: string }).medida_en),
+      unidadId: String((ult.data as { unidad_id: string }).unidad_id),
+    } : null,
     error: null,
   };
 }
@@ -330,10 +345,10 @@ export async function derivarJornadas(args: {
         }
 
     // ── (b) Los extremos del GPS de la unidad ─────────────────────────────
-        if (!t.unidadId) continue;
-        const gps = await extremosGps(t.tenantId, t.unidadId, t.dia);
+        if (t.unidadIds.length === 0) continue;
+        const gps = await extremosGps(t.tenantId, t.unidadIds, t.dia);
         if (gps.error) {
-          r.fallos.push(`gps ${t.unidadId}/${t.dia}: ${gps.error}`);
+          r.fallos.push(`gps ${t.unidadIds.join(',')}/${t.dia}: ${gps.error}`);
           continue;
         }
         if (gps.primera === null) {
@@ -347,24 +362,24 @@ export async function derivarJornadas(args: {
       jornadaId,
       tenantId: t.tenantId,
       tipo: 'inicio_jornada',
-      momento: new Date(gps.primera),
+      momento: new Date(gps.primera.momento),
       procedencia: 'gps',
-      origenRef: `gps:${t.unidadId}:${t.dia}:primera`,
-      unidadId: t.unidadId,
+      origenRef: `gps:${gps.primera.unidadId}:${t.dia}:primera:${gps.primera.momento}`,
+      unidadId: gps.primera.unidadId,
       viajeId: t.viajeId,
       detalle: { hecho: 'primera posición de la unidad ese día', cota: 'inferior' },
         });
         contar(r, res1, `inicio gps ${t.unidadId}/${t.dia}`);
 
-        if (gps.ultima !== null && gps.ultima !== gps.primera) {
+        if (gps.ultima !== null && gps.ultima.momento !== gps.primera.momento) {
           const res2 = await asentarMarca({
         jornadaId,
         tenantId: t.tenantId,
         tipo: 'fin_jornada',
-        momento: new Date(gps.ultima),
+        momento: new Date(gps.ultima.momento),
         procedencia: 'gps',
-        origenRef: `gps:${t.unidadId}:${t.dia}:ultima`,
-        unidadId: t.unidadId,
+        origenRef: `gps:${gps.ultima.unidadId}:${t.dia}:ultima:${gps.ultima.momento}`,
+        unidadId: gps.ultima.unidadId,
         viajeId: t.viajeId,
         detalle: { hecho: 'última posición de la unidad ese día', cota: 'inferior' },
           });

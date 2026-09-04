@@ -314,6 +314,29 @@ describe('el drenado', () => {
     delete process.env.UPSTASH_QSTASH_TOKEN;
   });
 
+  it('un publish aceptado pero con timeout conserva el fence: el cron solapado no abre otra cadena', async () => {
+    process.env.UPSTASH_QSTASH_TOKEN = 'qstash-de-prueba';
+    // QStash sí pudo aceptar la publicación, pero el cliente perdió la
+    // respuesta. Desde este lado es indistinguible de un rechazo real.
+    publishJSON.mockRejectedValueOnce(new Error('timeout después de aceptar'));
+    iniciarCadenaWa
+      .mockResolvedValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockResolvedValueOnce(null);
+    pendientesPorDrenar.mockResolvedValue([{ id: 'w0', intentos: 0, remitente: '521' }]);
+
+    const primera = await GET(peticion('Bearer secreto-de-prueba'));
+    const segunda = await GET(peticion('Bearer secreto-de-prueba'));
+
+    expect((await primera.json()).continuacion).toBe('publicacion_fallida');
+    expect((await segunda.json()).continuacion).toBe('cadena_activa');
+    expect(publishJSON).toHaveBeenCalledTimes(1);
+    // El lease queda vivo durante la ventana ambigua. Si la publicación sí
+    // llegó, su callback conserva el único fence; si no llegó, otro cron sólo
+    // recupera al vencer el lease.
+    expect(finalizarCadenaWa).not.toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+  });
+
   it('le pasa al motor el inicio de ESTA invocación, para que los 10 del lote compartan reloj (C4)', async () => {
     pendientesPorDrenar.mockResolvedValue([{ id: 'wamid.1', intentos: 0, remitente: '521999' }]);
     const antes = Date.now();

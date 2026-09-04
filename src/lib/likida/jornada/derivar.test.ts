@@ -44,6 +44,8 @@ let viajes: FilaViaje[] = [];
 let errorViajes: { message: string } | null = null;
 interface TrabajoFake {
   fila: FilaViaje;
+  unidadIds: string[];
+  inputVersion: string;
   dia: string;
   hecho: boolean;
   claimToken: string | null;
@@ -64,7 +66,7 @@ let errorGps: { message: string } | null = null;
 let conAviso: Set<string> | null = null;   // null = todos
 let errorAviso: { message: string } | null = null;
 
-interface Estado { tabla: string; ascendente: boolean; unidad: string; dia: string; operador: string }
+interface Estado { tabla: string; ascendente: boolean; unidades: string[]; dia: string; operador: string }
 
 function resolver(e: Estado): { data: unknown; error: { message: string } | null } {
   if (e.tabla === 'operador') {
@@ -76,26 +78,43 @@ function resolver(e: Estado): { data: unknown; error: { message: string } | null
     return errorViajes ? { data: null, error: errorViajes } : { data: viajes, error: null };
   }
   if (errorGps) return { data: null, error: errorGps };
-  const lista = posiciones.get(`${e.unidad}|${e.dia}`) ?? [];
+  const lista = e.unidades.flatMap((unidadId) =>
+    (posiciones.get(`${unidadId}|${e.dia}`) ?? []).map((momento) => ({ momento, unidadId })),
+  ).sort((a, b) => a.momento.localeCompare(b.momento) || a.unidadId.localeCompare(b.unidadId));
   if (lista.length === 0) return { data: null, error: null };
   // El motor pide la primera y la última con dos consultas que solo difieren en
   // el `order`; el doble contesta según esa misma bandera.
-  return { data: { medida_en: e.ascendente ? lista[0] : lista[lista.length - 1] }, error: null };
+  const punto = e.ascendente ? lista[0] : lista[lista.length - 1];
+  return { data: { medida_en: punto.momento, unidad_id: punto.unidadId }, error: null };
 }
 
 function sincronizarTrabajos(): void {
-  const unicos = new Map<string, FilaViaje>();
+  const grupos = new Map<string, FilaViaje[]>();
   for (const v of [...viajes].sort((a, b) => a.aceptado_en.localeCompare(b.aceptado_en) || a.id.localeCompare(b.id))) {
     const dia = v.aceptado_en.slice(0, 10);
     const llave = `${v.tenant_id}|${v.operador_id}|${dia}`;
-    if (!unicos.has(llave)) unicos.set(llave, v);
+    grupos.set(llave, [...(grupos.get(llave) ?? []), v]);
   }
-  for (const [llave, fila] of unicos) {
+  for (const [llave, filas] of grupos) {
+    const fila = filas[0];
+    const dia = fila.aceptado_en.slice(0, 10);
+    const unidadIds = [...new Set(filas.flatMap((v) => v.unidad_id ? [v.unidad_id] : []))].sort();
+    const puntos = unidadIds.flatMap((u) => posiciones.get(`${u}|${dia}`) ?? []).sort();
+    const inputVersion = JSON.stringify({
+      viajes: filas.map((v) => [v.id, v.unidad_id, v.aceptado_en]),
+      unidadIds,
+      primera: puntos[0] ?? null,
+      ultima: puntos.at(-1) ?? null,
+      posiciones: puntos.length,
+    });
     const previo = trabajos.get(llave);
     if (!previo) {
-      trabajos.set(llave, { fila, dia: fila.aceptado_en.slice(0, 10), hecho: false, claimToken: null, claimOwner: null, intentos: 0 });
-    } else if (previo.fila.id !== fila.id || previo.fila.unidad_id !== fila.unidad_id || previo.fila.aceptado_en !== fila.aceptado_en) {
-      trabajos.set(llave, { fila, dia: fila.aceptado_en.slice(0, 10), hecho: false, claimToken: null, claimOwner: null, intentos: previo.intentos });
+      trabajos.set(llave, { fila, unidadIds, inputVersion, dia, hecho: false, claimToken: null, claimOwner: null, intentos: 0 });
+    } else if (previo.inputVersion !== inputVersion) {
+      previo.fila = fila;
+      previo.unidadIds = unidadIds;
+      previo.inputVersion = inputVersion;
+      previo.hecho = false;
     }
   }
 }
@@ -114,7 +133,11 @@ function resolverClaimJornada(args: { p_limite?: number; p_owner?: string }): { 
     t.intentos++;
   }
   return {
-    data: pagina.map((t) => ({ ...t.fila, dia: t.dia, claim_token: t.claimToken, intentos: t.intentos, hay_mas: candidatos.length > pagina.length })),
+    data: pagina.map((t) => ({
+      ...t.fila, unidad_ids: t.unidadIds, input_version: t.inputVersion,
+      dia: t.dia, claim_token: t.claimToken, intentos: t.intentos,
+      hay_mas: candidatos.length > pagina.length,
+    })),
     error: null,
   };
 }
@@ -157,13 +180,17 @@ function expirarLeasesFake(): void {
 }
 
 function builder(tabla: string) {
-  const e: Estado = { tabla, ascendente: true, unidad: '', dia: '', operador: '' };
+  const e: Estado = { tabla, ascendente: true, unidades: [], dia: '', operador: '' };
   const b: Record<string, unknown> = {};
   const igual = () => b;
   Object.assign(b, {
-    select: igual, not: igual, lte: igual, limit: igual, is: igual, in: igual, maybeSingle: igual,
+    select: igual, not: igual, lte: igual, limit: igual, is: igual, maybeSingle: igual,
+    in: (col: string, v: unknown[]) => {
+      if (col === 'unidad_id') e.unidades = v.map(String);
+      return b;
+    },
     eq: (col: string, v: unknown) => {
-      if (col === 'unidad_id') e.unidad = String(v);
+      if (col === 'unidad_id') e.unidades = [String(v)];
       if (col === 'id' && tabla === 'operador') e.operador = String(v);
       return b;
     },
@@ -379,6 +406,37 @@ describe('derivarJornadas — un expediente por (tenant, operador, día)', () =>
     expect(r.revisados).toBe(1);
     expect(asegurarDiaJornada).toHaveBeenCalledTimes(1);
     expect(asegurarDiaJornada).toHaveBeenCalledWith(T, 'op-a', DIA);
+  });
+
+  it('usa los extremos de TODAS las unidades que el operador manejó ese día', async () => {
+    viajes = [viaje(1, 'op-a', 'u-manana', '13:00'), viaje(2, 'op-a', 'u-tarde', '20:00')];
+    posiciones.set(`u-manana|${DIA}`, [`${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`]);
+    posiciones.set(`u-tarde|${DIA}`, [`${DIA}T20:00:00.000Z`, `${DIA}T23:00:00.000Z`]);
+
+    await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    expect(asentarMarca).toHaveBeenCalledWith(expect.objectContaining({
+      tipo: 'fin_jornada',
+      momento: new Date(`${DIA}T23:00:00.000Z`),
+      unidadId: 'u-tarde',
+    }));
+  });
+
+  it('reabre el trabajo cuando una posición posterior cambia el watermark del día', async () => {
+    viajes = [viaje(1, 'op-a', 'u-1')];
+    posiciones.set(`u-1|${DIA}`, [`${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`]);
+    await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    posiciones.set(`u-1|${DIA}`, [
+      `${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`, `${DIA}T23:00:00.000Z`,
+    ]);
+    const segunda = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    expect(segunda.revisados).toBe(1);
+    expect(asentarMarca).toHaveBeenCalledWith(expect.objectContaining({
+      tipo: 'fin_jornada',
+      momento: new Date(`${DIA}T23:00:00.000Z`),
+    }));
   });
 
   it('dos operadores distintos el mismo día son DOS expedientes', async () => {

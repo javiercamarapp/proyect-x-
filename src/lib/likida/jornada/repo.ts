@@ -235,13 +235,42 @@ export interface MarcaNueva {
 /**
  * Asienta una marca.
  *
- * `ya_estaba` NO es un fallo: es el resultado esperado de los tres candados de
- * la 0241 —el mensaje de WhatsApp reentregado, el hecho ya derivado, y la
- * marca que el chofer ya había declarado y que ahora la derivación intenta
- * duplicar—. Que el declarado le gane al derivado no lo decide un `if` en este
- * archivo: lo decide `jornada_asiento_marca_unica`.
+ * `ya_estaba` NO es un fallo: es el resultado esperado ante un mensaje
+ * reentregado, el mismo extremo ya observado o una marca humana que prevalece.
+ * Para extremos derivados, la RPC 0319 combina el lock del expediente con
+ * `jornada_asiento_marca_unica`; las demás marcas conservan los candados 0241.
  */
 export async function asentarMarca(m: MarcaNueva): Promise<ResultadoAsiento> {
+  // Los extremos automáticos son revisables: una posición posterior o una
+  // segunda unidad puede ampliar la cota del día. La RPC 0319 hace la
+  // sustitución append-only (anula + inserta con `corrige_a`) bajo el lock del
+  // expediente y rehúsa tocar cualquier declaración/captura humana.
+  if ((m.procedencia === 'hito_viaje' || m.procedencia === 'gps')
+      && (m.tipo === 'inicio_jornada' || m.tipo === 'fin_jornada')) {
+    const { data, error } = await acotada(
+      supabaseAdmin().rpc('asentar_extremo_jornada_derivado', {
+        p_jornada_id: m.jornadaId,
+        p_tenant_id: m.tenantId,
+        p_tipo: m.tipo,
+        p_momento: m.momento.toISOString(),
+        p_procedencia: m.procedencia,
+        p_origen_ref: m.origenRef ?? null,
+        p_viaje_id: m.viajeId ?? null,
+        p_unidad_id: m.unidadId ?? null,
+        p_detalle: m.detalle ?? null,
+      }),
+      'jornada.asiento.extremo_derivado',
+    );
+    const resultado = Array.isArray(data) ? data[0] : data;
+    if (!error && (resultado === 'asentado' || resultado === 'actualizado')) return 'asentado';
+    if (!error && resultado === 'ya_estaba') return 'ya_estaba';
+    logger.error('jornada.asiento_no_escrito', {
+      jornada: m.jornadaId, tipo: m.tipo, procedencia: m.procedencia,
+      err: error?.message ?? `resultado inesperado: ${String(resultado)}`,
+    });
+    return 'fallo';
+  }
+
   const { data, error } = await acotada(
     supabaseAdmin().from('jornada_asiento').insert({
       tenant_id: m.tenantId,

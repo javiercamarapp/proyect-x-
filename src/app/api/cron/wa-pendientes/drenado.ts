@@ -220,7 +220,11 @@ export async function drenarBandeja(
           if (cadenaParaPublicar) {
             encolado = await encolarOtraVuelta(req, vuelta + 1, cadenaParaPublicar);
             continuacion = encolado ? 'encolada' : 'publicacion_fallida';
-            if (!encolado) await finalizarCadenaWa(cadenaParaPublicar);
+            // Un timeout es ambiguo: QStash pudo aceptar antes de perderse la
+            // respuesta. Conservar el lease evita que el cron siguiente abra
+            // otra generación mientras aquel callback puede estar en vuelo.
+            // Si de verdad no se publicó, la recuperación queda acotada al
+            // vencimiento del lease; nunca se pierde el backlog durable.
           }
         }
       } else {
