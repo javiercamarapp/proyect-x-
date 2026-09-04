@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { sinComentarios } from '@/lib/pruebas/codigo';
 import { execSync } from 'node:child_process';
-import { mxn, usd, usd4, mxnCompacto, litros, fechaMx, fechaCorta, fechaHoraMx, round2, pctCambio, porcentaje, hoyMx, inicioDiaMx, finDiaMx, pesoArchivo } from './formato';
+import { instanteRFC3339, mxn, usd, usd4, mxnCompacto, litros, fechaMx, fechaCorta, fechaHoraMx, round2, pctCambio, porcentaje, hoyMx, inicioDiaMx, finDiaMx, pesoArchivo } from './formato';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 7 · MEDIO REINCIDENTE POR TERCERA RONDA — y el número CRECÍA:
@@ -453,5 +453,32 @@ describe('pesoArchivo — bytes, KB o MB, nunca "0 KB" para lo que nadie midió'
     expect(pesoArchivo(undefined)).toBe('—');
     expect(pesoArchivo(-5)).toBe('—');
     expect(pesoArchivo(NaN)).toBe('—');
+  });
+});
+
+
+describe('instanteRFC3339: calendario y gramática compartidos', () => {
+  it.each([
+    ['2024-02-29T23:15:30-06:00', '2024-03-01T05:15:30.000Z'],
+    ['2000-02-29T00:00:00Z', '2000-02-29T00:00:00.000Z'],
+    ['2026-01-01T00:00:00.123456Z', '2026-01-01T00:00:00.123Z'],
+    ['2026-01-01T00:00:00+05:30', '2025-12-31T18:30:00.000Z'],
+  ])('%s normaliza el instante sin cambiar el día local antes de aplicar offset', (valor, esperado) => {
+    expect(instanteRFC3339(valor)).toBe(esperado);
+  });
+  it.each([
+    '2026-02-29T00:00:00Z', '1900-02-29T00:00:00Z',
+    '2026-04-31T00:00:00Z', '2026-00-01T00:00:00Z',
+    '2026-01-01T24:00:00Z', '2026-01-01T00:60:00Z',
+    '2026-01-01T00:00:60Z', '2026-01-01T00:00:00+24:00',
+    '2026-01-01T00:00:00-00:60', '2026-01-01T00:00:00',
+    '2026-01-01T00:00:00.Z', '2026-01-01T00:00:00.1.2Z',
+    ' 2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z ',
+  ])('rechaza %s sin normalizaciones permisivas', (valor) => {
+    expect(instanteRFC3339(valor)).toBeNull();
+  });
+  it('rechaza una fracción larga con sufijo inválido y valores no textuales', () => {
+    expect(instanteRFC3339('2026-01-01T00:00:00.' + '1'.repeat(100_000) + '!Z')).toBeNull();
+    expect(instanteRFC3339(null)).toBeNull();
   });
 });

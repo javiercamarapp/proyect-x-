@@ -419,3 +419,24 @@ export function pesoArchivo(bytes: number | null | undefined): string {
   const mb = kb / 1024;
   return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
 }
+
+/** Fecha RFC3339 estricta y normalizada. Las partes de tamaño fijo se validan
+ * separadas de la fracción para evitar cuantificadores anidados y discrepancias
+ * entre el webhook y el reconciliador de Cal.com. No recorta whitespace. */
+export function instanteRFC3339(valor: unknown): string | null {
+  if (typeof valor !== 'string') return null;
+  const base = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(valor.slice(0, 19));
+  if (!base) return null;
+  const zona = valor.endsWith('Z') ? 'Z' : valor.slice(-6);
+  if (zona !== 'Z' && !/^[+-]\d{2}:\d{2}$/.test(zona)) return null;
+  const fraccion = valor.slice(19, valor.length - zona.length);
+  if (fraccion && !/^\.\d+$/.test(fraccion)) return null;
+  const [year, month, day, hour, minute, second] = base.slice(1).map(Number);
+  const bisiesto = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const diasMes = [31, bisiesto ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > diasMes[month - 1]
+      || hour > 23 || minute > 59 || second > 59) return null;
+  if (zona !== 'Z' && (Number(zona.slice(1, 3)) > 23 || Number(zona.slice(4)) > 59)) return null;
+  const ms = Date.parse(valor);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
