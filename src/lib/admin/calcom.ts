@@ -42,25 +42,32 @@ export type CalcomProvisionResult = { configured: true; id: string | null } | { 
  * Cal.com API key it reports configuration rather than making a fake call. */
 export async function provisionarWebhookCalcom(callbackUrl: string, config = calcomConfig()): Promise<CalcomProvisionResult> {
   if (!calcomConfigurado(config)) return { configured: false, reason: 'CALCOM_API_KEY y CALCOM_WEBHOOK_SECRET son obligatorias.' };
-  const response = await fetch(`${config.apiUrl}/v2/webhooks`, {
+  const endpoint = config.eventTypeId
+    ? `${config.apiUrl}/v2/event-types/${encodeURIComponent(config.eventTypeId)}/webhooks`
+    : `${config.apiUrl}/v2/webhooks`;
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { Authorization: `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       subscriberUrl: callbackUrl,
-      triggers: ['BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_CANCELLED'],
+      triggers: ['BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_CANCELLED', 'BOOKING_NO_SHOW_UPDATED'],
       active: true,
-      ...(config.eventTypeId ? { eventTypeId: config.eventTypeId } : {}),
+      // Sin este mismo secreto Cal.com entrega el webhook, pero nuestra ruta
+      // lo rechaza: el alta parecía exitosa y nunca podía procesar un evento.
+      secret: config.webhookSecret,
+      version: '2021-10-20',
     }),
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`Cal.com webhook provisioning failed (${response.status})`);
-  const data = await response.json().catch(() => ({})) as { id?: string };
-  return { configured: true, id: data.id ?? null };
+  const respuesta = await response.json().catch(() => ({})) as { id?: string | number; data?: { id?: string | number } };
+  const id = respuesta.data?.id ?? respuesta.id;
+  return { configured: true, id: id === undefined ? null : String(id) };
 }
 
-/** Reconciliation hook: fetch recent bookings and feed them through the same
- * idempotent ledger as webhooks. The caller supplies the public callback to
- * keep state mapping in one place. */
+/** Utilidad manual, hoy sin caller ni cron: no es una garantía de entrega.
+ * Los estados recuperables del webhook solicitan reintento con HTTP 503; si un
+ * operador ejecuta esta utilidad, debe alimentar el mismo ledger idempotente. */
 export async function reconciliarReservasCalcom(
   desde: string,
   ingest: (event: Record<string, unknown>) => Promise<void>,

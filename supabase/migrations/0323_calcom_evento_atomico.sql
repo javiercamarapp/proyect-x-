@@ -1,42 +1,81 @@
--- 0323 — Cal.com: ledger, orden y cambio de embudo en una sola transacción.
--- La 0181 creó el ledger durable, pero el webhook sellaba y mutaba en dos
--- requests PostgREST. Entre ambas podía perderse un evento o contestarse 200
--- tras agotar un CAS sin haber aplicado nada. Este RPC es la única escritura
--- nueva: el INSERT idempotente, el lock del prospecto y el UPDATE comparten
--- COMMIT/ROLLBACK.
+-- 0323 — Cal.com: ledger recuperable, identidad de reserva y embudo en una
+-- sola transacción. Esta migración todavía no está desplegada en producción;
+-- por eso se corrige aquí, sin crear una numeración posterior.
 
 alter table public.prospecto
   add column if not exists calcom_booking_id text,
+  add column if not exists calcom_booking_aliases text[] not null default '{}'::text[],
   add column if not exists calcom_evento_en timestamptz,
-  add column if not exists calcom_evento_precedencia smallint;
+  add column if not exists calcom_evento_precedencia smallint,
+  add column if not exists calcom_estado_antes_no_show text,
+  add column if not exists correo_normalizado text
+    generated always as (lower(btrim(correo))) stored;
 
 comment on column public.prospecto.calcom_booking_id is
-  'Reserva Cal.com vigente. Eventos sin createdAt sólo pueden afectarla; BOOKING_CREATED únicamente establece la primera si aún no hay vínculo.';
+  'Identidad canónica namespaced de la reserva vigente: uid:<uid> preferido; id:<bookingId> sólo como fallback.';
+comment on column public.prospecto.calcom_booking_aliases is
+  'Identidades equivalentes namespaced de la reserva vigente (p. ej. uid:B e id:201). Nunca compara un bookingId numérico con un UID sin namespace.';
 comment on column public.prospecto.calcom_evento_en is
   'Último createdAt firmado de Cal.com aplicado a la reserva vigente. NULL si sólo existe orden de llegada no confiable.';
 comment on column public.prospecto.calcom_evento_precedencia is
-  'Desempate del último createdAt aplicado: CREATED=0, RESCHEDULED=1, CANCELLED/NO_SHOW=2.';
+  'Desempate del último createdAt: CREATED=0, RESCHEDULED=1, NO_SHOW false=2, true=3, CANCELLED=4.';
+comment on column public.prospecto.calcom_estado_antes_no_show is
+  'Estado activo que BOOKING_NO_SHOW_UPDATED debe restaurar cuando noShow cambia de true a false.';
+comment on column public.prospecto.correo_normalizado is
+  'Correo trim/lower generado para lookup exacto case-insensitive de webhooks; no depende de que el importador haya normalizado la fila.';
 
-alter table public.comercial_evento
-  add column if not exists estado_proceso text not null default 'legado',
-  add column if not exists orden_en timestamptz;
+create index if not exists prospecto_correo_normalizado_vivo_idx
+  on public.prospecto (correo_normalizado, updated_at desc)
+  where duplicado_de is null and correo_normalizado is not null;
 
 do $$
 begin
   if not exists (
     select 1 from pg_constraint
-     where conname = 'comercial_evento_estado_proceso_dominio'
-       and conrelid = 'public.comercial_evento'::regclass
+     where conname = 'prospecto_calcom_estado_antes_no_show_dominio'
+       and conrelid = 'public.prospecto'::regclass
   ) then
-    alter table public.comercial_evento add constraint comercial_evento_estado_proceso_dominio
-      check (estado_proceso in ('legado', 'pendiente', 'aplicado', 'ignorado', 'cuarentena'));
+    alter table public.prospecto add constraint prospecto_calcom_estado_antes_no_show_dominio
+      check (calcom_estado_antes_no_show is null or calcom_estado_antes_no_show in ('appointment', 'rescheduled'));
   end if;
 end $$;
 
+alter table public.comercial_evento
+  add column if not exists estado_proceso text not null default 'legado',
+  add column if not exists orden_en timestamptz,
+  add column if not exists externo_aliases text[] not null default '{}'::text[],
+  add column if not exists externo_anterior_aliases text[] not null default '{}'::text[],
+  add column if not exists calcom_no_show boolean;
+
+alter table public.comercial_evento
+  drop constraint if exists comercial_evento_estado_proceso_dominio;
+alter table public.comercial_evento add constraint comercial_evento_estado_proceso_dominio
+  check (estado_proceso in (
+    'legado', 'pendiente', 'esperando_vinculo', 'sin_prospecto',
+    'aplicado', 'ignorado', 'cuarentena'
+  ));
+
 comment on column public.comercial_evento.estado_proceso is
-  'Resultado durable: legado (antes de 0323), pendiente dentro de la transacción, aplicado, ignorado o cuarentena.';
+  'Resultado durable. Sólo aplicado/ignorado/legado son finales; pendiente, esperando_vinculo, sin_prospecto y cuarentena pueden recuperarse por reentrega.';
 comment on column public.comercial_evento.orden_en is
-  'createdAt del sobre firmado usado para ordenar. NULL en payload ausente/inválido/futuro; esos eventos no envenenan la secuencia.';
+  'createdAt del sobre firmado. NULL no puede resucitar una reserva cancelada/no-show ni ordenar eventos entre reservas.';
+comment on column public.comercial_evento.externo_aliases is
+  'UID e id numérico namespaced que identifican la misma reserva Cal.com.';
+comment on column public.comercial_evento.externo_anterior_aliases is
+  'En RESCHEDULED, rescheduleUid y rescheduleId namespaced de la reserva anterior.';
+
+create index if not exists comercial_evento_calcom_recuperable_idx
+  on public.comercial_evento (prospecto_id, orden_en, creado_en)
+  where fuente = 'calcom'
+    and estado_proceso in ('pendiente', 'esperando_vinculo', 'sin_prospecto', 'cuarentena');
+
+-- Si una base local alcanzó a ejecutar la primera versión no desplegada de
+-- 0323, se elimina su overload de siete argumentos: conservar dos máquinas de
+-- estado bajo el mismo nombre haría que un llamador antiguo siguiera sellando
+-- eventos recuperables como repetidos.
+drop function if exists public.aplicar_evento_calcom_tx(
+  text, text, text, uuid, jsonb, timestamptz, text
+);
 
 create or replace function public.aplicar_evento_calcom_tx(
   p_clave text,
@@ -45,7 +84,10 @@ create or replace function public.aplicar_evento_calcom_tx(
   p_prospecto uuid,
   p_payload jsonb,
   p_creado_en timestamptz default null,
-  p_externo_anterior text default null
+  p_externo_anterior text default null,
+  p_externos text[] default '{}'::text[],
+  p_externos_anteriores text[] default '{}'::text[],
+  p_no_show boolean default null
 )
 returns table(resultado text, estado_prospecto text)
 language plpgsql
@@ -54,59 +96,118 @@ set search_path = ''
 as $$
 declare
   v_evento_id uuid;
+  v_evento_estado text;
+  v_evento_prospecto uuid;
+  v_tipo text := upper(btrim(coalesce(p_tipo, '')));
   v_destino text;
   v_precedencia smallint;
   v_actual text;
   v_actual_canonico text;
   v_booking text;
+  v_booking_aliases text[];
   v_ultimo_en timestamptz;
   v_ultima_precedencia smallint;
+  v_antes_no_show text;
+  v_aliases text[];
+  v_aliases_anteriores text[];
   v_futuro boolean := p_creado_en is not null
     and p_creado_en > clock_timestamp() + interval '5 minutes';
+  v_misma_reserva boolean;
+  v_reserva_anterior boolean;
+  v_pend record;
+  v_pend_precedencia smallint;
+  v_pend_destino text;
 begin
   if nullif(btrim(p_clave), '') is null
-      or nullif(btrim(p_tipo), '') is null
+      or nullif(v_tipo, '') is null
       or nullif(btrim(p_externo), '') is null then
     raise exception 'evento Cal.com incompleto' using errcode = 'CR001';
   end if;
 
-  v_destino := case p_tipo
+  if v_tipo = 'BOOKING_NO_SHOW' then
+    p_no_show := true;
+  end if;
+  if v_tipo = 'BOOKING_NO_SHOW_UPDATED' and p_no_show is null then
+    raise exception 'BOOKING_NO_SHOW_UPDATED sin noShow' using errcode = 'CR002';
+  end if;
+
+  v_destino := case v_tipo
     when 'BOOKING_CREATED' then 'appointment'
     when 'BOOKING_RESCHEDULED' then 'rescheduled'
     when 'BOOKING_CANCELLED' then 'cancelled'
     when 'BOOKING_NO_SHOW' then 'no-show'
+    when 'BOOKING_NO_SHOW_UPDATED' then case when p_no_show then 'no-show' else null end
     else null
   end;
-  v_precedencia := case p_tipo
+  if v_destino is null and not (v_tipo = 'BOOKING_NO_SHOW_UPDATED' and p_no_show = false) then
+    raise exception 'tipo Cal.com no soportado: %', v_tipo using errcode = 'CR002';
+  end if;
+  v_precedencia := case v_tipo
     when 'BOOKING_CREATED' then 0
     when 'BOOKING_RESCHEDULED' then 1
-    when 'BOOKING_CANCELLED' then 2
-    when 'BOOKING_NO_SHOW' then 2
-    else null
+    when 'BOOKING_NO_SHOW_UPDATED' then case when p_no_show then 3 else 2 end
+    when 'BOOKING_NO_SHOW' then 3
+    when 'BOOKING_CANCELLED' then 4
   end;
-  if v_destino is null then
-    raise exception 'tipo Cal.com no soportado: %', p_tipo using errcode = 'CR002';
-  end if;
 
-  -- ON CONFLICT espera al dueño concurrente de la misma clave. Si ese dueño
-  -- hace ROLLBACK, este INSERT continúa y se convierte en dueño; si COMMITea,
-  -- devuelve cero filas y el duplicado observa el resultado durable.
+  select coalesce(array_agg(distinct btrim(x) order by btrim(x)), '{}'::text[])
+    into v_aliases
+    from unnest(coalesce(p_externos, '{}'::text[]) || array[p_externo]) x
+   where nullif(btrim(x), '') is not null;
+  select coalesce(array_agg(distinct btrim(x) order by btrim(x)), '{}'::text[])
+    into v_aliases_anteriores
+    from unnest(coalesce(p_externos_anteriores, '{}'::text[]) || array[p_externo_anterior]) x
+   where nullif(btrim(x), '') is not null;
+
   insert into public.comercial_evento (
     clave_idempotencia, fuente, tipo, prospecto_id, externo_id, payload,
-    ocurrido_en, orden_en, estado_proceso
+    ocurrido_en, orden_en, estado_proceso, externo_aliases,
+    externo_anterior_aliases, calcom_no_show
   ) values (
-    p_clave, 'calcom', p_tipo, p_prospecto, p_externo, coalesce(p_payload, '{}'::jsonb),
+    p_clave, 'calcom', v_tipo, p_prospecto, p_externo, coalesce(p_payload, '{}'::jsonb),
     case when v_futuro then clock_timestamp() else coalesce(p_creado_en, clock_timestamp()) end,
     case when v_futuro then null else p_creado_en end,
-    'pendiente'
+    'pendiente', v_aliases, v_aliases_anteriores, p_no_show
   )
   on conflict (clave_idempotencia) do nothing
   returning id into v_evento_id;
 
   if v_evento_id is null then
-    return query select 'repetido'::text,
-      (select pr.estado from public.prospecto pr where pr.id = p_prospecto);
-    return;
+    select ce.id, ce.estado_proceso, ce.prospecto_id
+      into v_evento_id, v_evento_estado, v_evento_prospecto
+      from public.comercial_evento ce
+     where ce.clave_idempotencia = p_clave
+     for update;
+
+    if v_evento_estado in ('aplicado', 'ignorado', 'legado') then
+      return query select 'repetido'::text,
+        (select pr.estado from public.prospecto pr where pr.id = coalesce(v_evento_prospecto, p_prospecto));
+      return;
+    end if;
+    if v_evento_prospecto is not null and p_prospecto is not null
+       and v_evento_prospecto <> p_prospecto then
+      update public.comercial_evento
+         set estado_proceso = 'ignorado', procesado_en = clock_timestamp(),
+             error = 'prospecto_conflictivo_en_reentrega'
+       where id = v_evento_id;
+      return query select 'ignorado'::text,
+        (select pr.estado from public.prospecto pr where pr.id = v_evento_prospecto);
+      return;
+    end if;
+
+    p_prospecto := coalesce(v_evento_prospecto, p_prospecto);
+    update public.comercial_evento
+       set prospecto_id = p_prospecto,
+           tipo = v_tipo,
+           externo_id = p_externo,
+           payload = coalesce(p_payload, '{}'::jsonb),
+           ocurrido_en = case when v_futuro then clock_timestamp() else coalesce(p_creado_en, clock_timestamp()) end,
+           orden_en = case when v_futuro then null else p_creado_en end,
+           estado_proceso = 'pendiente', procesado_en = null, error = null,
+           externo_aliases = v_aliases,
+           externo_anterior_aliases = v_aliases_anteriores,
+           calcom_no_show = p_no_show
+     where id = v_evento_id;
   end if;
 
   if v_futuro then
@@ -121,24 +222,35 @@ begin
 
   if p_prospecto is null then
     update public.comercial_evento
-       set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'sin_prospecto'
+       set estado_proceso = 'sin_prospecto', procesado_en = clock_timestamp(), error = 'sin_prospecto'
      where id = v_evento_id;
-    return query select 'ignorado'::text, null::text;
+    return query select 'sin_prospecto'::text, null::text;
     return;
   end if;
 
-  -- Un solo lock corto reemplaza los CAS en Node. Todos los eventos del mismo
-  -- prospecto se serializan aquí y vuelven a evaluar estado, booking y orden
-  -- DESPUÉS de que el ganador anterior hizo COMMIT.
-  select pr.estado, pr.calcom_booking_id, pr.calcom_evento_en, pr.calcom_evento_precedencia
-    into v_actual, v_booking, v_ultimo_en, v_ultima_precedencia
+  select pr.estado, pr.calcom_booking_id, pr.calcom_booking_aliases,
+         pr.calcom_evento_en, pr.calcom_evento_precedencia,
+         pr.calcom_estado_antes_no_show
+    into v_actual, v_booking, v_booking_aliases, v_ultimo_en,
+         v_ultima_precedencia, v_antes_no_show
     from public.prospecto pr
    where pr.id = p_prospecto and pr.duplicado_de is null
    for update;
   if not found then
-    raise exception 'prospecto % no existe o es duplicado', p_prospecto using errcode = 'CR003';
+    update public.comercial_evento
+       set prospecto_id = null, estado_proceso = 'sin_prospecto',
+           procesado_en = clock_timestamp(), error = 'prospecto_no_disponible'
+     where id = v_evento_id;
+    return query select 'sin_prospecto'::text, null::text;
+    return;
   end if;
 
+  select coalesce(array_agg(distinct btrim(x) order by btrim(x)), '{}'::text[])
+    into v_booking_aliases
+    from unnest(coalesce(v_booking_aliases, '{}'::text[]) || array[v_booking]) x
+   where nullif(btrim(x), '') is not null;
+  v_misma_reserva := v_booking_aliases && v_aliases;
+  v_reserva_anterior := v_booking_aliases && v_aliases_anteriores;
   v_actual_canonico := case v_actual
     when 'negociacion' then 'proposal'
     when 'cerrado' then 'won'
@@ -166,75 +278,236 @@ begin
     return;
   end if;
 
-  if p_tipo = 'BOOKING_CREATED' then
-    -- Sin un reloj firmado, CREATED sólo puede establecer la primera reserva
-    -- conocida o confirmar la vigente. Si ya está vinculada B, un CREATED(A)
-    -- tardío no tiene prueba suficiente para reemplazarla.
-    if p_creado_en is null and v_booking is not null and v_booking <> p_externo then
+  if p_creado_en is null and v_actual_canonico in ('cancelled', 'no-show') and (
+    v_tipo in ('BOOKING_CREATED', 'BOOKING_RESCHEDULED')
+    or (v_tipo = 'BOOKING_NO_SHOW_UPDATED' and p_no_show = false)
+  ) then
+    update public.comercial_evento
+       set estado_proceso = 'ignorado', procesado_en = clock_timestamp(),
+           error = 'terminal_sin_reloj'
+     where id = v_evento_id;
+    return query select 'ignorado'::text, v_actual;
+    return;
+  end if;
+
+  if v_tipo = 'BOOKING_CREATED' then
+    if p_creado_en is null and v_booking is not null and not v_misma_reserva then
       update public.comercial_evento
-         set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_no_vigente_sin_reloj'
+         set estado_proceso = 'ignorado', procesado_en = clock_timestamp(),
+             error = 'reserva_no_vigente_sin_reloj'
        where id = v_evento_id;
       return query select 'ignorado'::text, v_actual;
       return;
     end if;
-    -- La misma reserva no resucita tras una cancelación/no-show/reprogramación.
-    if v_booking = p_externo and v_actual_canonico in ('rescheduled', 'cancelled', 'no-show') then
+    if v_misma_reserva and v_actual_canonico in ('rescheduled', 'cancelled', 'no-show') then
       update public.comercial_evento
          set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_terminal'
        where id = v_evento_id;
       return query select 'ignorado'::text, v_actual;
       return;
     end if;
-  elsif v_booking is null then
-    -- Sin vínculo previo, sólo un instante firmado permite adoptar un evento
-    -- que no sea CREATED. Un evento sin reloj no sabe qué reserva afecta.
-    if p_creado_en is null then
+  elsif v_tipo = 'BOOKING_RESCHEDULED' then
+    if v_booking is null or not (v_misma_reserva or v_reserva_anterior) then
       update public.comercial_evento
-         set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_no_vinculada'
+         set estado_proceso = case when p_creado_en is null then 'ignorado' else 'esperando_vinculo' end,
+             procesado_en = clock_timestamp(),
+             error = case when p_creado_en is null then 'reserva_no_vinculada_sin_reloj' else 'esperando_reserva_anterior' end
        where id = v_evento_id;
-      return query select 'ignorado'::text, v_actual;
+      return query select case when p_creado_en is null then 'ignorado' else 'esperando_vinculo' end,
+        v_actual;
       return;
     end if;
-  elsif v_booking <> p_externo
-      and not (p_tipo = 'BOOKING_RESCHEDULED' and p_externo_anterior = v_booking) then
+  elsif v_booking is null or not v_misma_reserva then
     update public.comercial_evento
-       set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_no_vigente'
+       set estado_proceso = case when p_creado_en is null then 'ignorado' else 'esperando_vinculo' end,
+           procesado_en = clock_timestamp(),
+           error = case when p_creado_en is null then 'reserva_no_vinculada_sin_reloj' else 'esperando_reserva' end
      where id = v_evento_id;
-    return query select 'ignorado'::text, v_actual;
+    return query select case when p_creado_en is null then 'ignorado' else 'esperando_vinculo' end,
+      v_actual;
     return;
+  end if;
+
+  if v_tipo in ('BOOKING_NO_SHOW', 'BOOKING_NO_SHOW_UPDATED') then
+    if coalesce(p_no_show, true) then
+      if v_actual_canonico = 'cancelled' then
+        update public.comercial_evento
+           set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_cancelada'
+         where id = v_evento_id;
+        return query select 'ignorado'::text, v_actual;
+        return;
+      end if;
+      v_destino := 'no-show';
+      if v_actual_canonico <> 'no-show' then
+        v_antes_no_show := case when v_actual_canonico = 'rescheduled' then 'rescheduled' else 'appointment' end;
+      end if;
+    else
+      if v_actual_canonico = 'cancelled' then
+        update public.comercial_evento
+           set estado_proceso = 'ignorado', procesado_en = clock_timestamp(), error = 'reserva_cancelada'
+         where id = v_evento_id;
+        return query select 'ignorado'::text, v_actual;
+        return;
+      end if;
+      v_destino := case
+        when v_actual_canonico = 'no-show' then coalesce(v_antes_no_show, 'appointment')
+        when v_actual_canonico = 'rescheduled' then 'rescheduled'
+        else 'appointment'
+      end;
+      v_antes_no_show := null;
+    end if;
+  elsif v_tipo = 'BOOKING_CANCELLED' then
+    v_antes_no_show := null;
+  else
+    v_antes_no_show := null;
   end if;
 
   update public.prospecto
      set estado = v_destino,
          cerrado_en = null,
          calcom_booking_id = p_externo,
-         calcom_evento_en = case
-           when p_creado_en is not null then p_creado_en
-           when p_tipo = 'BOOKING_CREATED' and v_booking is distinct from p_externo then null
-           else calcom_evento_en
-         end,
-         calcom_evento_precedencia = case
-           when p_creado_en is not null then v_precedencia
-           when p_tipo = 'BOOKING_CREATED' and v_booking is distinct from p_externo then null
-           else calcom_evento_precedencia
-         end,
+         calcom_booking_aliases = v_aliases,
+         calcom_evento_en = case when p_creado_en is not null then p_creado_en else calcom_evento_en end,
+         calcom_evento_precedencia = case when p_creado_en is not null then v_precedencia else calcom_evento_precedencia end,
+         calcom_estado_antes_no_show = v_antes_no_show,
          updated_at = clock_timestamp()
    where id = p_prospecto;
+  v_actual := v_destino;
+  v_actual_canonico := v_destino;
+  v_booking := p_externo;
+  v_booking_aliases := v_aliases;
+  if p_creado_en is not null then
+    v_ultimo_en := p_creado_en;
+    v_ultima_precedencia := v_precedencia;
+  end if;
 
   update public.comercial_evento
      set estado_proceso = 'aplicado', procesado_en = clock_timestamp(), error = null
    where id = v_evento_id;
-  return query select 'aplicado'::text, v_destino;
+
+  -- Drena uno por uno lo que llegó antes de que conociéramos su vínculo. El
+  -- SELECT se repite porque aplicar A→B puede volver elegible B→C y luego una
+  -- cancelación de C. Todos comparten el lock del prospecto de esta transacción.
+  loop
+    v_pend := null;
+    select ce.id, ce.tipo, ce.externo_id, ce.externo_aliases,
+           ce.externo_anterior_aliases, ce.orden_en, ce.calcom_no_show
+      into v_pend
+      from public.comercial_evento ce
+     where ce.prospecto_id = p_prospecto
+       and ce.id <> v_evento_id
+       and ce.estado_proceso in ('pendiente', 'esperando_vinculo')
+       and (
+         (ce.tipo = 'BOOKING_RESCHEDULED' and ce.externo_anterior_aliases && v_booking_aliases)
+         or (ce.tipo <> 'BOOKING_RESCHEDULED' and ce.externo_aliases && v_booking_aliases)
+       )
+     order by ce.orden_en asc nulls last, ce.creado_en, ce.id
+     limit 1
+     for update;
+    exit when not found;
+
+    v_pend_precedencia := case v_pend.tipo
+      when 'BOOKING_RESCHEDULED' then 1
+      when 'BOOKING_NO_SHOW_UPDATED' then case when v_pend.calcom_no_show then 3 else 2 end
+      when 'BOOKING_NO_SHOW' then 3
+      when 'BOOKING_CANCELLED' then 4
+      else 0
+    end;
+
+    if v_pend.orden_en is null then
+      update public.comercial_evento set estado_proceso='ignorado',
+        procesado_en=clock_timestamp(), error='reserva_no_vinculada_sin_reloj'
+       where id=v_pend.id;
+      continue;
+    end if;
+    if v_ultimo_en is not null and (
+      v_pend.orden_en < v_ultimo_en
+      or (v_pend.orden_en = v_ultimo_en and v_pend_precedencia <= coalesce(v_ultima_precedencia, -1))
+    ) then
+      update public.comercial_evento set estado_proceso='ignorado',
+        procesado_en=clock_timestamp(), error='evento_fuera_de_orden'
+       where id=v_pend.id;
+      continue;
+    end if;
+
+    v_pend_destino := case v_pend.tipo
+      when 'BOOKING_RESCHEDULED' then 'rescheduled'
+      when 'BOOKING_CANCELLED' then 'cancelled'
+      when 'BOOKING_NO_SHOW' then 'no-show'
+      when 'BOOKING_NO_SHOW_UPDATED' then case when v_pend.calcom_no_show then 'no-show' else null end
+      else null
+    end;
+    if v_pend_destino is null and not (
+      v_pend.tipo = 'BOOKING_NO_SHOW_UPDATED' and v_pend.calcom_no_show = false
+    ) then
+      update public.comercial_evento set estado_proceso='ignorado',
+        procesado_en=clock_timestamp(), error='tipo_pendiente_no_soportado'
+       where id=v_pend.id;
+      continue;
+    end if;
+
+    if v_pend.tipo in ('BOOKING_NO_SHOW', 'BOOKING_NO_SHOW_UPDATED') then
+      if coalesce(v_pend.calcom_no_show, true) then
+        if v_actual_canonico = 'cancelled' then
+          update public.comercial_evento set estado_proceso='ignorado',
+            procesado_en=clock_timestamp(), error='reserva_cancelada' where id=v_pend.id;
+          continue;
+        end if;
+        if v_actual_canonico <> 'no-show' then
+          v_antes_no_show := case when v_actual_canonico='rescheduled' then 'rescheduled' else 'appointment' end;
+        end if;
+        v_pend_destino := 'no-show';
+      else
+        if v_actual_canonico = 'cancelled' then
+          update public.comercial_evento set estado_proceso='ignorado',
+            procesado_en=clock_timestamp(), error='reserva_cancelada' where id=v_pend.id;
+          continue;
+        end if;
+        v_pend_destino := case
+          when v_actual_canonico='no-show' then coalesce(v_antes_no_show, 'appointment')
+          when v_actual_canonico='rescheduled' then 'rescheduled'
+          else 'appointment'
+        end;
+        v_antes_no_show := null;
+      end if;
+    elsif v_pend.tipo = 'BOOKING_CANCELLED' then
+      v_antes_no_show := null;
+    elsif v_pend.tipo = 'BOOKING_RESCHEDULED' then
+      v_antes_no_show := null;
+    end if;
+
+    update public.prospecto
+       set estado = v_pend_destino,
+           cerrado_en = null,
+           calcom_booking_id = v_pend.externo_id,
+           calcom_booking_aliases = v_pend.externo_aliases,
+           calcom_evento_en = v_pend.orden_en,
+           calcom_evento_precedencia = v_pend_precedencia,
+           calcom_estado_antes_no_show = v_antes_no_show,
+           updated_at = clock_timestamp()
+     where id = p_prospecto;
+    update public.comercial_evento set estado_proceso='aplicado',
+      procesado_en=clock_timestamp(), error=null where id=v_pend.id;
+
+    v_actual := v_pend_destino;
+    v_actual_canonico := v_pend_destino;
+    v_booking := v_pend.externo_id;
+    v_booking_aliases := v_pend.externo_aliases;
+    v_ultimo_en := v_pend.orden_en;
+    v_ultima_precedencia := v_pend_precedencia;
+  end loop;
+
+  return query select 'aplicado'::text, v_actual;
 end;
 $$;
 
 revoke all on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
 ) from public, anon, authenticated;
 grant execute on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
 ) to service_role;
 
 comment on function public.aplicar_evento_calcom_tx(
-  text, text, text, uuid, jsonb, timestamptz, text
-) is '0323: registra y aplica un webhook Cal.com atómicamente. Serializa por prospecto, ordena sólo por createdAt firmado, cuarentena relojes >5 min futuros y vincula eventos sin timestamp exclusivamente al booking vigente.';
+  text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean
+) is '0323: registra/aplica Cal.com atómicamente; UID e id numérico son aliases namespaced, los eventos adelantados esperan vínculo, y reentregas recuperan sin_prospecto/cuarentena/pendiente.';

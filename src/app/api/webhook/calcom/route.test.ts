@@ -9,6 +9,9 @@ type RpcArgs = {
   p_payload: Record<string, unknown>;
   p_creado_en: string | null;
   p_externo_anterior: string | null;
+  p_externos: string[];
+  p_externos_anteriores: string[];
+  p_no_show: boolean | null;
 };
 
 const db = vi.hoisted(() => ({
@@ -19,12 +22,13 @@ const db = vi.hoisted(() => ({
   rpcVacio: false,
   keys: new Set<string>(),
   rpcCalls: [] as Array<{ nombre: string; args: RpcArgs }>,
+  filtrosEq: [] as Array<[string, unknown]>,
 }));
 
 function prospectoBuilder() {
   const b = {
     select: () => b,
-    eq: () => b,
+    eq: (campo: string, valor: unknown) => { db.filtrosEq.push([campo, valor]); return b; },
     is: () => b,
     order: () => b,
     limit: () => b,
@@ -89,6 +93,7 @@ beforeEach(() => {
   db.rpcVacio = false;
   db.keys.clear();
   db.rpcCalls.length = 0;
+  db.filtrosEq.length = 0;
 });
 
 afterEach(() => { delete process.env.CALCOM_WEBHOOK_SECRET; });
@@ -106,13 +111,16 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     expect(db.rpcCalls).toEqual([{
       nombre: 'aplicar_evento_calcom_tx',
       args: {
-        p_clave: 'calcom:BOOKING_CREATED:booking-1',
+        p_clave: 'calcom:BOOKING_CREATED:id:booking-1',
         p_tipo: 'BOOKING_CREATED',
-        p_externo: 'booking-1',
+        p_externo: 'id:booking-1',
         p_prospecto: 'p-landing-1',
         p_payload: { attendees: [{ email: '  lead@landing.mx ' }] },
         p_creado_en: null,
         p_externo_anterior: null,
+        p_externos: ['id:booking-1'],
+        p_externos_anteriores: [],
+        p_no_show: null,
       },
     }]);
   });
@@ -136,16 +144,79 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     });
   });
 
-  it('RESCHEDULED conserva el uid anterior para enlazar la reserva vigente', async () => {
+  it('fixture oficial RESCHEDULED usa el UID nuevo y conserva UID/id anteriores en el mismo espacio', async () => {
     const cuerpo = JSON.stringify({
-      triggerEvent: 'BOOKING_RESCHEDULED', bookingId: 'B',
-      payload: { rescheduleUid: 'A', attendees: [{ email: 'lead@landing.mx' }] },
+      triggerEvent: 'BOOKING_RESCHEDULED', createdAt: '2026-08-20T11:00:00.000Z',
+      payload: {
+        uid: 'B', bookingId: 201, rescheduleUid: 'A', rescheduleId: 200,
+        attendees: [{ email: 'lead@landing.mx' }],
+      },
     });
     expect((await postear(cuerpo)).status).toBe(200);
-    expect(db.rpcCalls[0].args).toMatchObject({ p_externo: 'B', p_externo_anterior: 'A' });
+    expect(db.rpcCalls[0].args).toMatchObject({
+      p_externo: 'uid:B',
+      p_externo_anterior: 'uid:A',
+      p_externos: ['uid:B', 'id:201'],
+      p_externos_anteriores: ['uid:A', 'id:200'],
+    });
   });
 
-  it('createdAt futuro se pasa firmado y la cuarentena durable sigue siendo 200 procesado', async () => {
+  it('fixture oficial CANCELLED usa uid y no mezcla bookingId numérico con rescheduleUid', async () => {
+    const cuerpo = JSON.stringify({
+      triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-08-20T12:00:00.000Z',
+      payload: { uid: 'B', bookingId: 201, attendees: [{ email: 'lead@landing.mx' }] },
+    });
+    expect((await postear(cuerpo)).status).toBe(200);
+    expect(db.rpcCalls[0].args).toMatchObject({
+      p_externo: 'uid:B',
+      p_externos: ['uid:B', 'id:201'],
+    });
+  });
+
+  it.each([true, false])('fixture oficial NO_SHOW_UPDATED pasa noShow=%s y bookingUid', async (noShow) => {
+    const cuerpo = JSON.stringify({
+      triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: noShow
+        ? '2026-08-20T13:00:00.000Z' : '2026-08-20T14:00:00.000Z',
+      payload: {
+        bookingUid: 'B', bookingId: 201,
+        attendees: [{ email: 'Lead@Landing.MX', noShow }],
+      },
+    });
+    expect((await postear(cuerpo)).status).toBe(200);
+    expect(db.rpcCalls[0].args).toMatchObject({
+      p_tipo: 'BOOKING_NO_SHOW_UPDATED',
+      p_externo: 'uid:B',
+      p_externos: ['uid:B', 'id:201'],
+      p_no_show: noShow,
+    });
+  });
+
+  it('NO_SHOW_UPDATED multiasistente toma email y noShow del mismo attendee', async () => {
+    const cuerpo = JSON.stringify({
+      triggerEvent: 'BOOKING_NO_SHOW_UPDATED', createdAt: '2026-08-20T13:00:00.000Z',
+      payload: {
+        bookingUid: 'B', bookingId: 201, email: 'Target@Example.Test',
+        attendees: [
+          { email: 'otra@example.test', noShow: false },
+          { email: 'target@example.test', noShow: true },
+        ],
+      },
+    });
+    expect((await postear(cuerpo)).status).toBe(200);
+    expect(db.filtrosEq).toContainEqual(['correo_normalizado', 'target@example.test']);
+    expect(db.rpcCalls[0].args.p_no_show).toBe(true);
+  });
+
+  it('lookup de correo es exacto sobre la forma normalizada, sin depender del casing almacenado', async () => {
+    const cuerpo = JSON.stringify({
+      triggerEvent: 'BOOKING_CREATED',
+      payload: { uid: 'EMAIL', attendees: [{ email: '  Lead@Landing.MX ' }] },
+    });
+    expect((await postear(cuerpo)).status).toBe(200);
+    expect(db.filtrosEq).toContainEqual(['correo_normalizado', 'lead@landing.mx']);
+  });
+
+  it('createdAt futuro se pasa firmado y la cuarentena pide reentrega', async () => {
     db.rpcResultado = 'cuarentena';
     const cuerpo = JSON.stringify({
       triggerEvent: 'BOOKING_CREATED', bookingId: 'futuro',
@@ -153,9 +224,24 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
       payload: { attendees: [{ email: 'lead@landing.mx' }] },
     });
     const r = await postear(cuerpo);
-    expect(r.status).toBe(200);
-    expect(await r.json()).toMatchObject({ ok: true, resultado: 'cuarentena' });
+    expect(r.status).toBe(503);
+    expect(r.headers.get('retry-after')).toBe('60');
     expect(db.rpcCalls[0].args.p_creado_en).toBe('2099-01-01T00:00:00.000Z');
+  });
+
+  it('sin_prospecto pide reentrega automática y no se sella con 2xx', async () => {
+    const resultado = 'sin_prospecto';
+    db.rpcResultado = resultado;
+    const r = await postear(EVENTO);
+    expect(r.status).toBe(503);
+    expect(r.headers.get('retry-after')).toBe('60');
+  });
+
+  it('esperando_vinculo sí confirma 2xx porque una reserva posterior drena el ledger', async () => {
+    db.rpcResultado = 'esperando_vinculo';
+    const r = await postear(EVENTO);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, resultado: 'esperando_vinculo' });
   });
 
   it('createdAt inválido no se convierte en hora local ni hora de la cita', async () => {

@@ -12,6 +12,9 @@ const EVENTOS_SOPORTADOS = new Set([
   'BOOKING_CREATED',
   'BOOKING_RESCHEDULED',
   'BOOKING_CANCELLED',
+  'BOOKING_NO_SHOW_UPDATED',
+  // Nombre histórico aceptado por compatibilidad. El provisionamiento nuevo
+  // sólo pide BOOKING_NO_SHOW_UPDATED, que es el trigger oficial de Cal.com.
   'BOOKING_NO_SHOW',
 ]);
 
@@ -32,19 +35,66 @@ function texto(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, 320) : null;
 }
 
-function bookingId(evt: CalcomEvent): string | null {
+type IdentidadReserva = { canonica: string; aliases: string[] };
+
+function identidad(prefijo: 'uid' | 'id', valor: unknown): string | null {
+  if (valor === undefined || valor === null) return null;
+  const limpio = String(valor).trim();
+  return limpio ? `${prefijo}:${limpio}` : null;
+}
+
+function unicas(valores: Array<string | null>): string[] {
+  return [...new Set(valores.filter((v): v is string => v !== null))];
+}
+
+/** Todos los payloads se convierten al mismo espacio: UID cuando Cal.com lo
+ * entrega, `id:` sólo como alias/fallback. Así bookingId=201 nunca se compara
+ * accidentalmente con rescheduleUid=A. Conserva las formas antiguas de la
+ * ruta (bookingId/id en el sobre o payload) como fallback namespaced. */
+function reserva(evt: CalcomEvent): IdentidadReserva | null {
   const p = evt.payload ?? {};
-  const value = evt.bookingId ?? evt.id ?? p.bookingId ?? p.id ?? p.uid;
-  return value === undefined || value === null ? null : String(value);
+  const uid = identidad('uid', p.uid ?? p.bookingUid);
+  const id = identidad('id', p.bookingId ?? evt.bookingId ?? p.id ?? evt.id);
+  const aliases = unicas([uid, id]);
+  return aliases.length ? { canonica: uid ?? aliases[0], aliases } : null;
 }
 
 /** Cal.com manda el uid anterior al reprogramar. Sólo se usa para enlazar la
  * reserva nueva con la que sigue vigente; jamás como sustituto del bookingId
  * del evento. */
-function bookingAnterior(evt: CalcomEvent): string | null {
+function reservaAnterior(evt: CalcomEvent): IdentidadReserva | null {
   const p = evt.payload ?? {};
-  const value = p.rescheduleUid ?? p.oldBookingUid ?? p.previousBookingUid;
-  return value === undefined || value === null ? null : String(value);
+  const uid = identidad('uid', p.rescheduleUid ?? p.oldBookingUid ?? p.previousBookingUid);
+  const id = identidad('id', p.rescheduleId ?? p.oldBookingId ?? p.previousBookingId);
+  const aliases = unicas([uid, id]);
+  return aliases.length ? { canonica: uid ?? aliases[0], aliases } : null;
+}
+
+type ParticipanteEvento = { email: string | null; noShow: boolean | null };
+
+/** En NO_SHOW_UPDATED el booleano y el correo son una sola observación. Para
+ * citas grupales se prefiere el attendee señalado por payload.email; si no lo
+ * hay, Cal.com entrega el attendee modificado y usamos ese mismo objeto. */
+function participanteDelEvento(evt: CalcomEvent, tipo: string): ParticipanteEvento {
+  const p = evt.payload ?? {};
+  const attendees = Array.isArray(p.attendees) ? p.attendees : [];
+  if (tipo === 'BOOKING_NO_SHOW_UPDATED') {
+    const candidatos = attendees
+      .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object')
+      .filter((a) => typeof a.noShow === 'boolean' && texto(a.email) !== null);
+    const emailPreferido = texto(p.email)?.toLowerCase() ?? null;
+    const elegido = candidatos.find((a) => texto(a.email)?.toLowerCase() === emailPreferido)
+      ?? candidatos[0];
+    return {
+      email: texto(elegido?.email),
+      noShow: typeof elegido?.noShow === 'boolean' ? elegido.noShow : null,
+    };
+  }
+  const first = attendees[0] as Record<string, unknown> | undefined;
+  return {
+    email: texto(p.email) ?? texto(first?.email) ?? texto((p.booking as Record<string, unknown> | undefined)?.email),
+    noShow: tipo === 'BOOKING_NO_SHOW' ? true : null,
+  };
 }
 
 /** Solo acepta el `createdAt` del sobre firmado, nunca startTime (hora de la
@@ -55,13 +105,6 @@ function instanteFirmado(evt: CalcomEvent): string | null {
   if (!valor) return null;
   const ms = Date.parse(valor);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
-
-function emailDelEvento(evt: CalcomEvent): string | null {
-  const p = evt.payload ?? {};
-  const attendees = Array.isArray(p.attendees) ? p.attendees : [];
-  const first = attendees[0] as Record<string, unknown> | undefined;
-  return texto(p.email) ?? texto(first?.email) ?? texto((p.booking as Record<string, unknown> | undefined)?.email);
 }
 
 export async function POST(req: Request) {
@@ -82,27 +125,38 @@ export async function POST(req: Request) {
   let evt: CalcomEvent;
   try { evt = JSON.parse(raw) as CalcomEvent; } catch { return new NextResponse('JSON inválido', { status: 400 }); }
   const tipo = texto(evt.triggerEvent)?.toUpperCase();
-  const externo = bookingId(evt);
-  if (!tipo || !externo) return new NextResponse('Evento Cal.com incompleto', { status: 400 });
+  const actual = reserva(evt);
+  if (!tipo || !actual) return new NextResponse('Evento Cal.com incompleto', { status: 400 });
   if (!EVENTOS_SOPORTADOS.has(tipo)) return new NextResponse('Evento Cal.com no soportado', { status: 400 });
-  const clave = `calcom:${tipo}:${externo}`;
   const ocurridoEn = instanteFirmado(evt);
+  const participante = participanteDelEvento(evt, tipo);
+  if (tipo === 'BOOKING_NO_SHOW_UPDATED' && (participante.noShow === null || !participante.email)) {
+    return new NextResponse('Evento Cal.com sin attendee/noShow coherente', { status: 400 });
+  }
+  const noShow = participante.noShow;
+  const anterior = reservaAnterior(evt);
+  const clave = tipo === 'BOOKING_NO_SHOW_UPDATED'
+    ? `calcom:${tipo}:${actual.canonica}:${ocurridoEn ?? 'sin-reloj'}:${String(noShow)}`
+    : `calcom:${tipo}:${actual.canonica}`;
 
   try {
     // Lookup is inside the retryable path too: a transient CRM read failure
     // must be a loud 500, never an unhandled rejection or a false 2xx.
-    const prospecto = await encontrarProspecto(emailDelEvento(evt));
+    const prospecto = await encontrarProspecto(participante.email);
     // 0323: ledger, orden, vínculo de booking y cambio de embudo viven en UNA
     // transacción PostgreSQL. Un error/rollback nunca queda sellado como 200 y
     // un duplicado concurrente espera a saber si el dueño hizo COMMIT.
     const { data, error } = await supabaseAdmin().rpc('aplicar_evento_calcom_tx', {
       p_clave: clave,
       p_tipo: tipo,
-      p_externo: externo,
+      p_externo: actual.canonica,
       p_prospecto: prospecto?.id ?? null,
       p_payload: evt.payload ?? {},
       p_creado_en: ocurridoEn,
-      p_externo_anterior: bookingAnterior(evt),
+      p_externo_anterior: anterior?.canonica ?? null,
+      p_externos: actual.aliases,
+      p_externos_anteriores: anterior?.aliases ?? [],
+      p_no_show: noShow,
     });
     if (error) throw new Error(`calcom tx: ${error.message}`);
     const fila = (Array.isArray(data) ? data[0] : data) as ResultadoRpc | null;
@@ -110,13 +164,23 @@ export async function POST(req: Request) {
     if (fila.resultado === 'repetido') {
       return NextResponse.json({ ok: true, repetido: true, resultado: fila.resultado });
     }
+    if (fila.resultado === 'sin_prospecto' || fila.resultado === 'cuarentena') {
+      // Estos estados son deliberadamente recuperables, pero no existe un
+      // reconciliador programado que los vuelva a presentar. El 503 obliga a
+      // Cal.com a reentregar; `esperando_vinculo` sí recibe 2xx porque el
+      // CREATED/RESCHEDULED posterior drena el ledger dentro de PostgreSQL.
+      return NextResponse.json(
+        { ok: false, recuperable: true, resultado: fila.resultado },
+        { status: 503, headers: { 'Retry-After': '60' } },
+      );
+    }
     return NextResponse.json({
       ok: true,
       resultado: fila.resultado,
       prospectoId: prospecto?.id ?? null,
     });
   } catch (error) {
-    logger.error('calcom.webhook.fallo', { tipo, externo, err: String(error) });
+    logger.error('calcom.webhook.fallo', { tipo, externo: actual.canonica, err: String(error) });
     return new NextResponse('Error al aplicar evento', { status: 500 });
   }
 }
@@ -124,7 +188,7 @@ export async function POST(req: Request) {
 async function encontrarProspecto(email: string | null): Promise<ProspectoActual | null> {
   if (!email) return null;
   const { data, error } = await supabaseAdmin().from('prospecto').select('id')
-    .eq('correo', email.toLowerCase()).is('duplicado_de', null).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    .eq('correo_normalizado', email.trim().toLowerCase()).is('duplicado_de', null).order('updated_at', { ascending: false }).limit(1).maybeSingle();
   if (error) throw new Error(`prospecto lookup: ${error.message}`);
   return data as ProspectoActual | null;
 }

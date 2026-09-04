@@ -39,4 +39,16 @@ wait "$pid_creado"
 test "$resultado_cancelado" = 'aplicado'
 "${psql_cmd[@]}" -c "do \$\$ begin if not exists(select 1 from public.prospecto where id='$prospecto' and estado='cancelled' and calcom_booking_id='AB' and calcom_evento_en='2026-08-20 12:00:00+00') then raise exception 'carrera A/B terminó en estado incorrecto'; end if; end \$\$;"
 
+# Contrato oficial y entrega invertida real: CANCELLED de la reserva nueva B
+# toma primero el lock y queda esperando; RESCHEDULED A→B debe esperar el
+# commit, enlazar por rescheduleUid y drenar la cancelación posterior.
+"${psql_cmd[@]}" -c "delete from public.comercial_evento where prospecto_id='$prospecto'; update public.prospecto set estado='contactado',calcom_booking_id=null,calcom_booking_aliases='{}',calcom_evento_en=null,calcom_evento_precedencia=null,calcom_estado_antes_no_show=null where id='$prospecto'; select resultado from public.aplicar_evento_calcom_tx('calcom:CONC:CREATED:A','BOOKING_CREATED','uid:A','$prospecto','{}','2026-08-21 10:00:00+00',null,array['uid:A','id:200'],'{}',null);"
+"${psql_cmd[@]}" -c "begin; select resultado from public.aplicar_evento_calcom_tx('calcom:CONC:CANCELLED:B','BOOKING_CANCELLED','uid:B','$prospecto','{}','2026-08-21 12:00:00+00',null,array['uid:B','id:201'],'{}',null); select pg_sleep(1); commit;" &
+pid_cancel_b=$!
+sleep 0.2
+resultado_reagenda=$("${psql_cmd[@]}" -At -c "select resultado || ':' || estado_prospecto from public.aplicar_evento_calcom_tx('calcom:CONC:RESCHEDULED:A-B','BOOKING_RESCHEDULED','uid:B','$prospecto','{}','2026-08-21 11:00:00+00','uid:A',array['uid:B','id:201'],array['uid:A','id:200'],null);")
+wait "$pid_cancel_b"
+test "$resultado_reagenda" = 'aplicado:cancelled'
+"${psql_cmd[@]}" -c "do \$\$ begin if not exists(select 1 from public.prospecto where id='$prospecto' and estado='cancelled' and calcom_booking_id='uid:B' and calcom_booking_aliases @> array['uid:B','id:201'] and calcom_evento_en='2026-08-21 12:00:00+00') then raise exception 'entrega invertida A/B terminó mal'; end if; if exists(select 1 from public.comercial_evento where prospecto_id='$prospecto' and estado_proceso='pendiente') then raise exception 'quedó pendiente huérfano'; end if; if not exists(select 1 from public.comercial_evento where clave_idempotencia='calcom:CONC:CANCELLED:B' and estado_proceso='aplicado') then raise exception 'CANCELLED(B) no se drenó'; end if; end \$\$;"
+
 echo '0323_calcom_concurrencia: PASS'
