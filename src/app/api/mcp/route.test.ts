@@ -131,6 +131,30 @@ describe('el contrato JSON-RPC con una llave viva', () => {
     expect(res.headers.get('Mcp-Session-Id')).toBeNull();
   });
 
+  it('una credencial válida no permite materializar un body chunked excesivo', async () => {
+    let pedidos = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 30) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(8 * 1024).fill(120));
+      },
+    });
+    const req = new Request('https://app.likida.ai/api/mcp', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${LLAVE}`, accept: 'application/json' },
+      body,
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    });
+
+    const res = await POST(req);
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toContain('excede');
+    expect(pedidos).toBeLessThanOrEqual(10);
+  });
+
   it('una versión desconocida en initialize recibe la más nueva de su generación', async () => {
     const res = await POST(peticion(RPC('initialize', { protocolVersion: '2019-01-01' })));
     const r = await res.json();

@@ -3,11 +3,13 @@ import { Receiver } from '@upstash/qstash';
 import { logger } from '@/lib/logger';
 import { leerInterruptor } from '@/lib/likida/interruptores';
 import { drenarBandeja, MAX_VUELTAS_QSTASH } from '../drenado';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const runtime = 'nodejs';
 // Su propio presupuesto, como el callback de facturar: la vuelta encolada no
 // hereda lo que ya gastó el cron que la encoló.
 export const maxDuration = 120;
+const MAX_BODY = 64 * 1024;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CALLBACK DE QSTASH DEL DRENADO (ESC-1).
@@ -30,7 +32,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'QStash no configurado' }, { status: 503 });
   }
 
-  const raw = await req.text();
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return NextResponse.json(
+      { error: lectura.motivo === 'demasiado_grande' ? 'Payload demasiado grande' : 'No se pudo leer el payload' },
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
+  }
+  const raw = lectura.texto;
   try {
     const receiver = new Receiver({ currentSigningKey: currentKey, nextSigningKey: nextKey });
     const valido = await receiver.verify({ signature: req.headers.get('upstash-signature') ?? '', body: raw });

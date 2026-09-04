@@ -102,6 +102,30 @@ beforeEach(() => {
 afterEach(() => { delete process.env.CALCOM_WEBHOOK_SECRET; });
 
 describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => {
+  it('un body chunked excesivo se corta durante la lectura, antes de verificar firma o tocar CRM', async () => {
+    let pedidos = 0;
+    const cuerpo = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 20) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(64 * 1024).fill(120));
+      },
+    });
+    const req = new Request('https://app.likida.ai/api/webhook/calcom', {
+      method: 'POST',
+      headers: { 'x-cal-signature-256': 'firma', 'content-type': 'application/json' },
+      body: cuerpo,
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    });
+
+    const r = await POST(req);
+
+    expect(r.status).toBe(413);
+    expect(pedidos).toBeLessThanOrEqual(6);
+    expect(db.rpcCalls).toHaveLength(0);
+  });
+
   it('firma inválida responde 401 y no toca CRM', async () => {
     expect((await postear(EVENTO, '00'.repeat(32))).status).toBe(401);
     expect(db.rpcCalls).toHaveLength(0);

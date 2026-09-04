@@ -2,10 +2,8 @@
 // EL CONTACTO DE LA CALCULADORA → prospecto con fuente 'landing'.
 //
 // La única ruta pública de escritura del marketing. Candados, en orden:
-//  1. Tope de cuerpo (10 KB) — nadie manda un formulario de 4 campos más
-//     grande que eso.
-//  2. Límite de tasa por IP (5 / 10 min): una landing sin límite es una
-//     manguera de filas basura hacia el pipeline de ventas.
+//  1. Límite de tasa por IP (5 / 10 min), antes de leer el stream.
+//  2. Tope de cuerpo (10 KB) durante la lectura del formulario.
 //  3. Honeypot (`sitioWeb`): si viene lleno, se contesta 200 SIN escribir —
 //     avisarle al bot que lo cachamos es enseñarle a esquivarlo. Se deja log.
 //  4. La validación REAL es la del pipeline (`validarProspecto`): misma
@@ -19,7 +17,8 @@
 // por `redactarTexto` antes de viajar, como todo lo del operador).
 // ═══════════════════════════════════════════════════════════════════════════
 import { NextResponse } from 'next/server';
-import { rateLimit, clientIp, bodyExcede } from '@/lib/ratelimit';
+import { rateLimit, clientIp } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { crearProspecto, validarProspecto } from '@/lib/likida/vendedores';
 import { DatoInvalido } from '@/lib/likida/errores';
 import { alertarOperador } from '@/lib/observability/alerta';
@@ -42,16 +41,20 @@ const n = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
 
 export async function POST(req: Request) {
-  if (bodyExcede(req, 10_000)) {
-    return NextResponse.json({ error: 'El cuerpo es demasiado grande.' }, { status: 413 });
-  }
   if (!(await rateLimit(`marketing-prospecto:${clientIp(req)}`, 5, 10 * 60_000))) {
     return NextResponse.json({ error: 'Demasiados intentos. Espera unos minutos.' }, { status: 429 });
+  }
+  const lectura = await leerTextoAcotado(req, 10_000);
+  if (!lectura.ok) {
+    return NextResponse.json(
+      { error: lectura.motivo === 'demasiado_grande' ? 'El cuerpo es demasiado grande.' : 'Cuerpo inválido.' },
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
   }
 
   let c: Cuerpo;
   try {
-    c = (await req.json()) as Cuerpo;
+    c = JSON.parse(lectura.texto) as Cuerpo;
   } catch {
     return NextResponse.json({ error: 'Cuerpo inválido.' }, { status: 400 });
   }

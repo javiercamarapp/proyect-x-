@@ -39,6 +39,26 @@ const peticion = (cuerpo: unknown) => new Request('http://likida.test/api/cron/w
 beforeEach(() => { vi.clearAllMocks(); firmaValida = true; interruptor = 'encendido'; });
 
 describe('POST /api/cron/wa-pendientes/cola', () => {
+  it('un body chunked excesivo se corta antes de verificar la firma o drenar', async () => {
+    let pedidos = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 20) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(16 * 1024).fill(120));
+      },
+    });
+    const r = await POST(new Request('http://likida.test/api/cron/wa-pendientes/cola', {
+      method: 'POST', headers: { 'upstash-signature': 'firma' }, body,
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    }) as never);
+
+    expect(r.status).toBe(413);
+    expect(pedidos).toBeLessThanOrEqual(6);
+    expect(drenarBandeja).not.toHaveBeenCalled();
+  });
+
   it('firma inválida: 401 y NI UN mensaje procesado', async () => {
     firmaValida = false;
     const r = await POST(peticion({ vuelta: 1 }));

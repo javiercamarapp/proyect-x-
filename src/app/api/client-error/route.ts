@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { rateLimit, bodyExcede, clientIp } from '@/lib/ratelimit';
+import { rateLimit, clientIp } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -33,20 +34,20 @@ function sanear(valor: unknown, maxLargo: number): string {
 }
 
 export async function POST(req: Request) {
-  if (bodyExcede(req, MAX_BODY)) {
-    return NextResponse.json({ ok: false }, { status: 413 });
-  }
   // Best-effort para el que llama (el cliente ya está en medio de un fallo),
   // pero SÍ acotado: sin techo, un cliente en bucle de render-error podría
   // martillar este endpoint sin límite.
   if (!(await rateLimit(`client-error:${clientIp(req)}`, 20, 60_000))) {
     return NextResponse.json({ ok: false }, { status: 429 });
   }
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return NextResponse.json({ ok: false }, { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
+  }
 
   let cuerpo: unknown;
   try {
-    const crudo = await req.text();
-    if (crudo.length > MAX_BODY) return NextResponse.json({ ok: false }, { status: 413 });
+    const crudo = lectura.texto;
     cuerpo = crudo ? JSON.parse(crudo) : {};
   } catch {
     return NextResponse.json({ ok: false }, { status: 400 });

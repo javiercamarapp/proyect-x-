@@ -10,6 +10,7 @@ import {
   type AccionAuth,
 } from '@/lib/correo/auth';
 import { yaSeMando, sellarMandado } from './anti_replay';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -103,10 +104,16 @@ export async function POST(req: Request) {
     return fallo(500, 'SUPABASE_AUTH_HOOK_SECRET no está configurado.');
   }
 
-  const cuerpo = await req.text();
   // Un payload de Auth son unos cientos de bytes. 32 KB es holgura de sobra y
-  // corta de tajo el intento de hacernos gastar CPU en un HMAC gigante.
-  if (cuerpo.length > 32 * 1024) return fallo(413, 'Payload demasiado grande.');
+  // corta durante la lectura, antes de gastar CPU en el HMAC.
+  const lectura = await leerTextoAcotado(req, 32 * 1024);
+  if (!lectura.ok) {
+    return fallo(
+      lectura.motivo === 'demasiado_grande' ? 413 : 400,
+      lectura.motivo === 'demasiado_grande' ? 'Payload demasiado grande.' : 'No se pudo leer el payload.',
+    );
+  }
+  const cuerpo = lectura.texto;
 
   const idEntrega = req.headers.get('webhook-id');
   const firma = verificarFirma(

@@ -6,6 +6,7 @@ import { hoyMx } from '@/lib/formato';
 import { estaApagado } from '@/lib/likida/interruptores';
 import { registrarLatido } from '@/lib/admin/salud';
 import { procesarLoteEnCola, type FilaCola } from '../lote';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const runtime = 'nodejs';
 // AUDITORÍA 18 (M2, B12): decía 600 "porque QStash permite 10 min de timeout".
@@ -20,6 +21,7 @@ export const runtime = 'nodejs';
 // sí rompe es el ACOPLE con el cron (que tiene que contestar rápido), no el
 // techo de la plataforma. `cola/route.test.ts` los mantiene iguales.
 export const maxDuration = 300;
+const MAX_BODY = 256 * 1024;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CALLBACK DE QSTASH — el cron encola aquí el lote (ronda 16) y este
@@ -43,8 +45,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'QStash no configurado' }, { status: 503 });
   }
 
-  // Verificar la firma de QStash ANTES de tocar nada.
-  const raw = await req.text();
+  // La firma necesita el texto exacto, pero ningún remitente puede forzar que
+  // materialicemos un body ilimitado antes de llegar a verificarla.
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return NextResponse.json(
+      { error: lectura.motivo === 'demasiado_grande' ? 'Payload demasiado grande' : 'No se pudo leer el payload' },
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
+  }
+  const raw = lectura.texto;
   try {
     // Las SIGNING KEYS reales de QStash (Settings → Signing Keys) — no el
     // token: QStash firma con ellas, y verificarlas con el token fallaría.

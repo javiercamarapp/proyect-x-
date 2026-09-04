@@ -16,6 +16,7 @@
 import { NextResponse } from 'next/server';
 import { rateLimit, clientIp } from '@/lib/ratelimit';
 import { canjearCodigo, refrescarTokens, type ResultadoCanje } from '@/lib/mcp/oauth';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,9 +54,9 @@ export async function POST(req: Request) {
 
   let form: URLSearchParams;
   try {
-    const crudo = await req.text();
-    if (crudo.length > 8 * 1024) return errorOauth('invalid_request', 'El cuerpo excede el tamaño permitido.');
-    form = new URLSearchParams(crudo);
+    const lectura = await leerTextoAcotado(req, 8 * 1024);
+    if (!lectura.ok) return errorOauth('invalid_request', 'El cuerpo excede el tamaño permitido.');
+    form = new URLSearchParams(lectura.texto);
   } catch {
     return errorOauth('invalid_request', 'El cuerpo tiene que ser application/x-www-form-urlencoded.');
   }

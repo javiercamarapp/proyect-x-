@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { bodyExcede } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { calcomConfig, secretoCalcomConfigurado, verificarFirmaCalcom } from '@/lib/admin/calcom';
@@ -133,9 +133,14 @@ export async function POST(req: Request) {
   if (!secretoCalcomConfigurado(config.webhookSecret)) {
     return new NextResponse('Cal.com webhook no configurado de forma segura', { status: 503 });
   }
-  if (bodyExcede(req, MAX_BODY)) return new NextResponse('Payload too large', { status: 413 });
-  const raw = await req.text();
-  if (raw.length > MAX_BODY) return new NextResponse('Payload too large', { status: 413 });
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return new NextResponse(
+      lectura.motivo === 'demasiado_grande' ? 'Payload too large' : 'Could not read payload',
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
+  }
+  const raw = lectura.texto;
   const firma = req.headers.get('x-cal-signature-256')
     ?? req.headers.get('x-cal-webhook-signature')
     ?? req.headers.get('cal-signature')

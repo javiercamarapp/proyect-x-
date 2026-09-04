@@ -50,8 +50,8 @@ import { join, relative, sep } from 'node:path';
 // es el destino de un fallo de CLIENTE (el layout raíz truena antes de que
 // la sesión se pueda leer), así que exigir sesión sería pedirle al reporte
 // del fallo la misma cosa que acaba de fallar. Su puerta es otra: rate limit
-// por IP (`client-error:${clientIp}`, 20/min), tope de cuerpo (4 KB) medido
-// dos veces (`bodyExcede` + el texto real), `level` acotado a {warn,error} y
+// por IP (`client-error:${clientIp}`, 20/min), tope de cuerpo (4 KB) aplicado
+// durante la lectura streaming (`leerTextoAcotado`), `level` acotado a {warn,error} y
 // `msg`/`meta` saneados (sin saltos de línea, `meta` solo si es objeto plano)
 // ANTES de tocar `logger.error`/Sentry — no filtra dato de negocio ni tenant.
 const RUTAS_API_REVISADAS = 67; // 66 (revision: v1/liquidaciones) + 1 (nueva: client-error)

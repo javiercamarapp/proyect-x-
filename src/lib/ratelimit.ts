@@ -92,7 +92,8 @@ import { logger } from '@/lib/logger';
 //
 // ── LO QUE NO CAMBIÓ (sigue siendo cierto) ────────────────────────────────
 //
-//  · El CAP DE BODY mira SOLO `content-length`. Ver la nota de `bodyExcede`.
+//  · `bodyExcede` es sólo la preselección por cabecera. Las rutas nuevas que
+//    aceptan body usan `leerTextoAcotado`, que corta el stream por bytes.
 //  · UN `false` DE AQUÍ NO AUTORIZA A TIRAR NADA. Ver la nota del webhook de
 //    WhatsApp: sobre una entrada YA AUTENTICADA, aplazar con un código que
 //    provoque reintento — nunca descartar en silencio. Descartar solo es
@@ -317,9 +318,9 @@ export function clientIp(req: Request): string {
  * OJO CON LO QUE ESTO NO ES. Sin `content-length` —`Transfer-Encoding: chunked`—
  * `Number(null || 0)` da 0 y esta función dice "cabe". No es un descuido que se
  * pueda arreglar aquí: la cabecera es lo único que hay antes de leer el cuerpo.
- * Quien llame a esto TIENE que volver a medir después de leer, como hace
- * `webhook/whatsapp/route.ts:44` con `raw.length`. `api/demo/route.ts:30` no lo
- * hace, así que ahí el tope de 64 KB es el de la plataforma, no el de aquí.
+ * Quien llame a esto TIENE que combinarlo con una lectura streaming acotada;
+ * `leerTextoAcotado` es la frontera reusable para ese contrato. Se conserva
+ * esta preselección para multipart y compatibilidad con WhatsApp.
  */
 export function bodyExcede(req: Request, maxBytes: number): boolean {
   const len = Number(req.headers.get('content-length') || 0);

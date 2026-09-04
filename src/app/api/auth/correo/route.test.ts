@@ -77,6 +77,27 @@ beforeEach(() => {
 });
 
 describe('sin firma válida no sale un solo correo', () => {
+  it('un body chunked excesivo se corta durante la lectura, antes del HMAC', async () => {
+    let pedidos = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 20) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(8 * 1024).fill(120));
+      },
+    });
+    const r = await POST(new Request('https://app.likida.ai/api/auth/correo', {
+      method: 'POST', body,
+      headers: { 'webhook-id': 'msg-gordo', 'webhook-timestamp': String(Math.floor(Date.now() / 1000)), 'webhook-signature': 'v1,AAAA' },
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    }));
+
+    expect(r.status).toBe(413);
+    expect(pedidos).toBeLessThanOrEqual(6);
+    expect(enviados).toHaveLength(0);
+  });
+
   it('sin secreto configurado: 500 y cero envíos', async () => {
     delete process.env.SUPABASE_AUTH_HOOK_SECRET;
     const r = await postear(MAGIC);

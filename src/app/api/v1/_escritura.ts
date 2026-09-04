@@ -59,6 +59,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '@/lib/likida/presupuesto';
 import { DatoInvalido } from '@/lib/likida/errores';
 import { errorApi, fallo, type CuerpoError } from './_comun';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 // ── El cuerpo ──────────────────────────────────────────────────────────────
 
@@ -82,26 +83,19 @@ export type LecturaCuerpo =
 /**
  * Lee el cuerpo como objeto JSON, o explica por qué no.
  *
- * SE MIDE DOS VECES a propósito, igual que `bodyExcede` advierte en
- * `ratelimit.ts`: `content-length` es lo único que hay antes de leer, y una
- * petición `Transfer-Encoding: chunked` no la trae — ahí el tope solo lo puede
- * imponer el largo real del texto ya leído.
+ * El tope se aplica mientras se lee. `Content-Length` permite rechazar antes;
+ * sin esa cabecera, el contador de bytes corta el stream antes de materializar
+ * un cuerpo chunked completo.
  */
 export async function leerCuerpo(req: Request): Promise<LecturaCuerpo> {
-  const declarado = Number(req.headers.get('content-length') || 0);
-  if (declarado > MAX_CUERPO_BYTES) {
+  const lectura = await leerTextoAcotado(req, MAX_CUERPO_BYTES);
+  if (!lectura.ok && lectura.motivo === 'demasiado_grande') {
     return { ok: false, respuesta: errorApi('parametro_invalido', `El cuerpo no puede pasar de ${MAX_CUERPO_BYTES} bytes.`) };
   }
-
-  let texto: string;
-  try {
-    texto = await req.text();
-  } catch {
+  if (!lectura.ok) {
     return { ok: false, respuesta: errorApi('parametro_invalido', 'No se pudo leer el cuerpo de la petición.') };
   }
-  if (texto.length > MAX_CUERPO_BYTES) {
-    return { ok: false, respuesta: errorApi('parametro_invalido', `El cuerpo no puede pasar de ${MAX_CUERPO_BYTES} bytes.`) };
-  }
+  const texto = lectura.texto;
 
   let crudo: unknown;
   try {

@@ -15,6 +15,7 @@
 import { NextResponse } from 'next/server';
 import { rateLimit, clientIp } from '@/lib/ratelimit';
 import { registrarCliente } from '@/lib/mcp/oauth';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,11 +34,11 @@ export async function POST(req: Request) {
 
   let cuerpo: Record<string, unknown>;
   try {
-    const crudo = await req.text();
-    if (crudo.length > 16 * 1024) {
+    const lectura = await leerTextoAcotado(req, 16 * 1024);
+    if (!lectura.ok) {
       return NextResponse.json({ error: 'invalid_client_metadata', error_description: 'La metadata excede el tamaño permitido.' }, { status: 400 });
     }
-    cuerpo = JSON.parse(crudo) as Record<string, unknown>;
+    cuerpo = JSON.parse(lectura.texto) as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: 'invalid_client_metadata', error_description: 'El cuerpo tiene que ser JSON.' }, { status: 400 });
   }

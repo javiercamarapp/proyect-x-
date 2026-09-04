@@ -628,6 +628,27 @@ describe('el cuerpo de la petición', () => {
     expect(crearViaje).not.toHaveBeenCalled();
   });
 
+  it('un body chunked excesivo se corta durante la lectura, no después de materializarlo', async () => {
+    let pedidos = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 20) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(2_000).fill(120));
+      },
+    });
+    const req = new Request('https://app.likida.ai/api/v1/viajes', {
+      method: 'POST', body,
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    });
+
+    const r = await leerCuerpo(req);
+
+    expect(r.ok).toBe(false);
+    expect(pedidos).toBeLessThanOrEqual(10);
+  });
+
   it('un `content-length` declarado por encima del tope se corta ANTES de leer el cuerpo', async () => {
     let leido = false;
     const fingida = {
