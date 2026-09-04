@@ -107,6 +107,27 @@ describe('provisionarWebhookCalcom — reconciliación idempotente API v2', () =
     await expect(provisionarWebhookCalcom('https://169.254.169.254/latest/meta-data', CONFIG))
       .rejects.toThrow(/públic|interna|callback/i);
   });
+
+  it.each([
+    'https://[::ffff:127.0.0.1]',
+    'https://[::ffff:10.0.0.1]',
+    'https://[::ffff:169.254.169.254]',
+  ])('rechaza el origen privado IPv4-mapped %s antes de abrir una conexión', (apiUrl) => {
+    expect(calcomConfigurado({ ...CONFIG, apiUrl })).toBe(false);
+  });
+
+  it('rechaza un callback IPv4-mapped antes de consultar la API de Cal.com', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error('el validador debió cortar antes de fetch');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(provisionarWebhookCalcom(
+      'https://[::ffff:127.0.0.1]/api/webhook/calcom',
+      CONFIG,
+    )).rejects.toThrow(/callback.*pública|pública.*callback/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('reconciliarReservasCalcom — Bookings v2 real', () => {
@@ -214,6 +235,31 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
     expect(ingeridos).toEqual(['BOOKING_CREATED']);
     expect(resultado).toEqual({ configured: true, revisadas: 0, completa: false, cursor: 'CURSOR-PAGINA' });
     expect(guardarCursor).not.toHaveBeenCalled();
+  });
+
+  it.each([429, 503])('reintenta una vez el GET idempotente tras HTTP %s y converge', async (status) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'transitorio' }), {
+        status,
+        headers: {
+          'content-type': 'application/json',
+          ...(status === 429 ? { 'retry-after': '0' } : {}),
+        },
+      }))
+      .mockResolvedValueOnce(json({
+        data: [{
+          id: 31, uid: `RETRY-${status}`, status: 'accepted',
+          createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T10:00:00Z',
+          attendees: [],
+        }],
+        pagination: { hasMore: false, nextCursor: null },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(reconciliarReservasCalcom(
+      '2026-08-01T00:00:00Z', async () => {}, CONFIG,
+    )).resolves.toEqual({ configured: true, revisadas: 1, completa: true, cursor: null });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -324,7 +370,18 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       .toBe('BOOKING_CREATED');
   });
 
-  it('un backlog nuevo (incluido esperando_vinculo) pausa la ventana y el cron reporta corte acumulable', async () => {
+  it.each([
+    ['correo aún sin prospecto', {
+      id: 44, uid: 'SIN-PROSPECTO', status: 'accepted',
+      createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z',
+      attendees: [{ email: 'nuevo-aun-no-importado@cliente.test', absent: false }],
+    }],
+    ['reloj futuro en cuarentena', {
+      id: 45, uid: 'FUTURO', status: 'accepted',
+      createdAt: '2099-01-01T10:00:00Z', updatedAt: '2099-01-01T10:00:00Z',
+      attendees: [{ email: 'futuro@cliente.test', absent: false }],
+    }],
+  ])('un evento durable (%s) queda observable sin congelar el watermark de la fuente', async (_caso, booking) => {
     let barrido = 0;
     const orden: string[] = [];
     rpc.mockImplementation(async (nombre: string) => {
@@ -343,16 +400,22 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       return { data: true, error: null };
     });
     vi.stubGlobal('fetch', vi.fn(async () => json({
-      data: [{ id: 44, uid: 'TERMINAL', status: 'cancelled', createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z', attendees: [] }],
+      data: [booking],
       pagination: { hasMore: false, nextCursor: null },
     })));
 
     await expect(ejecutarMantenimientoCalcom({
       config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
       venceEn: Date.now() + 30_000, entregar: async () => {},
-    })).resolves.toMatchObject({ completa: false, cortadasPorReloj: 1, ledger: { restantes: 1 } });
-    expect(orden).toContain('pausar_sincronizacion_calcom');
-    expect(orden).not.toContain('finalizar_sincronizacion_calcom');
+    })).resolves.toMatchObject({
+      completa: true,
+      // La fuente terminó, pero la deuda durable sigue siendo visible y debe
+      // mantener parcial el latido hasta que el barrido la recupere.
+      cortadasPorReloj: 1,
+      ledger: { restantes: 1 },
+    });
+    expect(orden).toContain('finalizar_sincronizacion_calcom');
+    expect(orden).not.toContain('pausar_sincronizacion_calcom');
   });
 
   it('no finaliza si se agotó el reloj antes del segundo barrido aunque la última página terminó', async () => {
@@ -384,5 +447,56 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
     expect(orden.filter((n) => n === 'reconciliar_eventos_calcom_pendientes')).toHaveLength(1);
     expect(orden).toContain('pausar_sincronizacion_calcom');
     expect(orden).not.toContain('finalizar_sincronizacion_calcom');
+  });
+
+  it('revalida el deadline después del segundo barrido antes de avanzar el watermark', async () => {
+    let ahora = 0;
+    let barridos = 0;
+    const orden: string[] = [];
+    vi.spyOn(Date, 'now').mockImplementation(() => ahora);
+    rpc.mockImplementation(async (nombre: string) => {
+      orden.push(nombre);
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        barridos += 1;
+        if (barridos === 2) ahora = 900;
+        return { data: [{ revisados: 0, recuperados: 0, restantes: 0 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
+        claim_token: 'claim-barrido-lento', desde_en: '2026-08-01T00:00:00Z',
+        ventana_hasta_en: '2026-08-02T00:00:00Z', cursor_siguiente: null,
+        debe_provisionar: false,
+      }], error: null };
+      return { data: true, error: null };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      data: [{
+        id: 46, uid: 'BARRIDO-LENTO', status: 'accepted',
+        createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T10:00:00Z',
+        attendees: [],
+      }],
+      pagination: { hasMore: false, nextCursor: null },
+    })));
+
+    await expect(ejecutarMantenimientoCalcom({
+      config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: 1_000, entregar: async () => {},
+    })).resolves.toMatchObject({ completa: false, cortadasPorReloj: 1 });
+    expect(orden).toContain('pausar_sincronizacion_calcom');
+    expect(orden).not.toContain('finalizar_sincronizacion_calcom');
+  });
+
+  it('si otro worker conserva el claim no informa latido completo sin evidencia', async () => {
+    rpc.mockImplementation(async (nombre: string) => {
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        return { data: [{ revisados: 0, recuperados: 0, restantes: 0 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [], error: null };
+      return { data: true, error: null };
+    });
+
+    await expect(ejecutarMantenimientoCalcom({
+      config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: Date.now() + 30_000,
+    })).resolves.toMatchObject({ completa: false, cortadasPorReloj: 1 });
   });
 });

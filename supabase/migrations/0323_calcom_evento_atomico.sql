@@ -50,7 +50,22 @@ alter table public.comercial_evento
   add column if not exists vinculo_correo text,
   add column if not exists vinculo_error text,
   add column if not exists reintentos smallint not null default 0,
-  add column if not exists reintentar_despues timestamptz not null default clock_timestamp();
+  add column if not exists reintentar_despues timestamptz not null default clock_timestamp(),
+  add column if not exists clave_replay_hash text;
+
+-- La clave operativa contiene el UID de Cal.com. Se conserva únicamente una
+-- huella irreversible para que una reentrega posterior a la retención siga
+-- siendo idempotente sin volver a guardar UID, correo ni payload.
+update public.comercial_evento ce
+   set clave_replay_hash = pg_catalog.encode(digest(
+     pg_catalog.convert_to('calcom-replay:v1' || chr(10) || ce.clave_idempotencia, 'UTF8')
+   , 'sha256'), 'hex')
+ where ce.fuente = 'calcom'
+   and ce.clave_replay_hash is null;
+
+create unique index if not exists comercial_evento_calcom_replay_hash_uidx
+  on public.comercial_evento (clave_replay_hash)
+  where fuente = 'calcom' and clave_replay_hash is not null;
 
 alter table public.comercial_evento
   drop constraint if exists comercial_evento_estado_proceso_dominio;
@@ -74,6 +89,8 @@ comment on column public.comercial_evento.vinculo_correo is
   'Correo normalizado del attendee para que el barrido durable resuelva sin depender del webhook original.';
 comment on column public.comercial_evento.vinculo_error is
   'Diagnóstico durable del vínculo (sin_correo, sin_prospecto o correo_ambiguo).';
+comment on column public.comercial_evento.clave_replay_hash is
+  'SHA-256 con separación de dominio de la clave Cal.com original. Preserva idempotencia tras retención sin conservar el UID reversible.';
 
 -- 0323 no está desplegada; DROP permite corregir también bases locales que
 -- alcanzaron a crear la primera versión del índice bajo el mismo nombre.
@@ -93,7 +110,7 @@ create or replace function public.purgar_comercial_evento(
 ) returns bigint
 language plpgsql
 security definer
-set search_path = ''
+set search_path = public, extensions, pg_catalog
 as $$
 declare
   anonimizadas bigint;
@@ -110,7 +127,22 @@ begin
          externo_id = case when ce.fuente='calcom' then null else ce.externo_id end,
          externo_aliases = case when ce.fuente='calcom' then '{}'::text[] else ce.externo_aliases end,
          externo_anterior_aliases = case when ce.fuente='calcom' then '{}'::text[] else ce.externo_anterior_aliases end,
-         clave_idempotencia = case when ce.fuente='calcom' then 'purgado:calcom:' || ce.id::text else ce.clave_idempotencia end
+         clave_replay_hash = case when ce.fuente='calcom' then coalesce(
+           ce.clave_replay_hash,
+           pg_catalog.encode(digest(pg_catalog.convert_to(
+             'calcom-replay:v1' || chr(10) || ce.clave_idempotencia, 'UTF8'
+           ), 'sha256'), 'hex')
+         ) else ce.clave_replay_hash end,
+         clave_idempotencia = case when ce.fuente='calcom' then 'purgado:calcom:' || ce.id::text else ce.clave_idempotencia end,
+         -- Un evento que ya excedió la retención no puede conservar identidad
+         -- para ser reintentado. Se sella de forma final antes de anonimizarlo,
+         -- evitando una poison pill recuperable sin UID/aliases.
+         estado_proceso = case when ce.fuente='calcom' and ce.estado_proceso in (
+           'pendiente','esperando_vinculo','sin_prospecto','cuarentena'
+         ) then 'ignorado' else ce.estado_proceso end,
+         procesado_en = case when ce.fuente='calcom' and ce.estado_proceso in (
+           'pendiente','esperando_vinculo','sin_prospecto','cuarentena'
+         ) then p_ahora else ce.procesado_en end
    where ce.ocurrido_en < limite
      and (
        ce.payload <> '{}'::jsonb or ce.error is not null
@@ -119,6 +151,8 @@ begin
          ce.externo_id is not null or ce.externo_aliases <> '{}'::text[]
          or ce.externo_anterior_aliases <> '{}'::text[]
          or ce.clave_idempotencia not like 'purgado:calcom:%'
+         or ce.clave_replay_hash is null
+         or ce.estado_proceso in ('pendiente','esperando_vinculo','sin_prospecto','cuarentena')
        ))
      );
   get diagnostics anonimizadas = row_count;
@@ -130,7 +164,7 @@ revoke all on function public.purgar_comercial_evento(integer,timestamptz) from 
 grant execute on function public.purgar_comercial_evento(integer,timestamptz) to service_role;
 
 comment on function public.purgar_comercial_evento(integer,timestamptz) is
-  '0323: anonimiza payload/error/correo y, para Cal.com, pseudónimos externos, aliases y clave idempotente después de la retención; conserva sólo el hecho comercial.';
+  '0323: anonimiza payload/error/correo y, para Cal.com, UID/aliases/clave después de la retención; conserva una huella SHA-256 no reversible para replay idempotente y sella cualquier estado ya irrecuperable.';
 
 -- Durabilidad del reconciliador Bookings v2. Una ventana conserva límites
 -- estables mientras el cursor avanza; sólo al consumirla completa se mueve el
@@ -319,7 +353,7 @@ create or replace function public.aplicar_evento_calcom_tx(
 returns table(resultado text, estado_prospecto text)
 language plpgsql
 security definer
-set search_path = ''
+set search_path = public, extensions, pg_catalog
 as $$
 declare
   v_evento_id uuid;
@@ -344,12 +378,16 @@ declare
   v_pend record;
   v_pend_precedencia smallint;
   v_pend_destino text;
+  v_replay_hash text;
 begin
   if nullif(btrim(p_clave), '') is null
       or nullif(v_tipo, '') is null
       or nullif(btrim(p_externo), '') is null then
     raise exception 'evento Cal.com incompleto' using errcode = 'CR001';
   end if;
+  v_replay_hash := pg_catalog.encode(digest(pg_catalog.convert_to(
+    'calcom-replay:v1' || chr(10) || p_clave, 'UTF8'
+  ), 'sha256'), 'hex');
 
   if v_tipo = 'BOOKING_NO_SHOW' then
     p_no_show := true;
@@ -394,15 +432,15 @@ begin
     clave_idempotencia, fuente, tipo, prospecto_id, externo_id, payload,
     ocurrido_en, orden_en, estado_proceso, externo_aliases,
     externo_anterior_aliases, calcom_no_show, orden_original_en,
-    vinculo_correo, vinculo_error
+    vinculo_correo, vinculo_error, clave_replay_hash
   ) values (
     p_clave, 'calcom', v_tipo, p_prospecto, p_externo, coalesce(p_payload, '{}'::jsonb),
     case when v_futuro then clock_timestamp() else coalesce(p_creado_en, clock_timestamp()) end,
     case when v_futuro then null else p_creado_en end,
     'pendiente', v_aliases, v_aliases_anteriores, p_no_show, p_creado_en,
-    nullif(lower(btrim(p_vinculo_correo)), ''), p_error_vinculo
+    nullif(lower(btrim(p_vinculo_correo)), ''), p_error_vinculo, v_replay_hash
   )
-  on conflict (clave_idempotencia) do nothing
+  on conflict do nothing
   returning id into v_evento_id;
 
   if v_evento_id is null then
@@ -410,6 +448,9 @@ begin
       into v_evento_id, v_evento_estado, v_evento_prospecto
       from public.comercial_evento ce
      where ce.clave_idempotencia = p_clave
+        or (ce.fuente = 'calcom' and ce.clave_replay_hash = v_replay_hash)
+     order by (ce.clave_idempotencia = p_clave) desc, ce.creado_en, ce.id
+     limit 1
      for update;
 
     if v_evento_estado in ('aplicado', 'ignorado', 'legado') then
@@ -781,10 +822,12 @@ comment on function public.aplicar_evento_calcom_tx(
   text, text, text, uuid, jsonb, timestamptz, text, text[], text[], boolean, text, text
 ) is '0323: registra/aplica Cal.com atómicamente; UID e id numérico son aliases namespaced, los eventos adelantados esperan vínculo, y reentregas recuperan sin_prospecto/cuarentena/pendiente.';
 
+drop function if exists public.reconciliar_eventos_calcom_pendientes(integer);
+
 create or replace function public.reconciliar_eventos_calcom_pendientes(
   p_limite integer default 250
 )
-returns table(revisados integer, recuperados integer, restantes integer)
+returns table(revisados integer, recuperados integer, restantes integer, elegibles integer)
 language plpgsql
 security definer
 set search_path = ''
@@ -821,6 +864,20 @@ begin
     v_revisados := v_revisados + 1;
     v_prospecto := null;
     v_coincidencias := 0;
+
+    -- Defensa adicional para datos heredados ya anonimizados por una versión
+    -- anterior: nunca se invoca el aplicador con identidad incompleta ni se
+    -- derriba el lote entero por una sola poison pill.
+    if nullif(btrim(v.clave_idempotencia), '') is null
+       or nullif(btrim(v.externo_id), '') is null
+       or cardinality(v.externo_aliases) = 0 then
+      update public.comercial_evento
+         set estado_proceso='ignorado', procesado_en=clock_timestamp(),
+             error='identidad_irrecuperable_anonimizada'
+       where id=v.id;
+      v_recuperados := v_recuperados + 1;
+      continue;
+    end if;
 
     if v.prospecto_id is not null and exists (
       select 1 from public.prospecto p
@@ -871,6 +928,16 @@ begin
     from public.comercial_evento ce
    where ce.fuente='calcom'
      and ce.estado_proceso in ('esperando_vinculo','sin_prospecto','cuarentena');
+  select count(*)::integer into elegibles
+    from public.comercial_evento ce
+   where ce.fuente='calcom'
+     and ce.estado_proceso in ('esperando_vinculo','sin_prospecto','cuarentena')
+     and ce.reintentar_despues <= clock_timestamp()
+     and (
+       ce.estado_proceso in ('sin_prospecto','esperando_vinculo')
+       or ce.orden_original_en is null
+       or ce.orden_original_en <= clock_timestamp() + interval '5 minutes'
+     );
   revisados := v_revisados;
   recuperados := v_recuperados;
   return next;
@@ -883,4 +950,4 @@ grant execute on function public.reconciliar_eventos_calcom_pendientes(integer)
   to service_role;
 
 comment on function public.reconciliar_eventos_calcom_pendientes(integer) is
-  '0323: reclama con SKIP LOCKED esperando_vinculo/sin_prospecto/cuarentena, reporta todos los restantes y recupera sin depender de reentregas HTTP; nunca elige un correo ambiguo.';
+  '0323: reclama con SKIP LOCKED esperando_vinculo/sin_prospecto/cuarentena; restantes observa toda la deuda y elegibles sólo la deuda vencida reclamable, para no congelar el watermark por backoff o reloj futuro.';

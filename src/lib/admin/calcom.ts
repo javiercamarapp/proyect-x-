@@ -30,6 +30,15 @@ function hostPrivado(hostname: string): boolean {
   if (host === 'localhost' || host === '::' || host === '::1'
       || host.endsWith('.localhost') || host.endsWith('.local')
       || host.endsWith('.internal') || host.endsWith('.localdomain')) return true;
+  // WHATWG normaliza `::ffff:127.0.0.1` como `::ffff:7f00:1`. Si sólo se
+  // inspecciona la notación decimal, una URL aparentemente IPv6 vuelve a
+  // alcanzar loopback, RFC1918 o el metadata endpoint mediante IPv4-mapped.
+  const mapeada = /^(?:::ffff:|0:0:0:0:0:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (mapeada) {
+    const alta = Number.parseInt(mapeada[1], 16);
+    const baja = Number.parseInt(mapeada[2], 16);
+    return hostPrivado(`${alta >>> 8}.${alta & 255}.${baja >>> 8}.${baja & 255}`);
+  }
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (ipv4) {
     const octetos = ipv4.slice(1).map(Number);
@@ -96,6 +105,53 @@ async function respuestaJson(response: Response, operacion: string): Promise<unk
   return response.status === 204 ? {} : response.json().catch(() => ({}));
 }
 
+const REINTENTOS_GET_CALCOM = 1;
+const ESPERA_REINTENTO_MAX_MS = 1_000;
+
+function esperaRetryAfterMs(response: Response): number {
+  const valor = response.headers.get('retry-after')?.trim();
+  if (!valor) return 100;
+  const segundos = Number(valor);
+  const fecha = Date.parse(valor);
+  const calculada = Number.isFinite(segundos)
+    ? Math.max(0, segundos * 1_000)
+    : Number.isFinite(fecha) ? Math.max(0, fecha - Date.now()) : 100;
+  return Math.min(ESPERA_REINTENTO_MAX_MS, calculada);
+}
+
+async function esperarReintento(ms: number, venceEn: number | undefined): Promise<void> {
+  if (venceEn !== undefined && Date.now() + ms + 250 >= venceEn) {
+    throw new Error('Cal.com sin presupuesto de tiempo para reintento');
+  }
+  if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Sólo reintenta GET, que es idempotente. POST/PATCH/DELETE podrían haber sido
+ * aceptados por Cal.com antes de un 5xx y se mantienen fail-closed para no
+ * duplicar ni borrar recursos sin una llave idempotente del proveedor. */
+async function obtenerJsonCalcom(
+  input: string | URL,
+  init: Omit<RequestInit, 'method' | 'signal'>,
+  operacion: string,
+  venceEn: number | undefined,
+  timeoutMs: number,
+): Promise<unknown> {
+  for (let intento = 0; ; intento += 1) {
+    const response = await fetch(input, {
+      ...init,
+      redirect: 'error',
+      signal: signalAcotada(venceEn, timeoutMs),
+    });
+    const transitorio = response.status === 429 || response.status >= 500;
+    if (!response.ok && transitorio && intento < REINTENTOS_GET_CALCOM) {
+      await response.body?.cancel().catch(() => undefined);
+      await esperarReintento(esperaRetryAfterMs(response), venceEn);
+      continue;
+    }
+    return respuestaJson(response, operacion);
+  }
+}
+
 function signalAcotada(venceEn: number | undefined, maximoMs: number): AbortSignal {
   const restante = venceEn === undefined ? maximoMs : Math.min(maximoMs, venceEn - Date.now());
   if (restante < 250) throw new Error('Cal.com sin presupuesto de tiempo');
@@ -117,10 +173,13 @@ export async function provisionarWebhookCalcom(
   const headers = { Authorization: `Bearer ${config.apiKey}` };
   const encontrados: CalcomWebhook[] = [];
   for (let skip = 0; skip <= 10_000; skip += 250) {
-    const listado = await fetch(`${endpointScope}?take=250&skip=${skip}`, {
-      headers, signal: signalAcotada(opciones.venceEn, 15_000),
-    });
-    const json = await respuestaJson(listado, 'webhook listing') as { data?: unknown };
+    const json = await obtenerJsonCalcom(
+      `${endpointScope}?take=250&skip=${skip}`,
+      { headers },
+      'webhook listing',
+      opciones.venceEn,
+      15_000,
+    ) as { data?: unknown };
     if (!Array.isArray(json.data)) throw new Error('Cal.com webhook listing sin data[]');
     encontrados.push(...json.data as CalcomWebhook[]);
     if (json.data.length < 250) break;
@@ -143,6 +202,7 @@ export async function provisionarWebhookCalcom(
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify(cuerpo),
+      redirect: 'error',
       signal: signalAcotada(opciones.venceEn, 15_000),
     });
     return { configured: true, id: idDeRespuesta(await respuestaJson(creado, 'webhook provisioning')) };
@@ -154,6 +214,7 @@ export async function provisionarWebhookCalcom(
     method: 'PATCH',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify(cuerpo),
+    redirect: 'error',
     signal: signalAcotada(opciones.venceEn, 15_000),
   });
   await respuestaJson(actualizado, 'webhook update');
@@ -162,7 +223,7 @@ export async function provisionarWebhookCalcom(
   // URLs se respetan: pueden pertenecer a integraciones distintas.
   for (const duplicado of coincidentes.slice(1)) {
     const eliminado = await fetch(`${endpointScope}/${encodeURIComponent(String(duplicado.id))}`, {
-      method: 'DELETE', headers, signal: signalAcotada(opciones.venceEn, 15_000),
+      method: 'DELETE', headers, redirect: 'error', signal: signalAcotada(opciones.venceEn, 15_000),
     });
     await respuestaJson(eliminado, 'duplicate webhook deletion');
   }
@@ -241,12 +302,14 @@ function combinarLedger(
   inicial: CalcomReconciliacionPendiente,
   final: CalcomReconciliacionPendiente,
 ): CalcomReconciliacionPendiente {
-  return {
+  const combinado: CalcomReconciliacionPendiente = {
     configured: inicial.configured && final.configured,
     revisados: inicial.revisados + final.revisados,
     recuperados: inicial.recuperados + final.recuperados,
     restantes: final.restantes,
   };
+  if (final.elegibles !== undefined) combinado.elegibles = final.elegibles;
+  return combinado;
 }
 
 export type CalcomIngestMeta = { soloSiNoShowVigente?: boolean };
@@ -281,14 +344,12 @@ export async function reconciliarReservasCalcom(
     url.searchParams.set('limit', '100');
     if (config.eventTypeId) url.searchParams.set('eventTypeId', config.eventTypeId);
     if (cursor) url.searchParams.set('cursor', cursor);
-    const response = await fetch(url, {
+    const pagina = await obtenerJsonCalcom(url, {
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         'cal-api-version': '2026-05-01',
       },
-      signal: signalAcotada(opciones.venceEn, 20_000),
-    });
-    const pagina = await respuestaJson(response, 'reconciliation') as {
+    }, 'reconciliation', opciones.venceEn, 20_000) as {
       data?: unknown;
       pagination?: { hasMore?: boolean; nextCursor?: string | null };
     };
@@ -320,6 +381,9 @@ export type CalcomReconciliacionPendiente = {
   revisados: number;
   recuperados: number;
   restantes: number;
+  /** Deuda que puede reclamarse ahora. `restantes` conserva toda la deuda
+   * durable, incluso backoff y cuarentena futura, para observabilidad. */
+  elegibles?: number;
 };
 
 /** Claim durable de sin_prospecto/cuarentena. Vive en PostgreSQL para que dos
@@ -333,15 +397,19 @@ export async function reconciliarEventosCalcomPendientes(
   });
   if (error) throw new Error(`Cal.com pending reconciliation: ${error.message}`);
   const fila = (Array.isArray(data) ? data[0] : data) as {
-    revisados?: number; recuperados?: number; restantes?: number;
+    revisados?: number; recuperados?: number; restantes?: number; elegibles?: number;
   } | null;
   if (!fila) throw new Error('Cal.com pending reconciliation: respuesta vacía');
-  return {
+  const resultado: CalcomReconciliacionPendiente = {
     configured: true,
     revisados: Number(fila.revisados ?? 0),
     recuperados: Number(fila.recuperados ?? 0),
     restantes: Number(fila.restantes ?? 0),
   };
+  // Compatibilidad con una RPC anterior durante rollout: no fabrica un cero
+  // observable ni altera la forma exacta de respuestas legacy.
+  if (fila.elegibles !== undefined) resultado.elegibles = Number(fila.elegibles ?? 0);
+  return resultado;
 }
 
 type EstadoSincronizacionCalcom = {
@@ -441,7 +509,7 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
   if (error) throw new Error(`iniciar_sincronizacion_calcom: ${error.message}`);
   const estado = (Array.isArray(data) ? data[0] : data) as EstadoSincronizacionCalcom | null;
   if (!estado?.claim_token) {
-    return { configured: true, completa: false, provisionado: false, revisadas: 0, cortadasPorReloj: 0, ledger: ledgerInicial };
+    return { configured: true, completa: false, provisionado: false, revisadas: 0, cortadasPorReloj: 1, ledger: ledgerInicial };
   }
 
   const claim = estado.claim_token;
@@ -475,9 +543,16 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
     const ledgerFinal = cortadoAntesSegundoBarrido
       ? ledgerInicial
       : combinarLedger(ledgerInicial, await reconciliarEventosCalcomPendientes(250, config));
+    const cortadoDespuesSegundoBarrido = !cortadoAntesSegundoBarrido && sinTiempo(opciones.venceEn);
     // Si no hubo reloj para comprobar el ledger recién producido, no existe
     // evidencia para avanzar el watermark aunque la página dijera hasMore=false.
-    const completa = reservas.completa && !cortadoAntesSegundoBarrido && ledgerFinal.restantes === 0;
+    // Una deuda con backoff o cuarentena futura sigue visible en `restantes`,
+    // pero no congela para siempre el watermark de Bookings. Sólo la deuda que
+    // era reclamable y quedó sin consumir impide cerrar esta ventana.
+    const completa = reservas.completa
+      && !cortadoAntesSegundoBarrido
+      && !cortadoDespuesSegundoBarrido
+      && (ledgerFinal.elegibles ?? 0) === 0;
     await rpcBooleana(
       completa ? 'finalizar_sincronizacion_calcom' : 'pausar_sincronizacion_calcom',
       { p_claim_token: claim },
@@ -487,7 +562,7 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
       completa,
       provisionado,
       revisadas: reservas.revisadas,
-      cortadasPorReloj: completa ? 0 : 1,
+      cortadasPorReloj: completa && ledgerFinal.restantes === 0 ? 0 : 1,
       ledger: ledgerFinal,
     };
   } catch (e) {
