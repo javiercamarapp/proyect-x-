@@ -34,7 +34,10 @@ vi.mock('@/lib/supabase/admin', () => ({
     rpc: async (fn: string) => (fn === 'migraciones_aplicadas' ? rpcMigraciones() : { data: null, error: { message: `rpc desconocida ${fn}` } }),
   }),
 }));
-vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@/lib/logger', async (original) => ({
+  ...await original<Record<string, unknown>>(),
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 const alertarOperador = vi.fn(async (..._a: unknown[]) => {});
 const alertarHuecoConfiguracion = vi.fn(async (..._a: unknown[]) => {});
 vi.mock('@/lib/observability/alerta', () => ({
@@ -455,5 +458,32 @@ describe('OP-P1: el health coteja la migración de la base contra la del código
     const c = await (await GET(peticion())).json();
     expect(c.status).toBe('degraded');
     expect(c.migracion).toMatchObject({ base: null, atras: null, motivo: expect.stringContaining('schema_migrations no existe') });
+  });
+});
+
+describe('health: cada hueco conserva correlación técnica en Sentry', () => {
+  it('dos crons producen códigos acotados distintos sin exponer motivos al saneador ni al health público', async () => {
+    const { logger } = await import('@/lib/logger');
+    const { sanitizarEventoSentry } = await import('@/lib/observability/sentry');
+    vi.mocked(logger.warn).mockClear();
+    dbFalla = false; permitido = true;
+    const ahora = new Date().toISOString();
+    latidos = frescos(...(['descarga-sat', 'gps'] as const).map((id) => ({
+      id, ultimo_latido: ahora, estado: 'parcial',
+      detalle: { configAusente: true, motivo: 'configuración pendiente para canary@example.invalid' },
+    })));
+    const response = await GET(peticion());
+    const publico = await response.text();
+    expect(response.status).toBe(200);
+    expect(publico).not.toContain('canary@example.invalid');
+    const eventos = vi.mocked(logger.warn).mock.calls
+      .filter(([evento]) => evento === 'health.cron_config_ausente')
+      .map(([, extra]) => sanitizarEventoSentry({ extra }) as { extra?: Record<string, unknown> });
+    expect(eventos).toHaveLength(2);
+    expect(eventos.map((e) => e.extra?.codigo).sort()).toEqual([
+      'cron_config_ausente:descarga-sat', 'cron_config_ausente:gps',
+    ]);
+    expect(eventos.map((e) => e.extra?.ruta).sort()).toEqual(['/api/cron/descarga-sat', '/api/cron/gps']);
+    expect(JSON.stringify(eventos)).not.toMatch(/canary@example\.invalid|motivo|crons/);
   });
 });

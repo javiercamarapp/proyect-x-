@@ -21,6 +21,7 @@ import { PartialExecutionError } from '@/lib/llm/openrouter';
 import { guardarIntercambio } from '@/lib/likida/chat/conversaciones';
 import { ejecutarAnalista } from '@/lib/agents/analista';
 import { logger } from '@/lib/logger';
+import { codigoDeError } from '@/lib/observability/sentry';
 import { rateLimit } from '@/lib/ratelimit';
 import { validarMensajes, validarConversacionId } from './validacion';
 import { topeDiaUsd, gastoChatHoyUsd } from './tope';
@@ -158,7 +159,11 @@ export async function POST(req: NextRequest) {
             logger.error('chat.costo_parcial_sin_registrar', { tenantId, err: e2 instanceof Error ? e2.message : String(e2) });
           }
         }
-        logger.error('chat.analista.fallo', { tenantId, err: err instanceof Error ? err.message : String(err) });
+        logger.error('chat.analista.fallo', {
+          tenantId, ruta: '/api/dashboard/chat',
+          codigo: codigoDeError(err instanceof PartialExecutionError ? err.cause ?? err : err),
+          err: err instanceof Error ? err.message : String(err),
+        });
         manda({ t: 'error', error: 'el analista no pudo responder en este momento' });
       } finally {
         try { controlador.close(); } catch { /* ya cerrado */ }
