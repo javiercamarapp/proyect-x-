@@ -182,10 +182,10 @@ declare c uuid; o1 uuid; o2 uuid; od uuid; ok boolean;
 begin
   select id into o1 from public.encolar_wa_outbox_dedupe(
     'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-durable',
-    '{"to":"529999999999","type":"interactive"}'::jsonb, 'pendiente');
+    '{"to":"529999999999","type":"template","template":{"name":"gps_alerta_critica","language":{"code":"es_MX"},"components":[{"type":"button","sub_type":"quick_reply","index":"0"}]}}'::jsonb, 'pendiente');
   select id into o2 from public.encolar_wa_outbox_dedupe(
     'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-durable',
-    '{"to":"529999999999","type":"interactive"}'::jsonb, 'reintento ambiguo');
+    '{"to":"529999999999","type":"template","template":{"name":"gps_alerta_critica","language":{"code":"es_MX"},"components":[{"type":"button","sub_type":"quick_reply","index":"0"}]}}'::jsonb, 'reintento ambiguo');
   if o1 is null or o1 <> o2 then raise exception 'dedupe creó dos avisos'; end if;
   select claim_token into c from public.reclamar_eventos_seguridad(
     'a0000000-0000-0000-0000-000000000001', 'samsara', 1,
@@ -197,7 +197,7 @@ begin
   if not ok or (select procesado_en is not null from public.evento_seguridad_flota where evento_id_externo='evt-durable') then
     raise exception 'pending selló entrega crítica';
   end if;
-  update public.wa_outbox set estado='sent', provider_message_id='wamid.gps', enviada_en='2026-09-03T13:01:00Z' where id=o1;
+  update public.wa_outbox set estado='sent', provider_message_id='wamid.gps', provider_status='delivered', enviada_en='2026-09-03T13:01:00Z' where id=o1;
   if not exists (select 1 from public.evento_seguridad_flota where evento_id_externo='evt-durable'
       and procesado_en='2026-09-03T13:01:00Z' and aviso_estado='sent' and aviso_receipt='wamid.gps') then
     raise exception 'receipt no selló el evento';
@@ -205,7 +205,7 @@ begin
 
   select id into od from public.encolar_wa_outbox_dedupe(
     'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-dead',
-    '{"to":"529999999999","type":"interactive"}'::jsonb, 'pendiente');
+    '{"to":"529999999999","type":"template","template":{"name":"gps_alerta_critica","language":{"code":"es_MX"},"components":[{"type":"button","sub_type":"quick_reply","index":"0"}]}}'::jsonb, 'pendiente');
   select claim_token into c from public.reclamar_eventos_seguridad(
     'a0000000-0000-0000-0000-000000000001', 'samsara', 1,
     'dead', 360, '2026-09-03T13:02:00Z') where evento_id_externo='evt-dead';

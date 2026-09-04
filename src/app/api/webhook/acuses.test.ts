@@ -14,7 +14,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // línea.
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+const rpc = vi.fn(async () => ({ data: true, error: null }));
 vi.mock('@/lib/logger', () => ({ logger }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc }) }));
 vi.mock('@/lib/likida/processor', () => ({ processInbound: vi.fn() }));
 vi.mock('@/lib/meta/client', () => ({
   verifyWebhookChallenge: () => false,
@@ -42,7 +44,7 @@ const conStatus = (status: string, extra: Record<string, unknown> = {}) => ({
   } }] }],
 });
 
-beforeEach(() => { logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset(); });
+beforeEach(() => { logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset(); rpc.mockReset(); rpc.mockResolvedValue({ data: true, error: null }); });
 
 describe('acuses de entrega de WhatsApp', () => {
   it('un mensaje que NO se entregó deja un error con el wamid y la causa', async () => {
@@ -68,6 +70,7 @@ describe('acuses de entrega de WhatsApp', () => {
 
   it('los acuses normales se registran sin gritar', async () => {
     await pedir(conStatus('delivered'));
+    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({ p_wamid: 'wamid.PDF123', p_estado: 'delivered' }));
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith('wa.estado', { id: 'wamid.PDF123', estado: 'delivered' });
   });
@@ -84,5 +87,22 @@ describe('acuses de entrega de WhatsApp', () => {
     const { processInbound } = await import('@/lib/likida/processor');
     await pedir(conStatus('failed', { errors: [{ code: 1 }] }));
     expect(processInbound).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ data: null, error: { message: 'db down' } }],
+    [{ data: false, error: null }],
+  ])('si el RPC devuelve fallo responde 503 y Retry-After: %o', async (respuesta) => {
+    rpc.mockResolvedValueOnce(respuesta as never);
+    const res = await pedir(conStatus('read'));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+  });
+
+  it('si el RPC lanza responde 503 reintentable', async () => {
+    rpc.mockRejectedValueOnce(new Error('timeout'));
+    const res = await pedir(conStatus('delivered'));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
   });
 });

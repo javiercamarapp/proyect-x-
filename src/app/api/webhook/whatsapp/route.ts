@@ -12,6 +12,7 @@ import { logger } from '@/lib/logger';
 import { registrarEventoSeguridad } from '@/lib/seguridad/eventos';
 import { flushObservabilidad, codigoDeError } from '@/lib/observability/sentry';
 import { leerInterruptor } from '@/lib/likida/interruptores';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { avisadosDeApagado, VENTANA_AVISO_APAGADO_MS } from './avisos_apagado';
 import {
   guardarEventosPendientes, pendientesYaConocidos, reclamarPendiente,
@@ -483,7 +484,20 @@ export async function POST(req: NextRequest) {
   // Con el wamid que `sendText`/`sendDocument` ya registran al enviar, estas dos
   // líneas cierran el circuito: se sabe qué mensaje concreto no llegó y por qué.
   const estados = extractStatuses(payload);
+  let fallosEstado = 0;
   for (const e of estados) {
+    if (['delivered', 'read', 'failed'].includes(e.status)) {
+      try {
+        const resultado = await supabaseAdmin().rpc('registrar_estado_wa_meta', {
+          p_wamid: e.id, p_estado: e.status,
+          p_error: e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? null,
+        });
+        if (resultado.error || resultado.data !== true) fallosEstado++;
+      } catch (err) {
+        fallosEstado++;
+        logger.error('wa.estado.persistencia_fallo', { id: e.id, estado: e.status, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
     if (e.status === 'failed') {
       logger.error('wa.no_entregado', {
         id: e.id, para: e.recipient_id,
@@ -494,6 +508,10 @@ export async function POST(req: NextRequest) {
     } else {
       logger.info('wa.estado', { id: e.id, estado: e.status });
     }
+  }
+
+  if (fallosEstado > 0) {
+    return NextResponse.json({ received: permitidos.length, estados: estados.length, error: 'acuse no persistido' }, { status: 503, headers: { 'Retry-After': '30' } });
   }
 
   // ── EL CÓDIGO DE SALIDA ES LA COLA ────────────────────────────────────────

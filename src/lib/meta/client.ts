@@ -404,11 +404,17 @@ export async function encolarBotonesWhatsApp(
     logger.error('wa.encolarButtons.invalido', invalido ?? { dedupeKey: 'inválida' });
     return null;
   }
+  // Las alertas GPS pueden iniciar una conversación fuera de la ventana de
+  // 24 h: una plantilla aprobada es obligatoria. La quick reply conserva el
+  // acuse semántico aunque Meta ya no acepte un interactive de sesión.
   const payload = {
-    messaging_product: 'whatsapp', to: destinatarioWhatsApp(to), type: 'interactive',
-    interactive: {
-      type: 'button', body: { text: cuerpo },
-      action: { buttons: botones.map((b) => ({ type: 'reply' as const, reply: { id: b.id, title: b.titulo } })) },
+    messaging_product: 'whatsapp', to: destinatarioWhatsApp(to), type: 'template',
+    template: {
+      name: 'gps_alerta_critica', language: { code: 'es_MX' },
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: cuerpo }] },
+        { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: botones[0].id }] },
+      ],
     },
   };
   return encolarSalidaWhatsAppDedupe(dedupeKey, payload, 'alerta GPS pendiente de entrega');

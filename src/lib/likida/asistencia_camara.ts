@@ -269,7 +269,7 @@ async function avisarAlJefePorCamara(
   ], `gps:${e.proveedor}:${e.tenantId}:${e.eventoIdExterno}`);
   if (!salida) return null;
   if (salida.estado === 'dead') return { avisoEstado: 'muerto', avisoOutboxId: salida.id };
-  return salida.estado === 'sent'
-    ? { avisoEstado: 'enviado', avisoOutboxId: salida.id, avisoReceipt: salida.providerMessageId ?? undefined }
-    : { avisoEstado: 'encolado', avisoOutboxId: salida.id };
+  // `sent` sólo es aceptación de la Cloud API; el webhook delivered/read
+  // será quien selle el evento. Mientras tanto queda observable como cola.
+  return { avisoEstado: 'encolado', avisoOutboxId: salida.id };
 }
