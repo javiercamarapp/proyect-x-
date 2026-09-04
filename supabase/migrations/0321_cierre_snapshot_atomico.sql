@@ -91,7 +91,7 @@ create or replace function public.cierre_insumos_hash(p_tenant uuid, p_viaje uui
 returns text
 language sql
 stable
-set search_path = public, pg_catalog, pg_temp
+set search_path = public, extensions, pg_catalog, pg_temp
 as $$
   with base as (
     select

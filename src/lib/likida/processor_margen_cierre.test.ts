@@ -66,6 +66,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: (...a: unknown[]) => esperarIntake(...(a as [])),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
 }));
 vi.mock('@/lib/likida/repo', () => ({
   ubicarGastoPorHash: vi.fn(async () => null),
@@ -111,7 +112,10 @@ vi.mock('./avisar_cierre', () => ({ avisarCierreAlJefe: (a: unknown) => avisarCi
 
 const { processInbound } = await import('./processor');
 
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = {
+  from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1',
+  timestampMs: 1_756_000_001_100,
+};
 
 const cierre = () => ({
   finalText: 'Listo, cerré tu viaje',

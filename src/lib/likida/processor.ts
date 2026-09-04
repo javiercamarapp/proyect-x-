@@ -3644,13 +3644,29 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // SÓLO SE DESCARTA LO QUE PARECE UN CIERRE, y sólo eso. Un "¿cuánto llevo?"
     // viejo contestado contra el viaje nuevo es una respuesta rara; un "listo"
     // viejo es una liquidación en ceros. Y hace falta la hora de Meta: sin ella
-    // (QA, simulador, un timestamp ilegible) no se descarta nada — no se
-    // adivina, se sigue como siempre.
+    // (QA, simulador, un timestamp ilegible) no se puede demostrar causalidad
+    // y el cierre se aplaza sin consumir el intento.
     //
+    const cierreSolicitado = pidioCerrar(msg.text);
+    const timestampCierreMs = typeof msg.timestampMs === 'number'
+      && Number.isFinite(msg.timestampMs) && msg.timestampMs > 0
+      ? msg.timestampMs
+      : null;
+
+    // Sin una hora válida de Meta no se puede demostrar qué fotos precedían al
+    // «listo». Es incertidumbre causal, no permiso para cerrar: se conserva la
+    // fila durable y el cron vuelve a intentar sin consumir el intento.
+    if (cierreSolicitado && timestampCierreMs === null) {
+      logger.warn('cierre.timestamp_indeterminado', {
+        viaje: viajeId, tenant: op.tenantId, timestamp: msg.timestampMs ?? null,
+      });
+      await soltarClaim(true);
+      return;
+    }
+
     // La consulta corre SÓLO en este caso —texto que parece cierre y con hora
-    // de Meta—, no en cada mensaje, y es FAIL-OPEN (`null` = no se supo → no se
-    // descarta): tirar un "listo" bueno deja al chofer sin cerrar y sin
-    // entender por qué, que es peor que dejar pasar uno viejo.
+    // de Meta—, no en cada mensaje. Esta guardia distingue un cierre atrasado;
+    // las barreras posteriores siguen siendo fail-closed ante lecturas dudosas.
     if (msg.timestampMs && pareceCierre(msg.text)) {
       const abiertoDesde = await viajeAbiertoDesdeMs(op.tenantId, viajeId);
       if (abiertoDesde != null && msg.timestampMs < abiertoDesde) {
@@ -3662,8 +3678,6 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         return;
       }
     }
-
-    const cierreSolicitado = pidioCerrar(msg.text);
 
     // BARRERA DE RÁFAGA: espera a que terminen los OCR de fotos en vuelo antes de
     // cuadrar. El timeout o una lectura indeterminada NO autorizan el cierre:
@@ -3691,13 +3705,13 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // Se pregunta aquí y no antes a propósito: después de la barrera la foto
     // ya tuvo su ventana para llegar a la tabla. Y solo para un «listo» con
     // hora de Meta — sin ella no se adivina, igual que la guardia de arriba.
-    if (msg.timestampMs && cierreSolicitado) {
-      const fotoAnterior = await fotoAnteriorSinProcesar(msg.from, msg.timestampMs);
+    if (cierreSolicitado) {
+      const fotoAnterior = await fotoAnteriorSinProcesar(msg.from, timestampCierreMs!);
       if (fotoAnterior !== false) {
         logger.warn(fotoAnterior
           ? 'cierre.foto_anterior_pendiente'
           : 'cierre.foto_anterior_indeterminada', {
-          viaje: viajeId, tenant: op.tenantId, mensajeMs: msg.timestampMs,
+          viaje: viajeId, tenant: op.tenantId, mensajeMs: timestampCierreMs,
         });
         await soltarClaim(true);
         return;

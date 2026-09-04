@@ -108,8 +108,8 @@ vi.mock('@/lib/likida/repo', () => ({
   saveLiquidacion: (...a: unknown[]) => saveLiquidacion(...(a as [])),
   leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
   insumosDeCierreCambiaron: (e: unknown) => ['CU003', 'CU006'].includes(String((e as { code?: string } | null)?.code ?? '')),
-  getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
-  // FASE 3: perfil vacío = sin declarar; desde_db.ts lo envuelve en catch.
+  getAcumuladoCombustible: vi.fn(async () => ({ efectivo: 0, totalCombustible: 0 })),
+  // FASE 3: perfil vacío = sin declarar; es una lectura válida, no un 503.
   getPerfilCrudo: vi.fn(async () => ({})),
   addGasto: vi.fn(), updateGastoCfdiXml: vi.fn(), saveCfdiXmlRaw: vi.fn(),
   gastoExistePorHash: vi.fn(async () => false), enriquecerGastoConCodigo: vi.fn(),
@@ -138,6 +138,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
 }));
 const registrarCosto = vi.fn();
 const registrarCostoWhatsApp = vi.fn();
@@ -167,7 +168,7 @@ vi.mock('@/lib/supabase/admin', () => ({
       // devuelve la config de prueba; para lo demás, vacío con error null.
       const b: Record<string, unknown> = {};
       const self = () => b;
-      for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'limit']) b[m] = self;
+      for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'not', 'limit']) b[m] = self;
       b.range = async () => ({ data: [], error: null, count: 0 });
       b.maybeSingle = async () => (tabla === 'tenant'
         ? { data: { rfc: 'CCO8605231N4', config: null }, error: null }
@@ -247,7 +248,10 @@ const final = (texto: string) => ({
 // alimentado por `engine.ts`.
 const NARRACION_INVENTADA = 'Listo, cerré tu viaje. Comprobaste $9,999.00 y te sobraron $1.00.';
 
-const listo = { from: DESDE_META, type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = {
+  from: DESDE_META, type: 'text' as const, text: 'listo', waMessageId: 'wa1',
+  timestampMs: 1_756_000_001_100,
+};
 
 beforeEach(() => {
   subidos.clear(); salientes.length = 0;

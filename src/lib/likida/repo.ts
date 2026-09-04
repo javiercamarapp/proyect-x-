@@ -506,16 +506,30 @@ export interface Huerfano {
  * Best-effort: si esto falla, se le dice al operador que no se pudo guardar.
  *
  * DAT-01 — EL DUPLICADO CUENTA COMO GUARDADO. `uq_huerfano_img_hash` (0164)
- * impide que el MISMO papel ocupe dos filas en la sala de espera; ese 23505 no
- * es un fallo: significa que el comprobante ya está esperando, que es
- * exactamente lo que el llamador necesita saber para decirle al operador que no
- * se perdió. Tratarlo como error le pediría reenviar una foto que ya está
- * guardada — y cada reenvío que entra es otra oportunidad de duplicar el gasto.
+ * impide que el MISMO papel ocupe dos filas. Para comprobantes con hash, la
+ * RPC 0322 registra o vincula bajo lock y devuelve la fila existente: así el
+ * cliente no interpreta un 23505 sin saber si también quedó ligado al viaje.
  */
 export async function guardarHuerfano(
   tenantId: string, operadorId: string,
   h: { gasto: Gasto; motivo: MotivoHuerfano; rutaImagen?: string; viajeId?: string },
 ): Promise<boolean> {
+  // Con hash, registrar y vincular son UNA operación en Postgres. Un 23505
+  // manejado sólo en el cliente podía afirmar «ya estaba» dejando la fila
+  // previa con viaje_id NULL; la 0322 bloquea la fila y permite vincularla una
+  // sola vez, sin que otro viaje u operador pueda apropiársela después.
+  if (h.gasto.imgHash) {
+    const { error } = await acotada(supabaseAdmin().rpc('guardar_comprobante_huerfano_tx', {
+      p_tenant: tenantId,
+      p_operador: operadorId,
+      p_gasto: h.gasto,
+      p_motivo: h.motivo,
+      p_ruta_imagen: h.rutaImagen ?? null,
+      p_viaje: h.viajeId ?? null,
+    }), 'guardarHuerfano');
+    if (error) logger.error('huerfano.guardar_error', { err: error.message });
+    return !error;
+  }
   const { error } = await acotada(supabaseAdmin().from('comprobante_huerfano').insert({
     tenant_id: tenantId, operador_id: operadorId,
     gasto: h.gasto, motivo: h.motivo, ruta_imagen: h.rutaImagen ?? null,

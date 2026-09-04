@@ -52,18 +52,22 @@ export async function cuadrarDesdeDB(
    * el resto de este contador.
    */
   gastosOverride?: Gasto[],
+  opciones: { modo?: 'best_effort' | 'cierre' } = {},
 ): Promise<Omit<Liquidacion, 'id' | 'creadaEn'>> {
+  const cierreEstricto = opciones.modo === 'cierre';
   const [viaje, gastosDb, config, perfilCrudo] = await Promise.all([
     getViaje(viajeId, tenantId),
     gastosOverride ? Promise.resolve(gastosOverride) : getGastos(viajeId, tenantId),
     getConfig(tenantId),
-    // El perfil solo gobierna un BENEFICIO fiscal. Si no se puede leer, el
-    // viaje puede cerrarse, pero el estímulo no se concede: `null` llega al
-    // motor como `undefined` y la puerta del estímulo es fail-closed.
-    getPerfilCrudo(tenantId).catch((e) => {
-      logger.warn('desde_db.perfil_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
-      return {};
-    }),
+    // El perfil solo gobierna un BENEFICIO fiscal. Los usos informativos
+    // conservan el fallback sin estímulo; el cierre exige que la lectura sea
+    // determinada para que PDF, hash y persistencia partan del mismo insumo.
+    cierreEstricto
+      ? getPerfilCrudo(tenantId)
+      : getPerfilCrudo(tenantId).catch((e) => {
+          logger.warn('desde_db.perfil_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+          return {};
+        }),
   ]);
   const gastos = gastosOverride ?? gastosDb;
   if (!viaje) throw new Error('viaje no encontrado');
@@ -118,15 +122,14 @@ export async function cuadrarDesdeDB(
   // tool de periodo) con las claves del SAT — una sola barrida del ejercicio,
   // no dos consultas duplicadas con criterios que podían divergir.
   //
-  // Best-effort a propósito: el contador del 15% es CONTEXTO valioso, no un
-  // requisito para cerrar un viaje. Un fallo aquí no puede tumbar la
-  // liquidación (mismo criterio que la tool de periodo en tools.ts) — el motor
-  // recibe ceros y la rama 'sin datos del ejercicio' marca el efectivo para
-  // revisar, que es el fail-cerrado honesto.
+  // Los usos informativos son best-effort: si falla, el motor recibe ceros y
+  // marca el efectivo para revisar. El cierre, en cambio, propaga el fallo:
+  // degradar a cero produciría un PDF y un snapshot fiscal inventados.
   let totalesEjercicio = { efectivo: 0, totalCombustible: 0 };
   try {
     totalesEjercicio = await getAcumuladoCombustible(tenantId, Number(anioEjercicio), clavesCombustible);
   } catch (e) {
+    if (cierreEstricto) throw e;
     logger.warn('desde_db.contador_15_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
   }
   // El efectivo PREVIO excluye los gastos de ESTE viaje (los está procesando
@@ -174,10 +177,12 @@ export async function cuadrarDesdeDB(
     oposicionTitular,
     facilidad15,
     elegiblePeaje,
-    lineasEcc: await lineasEccParaCuadre(tenantId, gastos).catch((e) => {
-      logger.warn('desde_db.ecc_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
-      return [] as LineaEccRef[];
-    }),
+    lineasEcc: cierreEstricto
+      ? await lineasEccParaCuadre(tenantId, gastos)
+      : await lineasEccParaCuadre(tenantId, gastos).catch((e) => {
+          logger.warn('desde_db.ecc_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+          return [] as LineaEccRef[];
+        }),
     totalCombustibleEjercicio,
     efectivoPrevEjercicio,
     anioEjercicio,
@@ -219,11 +224,16 @@ async function lineasEccParaCuadre(tenantId: string, gastos: Gasto[]): Promise<L
     'desde_db.lineas_ecc',
   );
   if (error) throw new Error(`lineas ecc: ${error.message}`);
-  return ((data ?? []) as Array<{ fecha: unknown; monto: unknown; estacion_rfc: unknown }>)
-    .map((r) => ({
-      fecha: typeof r.fecha === 'string' ? r.fecha : undefined,
-      monto: Number(r.monto),
-      estacionRfc: typeof r.estacion_rfc === 'string' ? r.estacion_rfc : undefined,
-    }))
-    .filter((l) => Number.isFinite(l.monto));
+  if (!Array.isArray(data) || data.some((r) => {
+    const fila = r as { fecha?: unknown; monto?: unknown; estacion_rfc?: unknown } | null;
+    return !fila || typeof fila.fecha !== 'string'
+      || typeof fila.estacion_rfc !== 'string' || !Number.isFinite(Number(fila.monto));
+  })) {
+    throw new Error('lineas ecc: respuesta inválida');
+  }
+  return (data as Array<{ fecha: string; monto: unknown; estacion_rfc: string }>).map((r) => ({
+    fecha: r.fecha,
+    monto: Number(r.monto),
+    estacionRfc: r.estacion_rfc,
+  }));
 }

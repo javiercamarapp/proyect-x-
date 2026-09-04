@@ -329,7 +329,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     // los PDF leyeron sigue siendo exactamente lo que se va a persistir.
     let snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
     const [primerCuadre, viaje, operador] = await Promise.all([
-      computeCuadre(ctx.tenantId, ctx.viajeId!),
+      computeCuadre(ctx.tenantId, ctx.viajeId!, undefined, { modo: 'cierre' }),
       getViaje(ctx.viajeId!, ctx.tenantId),
       ctx.operadorId ? getOperador(ctx.operadorId, ctx.tenantId) : Promise.resolve(null),
     ]);
@@ -442,7 +442,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
       });
       // Segunda y última fotografía: cuadre nuevo, PDF nuevos, cierre nuevo.
       snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
-      liq = await computeCuadre(ctx.tenantId, ctx.viajeId!);
+      liq = await computeCuadre(ctx.tenantId, ctx.viajeId!, undefined, { modo: 'cierre' });
       await generarPdfs(liq);
       liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length, snapshot);
     }

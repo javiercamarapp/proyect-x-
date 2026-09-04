@@ -106,6 +106,7 @@ describe('el cierre le dice a la base cuántos comprobantes archivó', () => {
     expect(saveLiquidacion).toHaveBeenCalledTimes(1);
     expect(saveLiquidacion.mock.calls[0][3]).toBe(5);
     expect(saveLiquidacion.mock.calls[0][4]).toEqual({ version: 1, hash: 'a'.repeat(64) });
+    expect(cuadrarDesdeDB).toHaveBeenCalledWith('t1', 'v1', undefined, { modo: 'cierre' });
     expect(pdfsImpresos).toEqual([5, 5]);   // contralor + operador
   });
 });

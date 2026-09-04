@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { InboundMessage } from './processor';
 
 // P0 0321 — Ninguna incertidumbre causal autoriza una liquidación. El mensaje
 // "listo" permanece durable (sin consumir intento) hasta que intake, la cola de
@@ -57,8 +58,9 @@ vi.mock('@/lib/logger', () => ({ logger }));
 
 const { processInbound } = await import('./processor');
 
-const listo = (timestampMs?: number) => ({
-  from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1', timestampMs,
+const listo = (timestampMs?: unknown): InboundMessage => ({
+  from: '5219993700779', type: 'text', text: 'listo', waMessageId: 'wa1',
+  timestampMs: timestampMs as number | undefined,
 });
 
 beforeEach(() => {
@@ -95,9 +97,20 @@ describe('cierre fail-closed y reintento durable', () => {
     expect(logger.warn).toHaveBeenCalledWith('cierre.foto_anterior_indeterminada', expect.anything());
   });
 
+  it.each([
+    ['ausente', undefined],
+    ['cero', 0],
+    ['NaN', Number.NaN],
+    ['texto malformado', 'ayer'],
+  ])('timestamp %s => no puede probar causalidad y aplaza sin consumir intento', async (_caso, timestampMs) => {
+    await esperaSinCerrar(listo(timestampMs));
+    expect(fotoAnteriorSinProcesar).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('cierre.timestamp_indeterminado', expect.anything());
+  });
+
   it('incidente OCR conocido del viaje => cero cierre', async () => {
     getHuerfanos.mockImplementation(async (_t, _o, op) => op?.soloFalloOcr ? [{ id: 'h1' }] : []);
-    await esperaSinCerrar();
+    await esperaSinCerrar(listo(1_756_000_001_100));
     expect(logger.warn).toHaveBeenCalledWith('cierre.ocr_pendiente', expect.anything());
   });
 
@@ -106,7 +119,7 @@ describe('cierre fail-closed y reintento durable', () => {
       if (op?.soloFalloOcr) throw new Error('503');
       return [];
     });
-    await esperaSinCerrar();
+    await esperaSinCerrar(listo(1_756_000_001_100));
     expect(logger.error).toHaveBeenCalledWith('cierre.ocr_pendiente_ilegible', expect.anything());
   });
 });
