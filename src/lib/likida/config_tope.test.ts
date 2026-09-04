@@ -14,7 +14,12 @@ import net from 'node:net';
 // Supabase, midiendo con reloj real cuánto tarda en asentarse.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const servidorMudo = net.createServer((s) => { s.on('error', () => {}); /* acepta y calla */ });
+const conexionesMudas = new Set<net.Socket>();
+const servidorMudo = net.createServer((s) => {
+  conexionesMudas.add(s);
+  s.on('close', () => conexionesMudas.delete(s));
+  s.on('error', () => {}); /* acepta y calla */
+});
 await new Promise<void>((r) => servidorMudo.listen(0, '127.0.0.1', () => r()));
 const puerto = (servidorMudo.address() as net.AddressInfo).port;
 
@@ -36,8 +41,13 @@ process.env.LIKIDA_TOPE_CONSULTA_MS = '1500';
 const { getConfig } = await import('./config');
 const { TOPE_CONSULTA_MS } = await import('./presupuesto');
 
-afterAll(() => {
-  servidorMudo.close();
+afterAll(async () => {
+  // AbortSignal corta el fetch, pero undici puede conservar el socket TCP en
+  // su pool. Si solo llamamos close(), el worker de Vitest queda vivo esperando
+  // esa conexión y la suite no termina. Destruir el servidor de prueba no toca
+  // recursos externos: son únicamente sockets locales aceptados aquí.
+  for (const socket of conexionesMudas) socket.destroy();
+  await new Promise<void>((resolve) => servidorMudo.close(() => resolve()));
   if (ENV_ORIGINAL.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = ENV_ORIGINAL.url;
   if (ENV_ORIGINAL.key === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = ENV_ORIGINAL.key;
   if (ENV_ORIGINAL.tope === undefined) delete process.env.LIKIDA_TOPE_CONSULTA_MS; else process.env.LIKIDA_TOPE_CONSULTA_MS = ENV_ORIGINAL.tope;
