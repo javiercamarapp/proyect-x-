@@ -59,7 +59,17 @@ export type ResultadoAccion = { ok: true; mensaje?: string } | { ok: false; erro
 const PILL_COLUMNA: Record<string, Estado> = {
   nuevo: 'neutral',
   contactado: 'neutral',
+  appointment: 'warn',
+  rescheduled: 'warn',
+  cancelled: 'bad',
+  'no-show': 'bad',
   demo: 'warn',
+  proposal: 'warn',
+  pilot: 'warn',
+  won: 'ok',
+  lost: 'bad',
+  // Solo pueden llegar como estado de una tarjeta histórica; la columna ya
+  // usa su nombre canónico.
   negociacion: 'warn',
   cerrado: 'ok',
   perdido: 'bad',
@@ -99,8 +109,8 @@ function Tarjeta({
   const destinos = transiciones[t.estado] ?? [];
   const idx = orden.indexOf(t.estado);
   const etiquetaDe = (a: string): string => {
-    if (a === 'perdido') return '✕ Perdido';
-    if (a === 'cerrado') return '✓ Cerrar';
+    if (a === 'lost' || a === 'perdido') return '✕ Perdido';
+    if (a === 'won' || a === 'cerrado') return '✓ Ganado';
     const r = rotulos[a] ?? a;
     return orden.indexOf(a) < idx ? `← ${r}` : `${r} →`;
   };
@@ -131,7 +141,7 @@ function Tarjeta({
             <button key={a} type="button" disabled={pendiente}
               onClick={() => correr(() => mover(t.id, a))}
               className={BOTON}
-              style={a === 'perdido' ? { color: 'var(--bad)' } : a === 'cerrado' ? { color: 'var(--ok)' } : undefined}>
+              style={a === 'lost' || a === 'perdido' ? { color: 'var(--bad)' } : a === 'won' || a === 'cerrado' ? { color: 'var(--ok)' } : undefined}>
               {etiquetaDe(a)}
             </button>
           ))}
@@ -140,7 +150,7 @@ function Tarjeta({
 
       {/* El Redactor solo para etapas vivas — el servidor lo re-valida (un
           botón escondido no es una regla, misma nota del encabezado). */}
-      {redactar && t.estado !== 'cerrado' && t.estado !== 'perdido' && (
+      {redactar && !['won', 'lost', 'cerrado', 'perdido'].includes(t.estado) && (
         <button type="button" disabled={pendiente}
           onClick={() => correr(() => redactar(t.id))}
           className={`${BOTON} w-full`}>

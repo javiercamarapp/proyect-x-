@@ -66,70 +66,117 @@ export function reglaComision(): { primerMes: string; recurrente: string; aclara
   };
 }
 
-/** El embudo, en el orden del tablero. `perdido` va al final: no es una
- *  etapa del avance, es la salida. El dominio es el de la 0105. */
+/**
+ * La única fuente del embudo comercial. `legado` conserva el nombre que
+ * usaban las filas de la 0105, pero esas filas se pintan y cuentan dentro de
+ * su etapa canónica: negociacion→proposal, cerrado→won, perdido→lost.
+ *
+ * No se crean 14 columnas para 11 significados. Una fila histórica conserva
+ * su valor en Postgres hasta que alguien la mueva, y desde ese momento el
+ * tablero escribe el vocabulario canónico.
+ */
 export const ESTADOS_PROSPECTO = [
-  { valor: 'nuevo', rotulo: 'Nuevo' },
-  { valor: 'contactado', rotulo: 'Contactado' },
-  { valor: 'demo', rotulo: 'Demo' },
-  { valor: 'negociacion', rotulo: 'Negociación' },
-  { valor: 'cerrado', rotulo: 'Cerrado' },
-  { valor: 'perdido', rotulo: 'Perdido' },
+  { valor: 'nuevo', rotulo: 'Nuevo', legado: null },
+  { valor: 'contactado', rotulo: 'Contactado', legado: null },
+  { valor: 'appointment', rotulo: 'Cita agendada', legado: null },
+  { valor: 'rescheduled', rotulo: 'Cita reprogramada', legado: null },
+  { valor: 'cancelled', rotulo: 'Cita cancelada', legado: null },
+  { valor: 'no-show', rotulo: 'No se presentó', legado: null },
+  { valor: 'demo', rotulo: 'Demo', legado: null },
+  { valor: 'proposal', rotulo: 'Propuesta', legado: 'negociacion' },
+  { valor: 'pilot', rotulo: 'Piloto', legado: null },
+  { valor: 'won', rotulo: 'Ganado', legado: 'cerrado' },
+  { valor: 'lost', rotulo: 'Perdido', legado: 'perdido' },
 ] as const;
 
-/** Canonical commercial funnel used by new integrations. Legacy labels above
- * remain readable so historical rows and existing screens do not silently
- * change meaning during migration. */
-export const ESTADOS_FUNNEL = [
-  { valor: 'nuevo', rotulo: 'Nuevo' },
-  { valor: 'contactado', rotulo: 'Contactado' },
-  { valor: 'appointment', rotulo: 'Cita agendada' },
-  { valor: 'rescheduled', rotulo: 'Cita reprogramada' },
-  { valor: 'cancelled', rotulo: 'Cita cancelada' },
-  { valor: 'no-show', rotulo: 'No se presentó' },
-  { valor: 'demo', rotulo: 'Demo' },
-  { valor: 'proposal', rotulo: 'Propuesta' },
-  { valor: 'pilot', rotulo: 'Piloto' },
-  { valor: 'won', rotulo: 'Ganado' },
-  { valor: 'lost', rotulo: 'Perdido' },
-] as const;
-export type EstadoFunnel = (typeof ESTADOS_FUNNEL)[number]['valor'];
+export type EstadoProspecto = (typeof ESTADOS_PROSPECTO)[number]['valor'];
+export type EstadoProspectoLegado = Exclude<(typeof ESTADOS_PROSPECTO)[number]['legado'], null>;
+export type EstadoProspectoPersistido = EstadoProspecto | EstadoProspectoLegado;
 
-export function esEstadoFunnel(v: string): v is EstadoFunnel {
-  return ESTADOS_FUNNEL.some((e) => e.valor === v);
+/** Los 14 valores que el CHECK histórico permite persistir, derivados del
+ * catálogo de 11 significados. Lectores de base deben consultar esta lista y
+ * normalizar; nunca mantener un segundo catálogo local. */
+export const ESTADOS_PROSPECTO_PERSISTIDOS = ESTADOS_PROSPECTO.flatMap((e) => [
+  e.valor,
+  ...(e.legado ? [e.legado] : []),
+]) as readonly EstadoProspectoPersistido[];
+
+/** Mapeo explícito, derivado del catálogo para que no sea una segunda fuente. */
+export const ESTADO_CANONICO_POR_LEGACY = Object.fromEntries(
+  ESTADOS_PROSPECTO.flatMap((e) => e.legado ? [[e.legado, e.valor]] : []),
+) as Record<EstadoProspectoLegado, EstadoProspecto>;
+
+export function normalizarEstadoProspecto(v: string): EstadoProspecto | null {
+  const definicion = ESTADOS_PROSPECTO.find((e) => e.valor === v || e.legado === v);
+  return definicion?.valor ?? null;
 }
 
-export const TRANSICIONES_FUNNEL: Record<EstadoFunnel, readonly EstadoFunnel[]> = {
+export function esEstadoProspecto(v: string): v is EstadoProspectoPersistido {
+  return normalizarEstadoProspecto(v) !== null;
+}
+
+export function rotuloEstado(v: string): string {
+  const canonico = normalizarEstadoProspecto(v);
+  return ESTADOS_PROSPECTO.find((e) => e.valor === canonico)?.rotulo ?? v;
+}
+
+/** Suma conteos crudos (incluidos alias históricos) en las 11 etapas
+ * canónicas. También sirve para leer resúmenes semanales anteriores sin
+ * perder `cerrado`, `perdido` o `negociacion`. */
+export function normalizarConteosProspecto(
+  filas: Iterable<{ estado: string; n: number }>,
+): Record<EstadoProspecto, number> {
+  const conteos = conteosVacios();
+  for (const fila of filas) {
+    const estado = normalizarEstadoProspecto(fila.estado);
+    if (estado !== null) conteos[estado] += fila.n;
+  }
+  return conteos;
+}
+
+// Alias de compatibilidad para consumidores anteriores a la consolidación.
+// Ambos nombres apuntan al mismo arreglo: no pueden volver a divergir.
+export const ESTADOS_FUNNEL = ESTADOS_PROSPECTO;
+export type EstadoFunnel = EstadoProspecto;
+
+export function esEstadoFunnel(v: string): v is EstadoFunnel {
+  return ESTADOS_PROSPECTO.some((e) => e.valor === v);
+}
+
+const TRANSICIONES_CANONICAS: Record<EstadoProspecto, readonly EstadoProspecto[]> = {
   nuevo: ['contactado', 'lost'],
-  contactado: ['appointment', 'lost'],
-  appointment: ['rescheduled', 'cancelled', 'demo', 'lost'],
+  // `demo` directo mantiene el camino histórico para prospectos que no usan
+  // agenda; `appointment` es el camino de Cal.com.
+  contactado: ['nuevo', 'appointment', 'demo', 'lost'],
+  appointment: ['contactado', 'rescheduled', 'cancelled', 'demo', 'lost'],
   rescheduled: ['appointment', 'cancelled', 'demo', 'lost'],
   cancelled: ['contactado', 'appointment', 'lost'],
   'no-show': ['contactado', 'appointment', 'lost'],
-  demo: ['proposal', 'pilot', 'no-show', 'lost'],
-  proposal: ['pilot', 'won', 'lost'],
-  pilot: ['won', 'lost'],
+  demo: ['contactado', 'proposal', 'pilot', 'no-show', 'lost'],
+  proposal: ['demo', 'pilot', 'won', 'lost'],
+  pilot: ['proposal', 'won', 'lost'],
   won: [],
   lost: ['contactado'],
 };
+
+export const TRANSICIONES_FUNNEL = TRANSICIONES_CANONICAS;
 
 export function puedeTransicionarFunnel(de: string, a: string): boolean {
   return esEstadoFunnel(de) && esEstadoFunnel(a) && TRANSICIONES_FUNNEL[de].includes(a);
 }
 
-export type EstadoProspecto = (typeof ESTADOS_PROSPECTO)[number]['valor'];
-
-export function esEstadoProspecto(v: string): v is EstadoProspecto {
-  return ESTADOS_PROSPECTO.some((e) => e.valor === v);
-}
-
-export function rotuloEstado(v: string): string {
-  return ESTADOS_PROSPECTO.find((e) => e.valor === v)?.rotulo ?? v;
-}
-
 /** Los estados que cuentan como cartera VIVA de un vendedor — lo que carga
- *  su día. Cerrado y perdido ya no piden trabajo. */
-export const ESTADOS_VIVOS: readonly EstadoProspecto[] = ['nuevo', 'contactado', 'demo', 'negociacion'];
+ *  su día. Ganado y perdido ya no piden trabajo; cancelaciones y no-show sí
+ *  requieren seguimiento. */
+export const ESTADOS_VIVOS: readonly EstadoProspecto[] = [
+  'nuevo', 'contactado', 'appointment', 'rescheduled', 'cancelled',
+  'no-show', 'demo', 'proposal', 'pilot',
+];
+
+export function esEstadoVivo(v: string): boolean {
+  const canonico = normalizarEstadoProspecto(v);
+  return canonico !== null && ESTADOS_VIVOS.includes(canonico);
+}
 
 /**
  * Qué transiciones admite el embudo. Un paso atrás existe para CORREGIR
@@ -140,18 +187,17 @@ export const ESTADOS_VIVOS: readonly EstadoProspecto[] = ['nuevo', 'contactado',
  * flota real y la comisión — deshacerlo no es un botón del tablero, es una
  * decisión de negocio que hoy no existe.
  */
-export const TRANSICIONES_PROSPECTO: Record<EstadoProspecto, readonly EstadoProspecto[]> = {
-  nuevo: ['contactado', 'perdido'],
-  contactado: ['nuevo', 'demo', 'perdido'],
-  demo: ['contactado', 'negociacion', 'perdido'],
-  negociacion: ['demo', 'cerrado', 'perdido'],
-  cerrado: [],
-  perdido: ['contactado'],
-};
+export const TRANSICIONES_PROSPECTO = Object.fromEntries(
+  ESTADOS_PROSPECTO.flatMap((e) => [
+    [e.valor, TRANSICIONES_CANONICAS[e.valor]],
+    ...(e.legado ? [[e.legado, TRANSICIONES_CANONICAS[e.valor]]] : []),
+  ]),
+) as Record<EstadoProspectoPersistido, readonly EstadoProspecto[]>;
 
 export function puedeTransicionar(de: string, a: string): boolean {
-  if (!esEstadoProspecto(de) || !esEstadoProspecto(a)) return false;
-  return TRANSICIONES_PROSPECTO[de].includes(a);
+  const origen = normalizarEstadoProspecto(de);
+  const destino = normalizarEstadoProspecto(a);
+  return origen !== null && destino !== null && TRANSICIONES_CANONICAS[origen].includes(destino);
 }
 
 // ── Validación de captura ──────────────────────────────────────────────────
@@ -270,7 +316,7 @@ export function repartir(
 // ── Conteos por vendedor, puro ─────────────────────────────────────────────
 
 export function conteosVacios(): Record<EstadoProspecto, number> {
-  return { nuevo: 0, contactado: 0, demo: 0, negociacion: 0, cerrado: 0, perdido: 0 };
+  return Object.fromEntries(ESTADOS_PROSPECTO.map((e) => [e.valor, 0])) as Record<EstadoProspecto, number>;
 }
 
 /** Agrupa (vendedorId → conteos por estado). La llave `null` es el pool sin
@@ -281,9 +327,10 @@ export function agruparConteos(
 ): Map<string | null, Record<EstadoProspecto, number>> {
   const m = new Map<string | null, Record<EstadoProspecto, number>>();
   for (const f of filas) {
-    if (!esEstadoProspecto(f.estado)) continue;
+    const estado = normalizarEstadoProspecto(f.estado);
+    if (estado === null) continue;
     const c = m.get(f.vendedorId) ?? conteosVacios();
-    c[f.estado]++;
+    c[estado]++;
     m.set(f.vendedorId, c);
   }
   return m;
@@ -320,7 +367,7 @@ export interface ProspectoRow {
   ciudad: string | null;
   vacante: string | null;
   fuente: string;
-  estado: EstadoProspecto;
+  estado: EstadoProspectoPersistido;
   vendedorId: string | null;
   /** Solo en cerrados: la flota real que nació del trato (0105). */
   tenantId: string | null;
@@ -332,7 +379,7 @@ export interface ProspectoRow {
 export interface FiltroProspectos {
   /** `null` = solo los SIN asignar; ausente = todos. */
   vendedorId?: string | null;
-  estado?: EstadoProspecto;
+  estado?: EstadoProspectoPersistido;
 }
 
 export interface PaginaProspectos {
@@ -362,7 +409,7 @@ export async function buscarProspectos(opciones: PaginaProspectos = {}): Promise
     id: String(f.id), empresa: String(f.empresa), contactoNombre: (f.contacto_nombre as string) ?? null,
     telefono: (f.telefono as string) ?? null, correo: (f.correo as string) ?? null,
     ciudad: (f.ciudad as string) ?? null, vacante: (f.vacante as string) ?? null,
-    fuente: String(f.fuente ?? 'censo'), estado: f.estado as EstadoProspecto,
+    fuente: String(f.fuente ?? 'censo'), estado: f.estado as EstadoProspectoPersistido,
     vendedorId: (f.vendedor_id as string) ?? null, tenantId: (f.tenant_id as string) ?? null,
     notas: (f.notas as string) ?? null, cerradoEn: (f.cerrado_en as string) ?? null,
     createdAt: String(f.created_at),
@@ -398,14 +445,10 @@ export async function listarProspectos(filtro: FiltroProspectos = {}): Promise<P
     ciudad: (f.ciudad as string) ?? null,
     vacante: (f.vacante as string) ?? null,
     fuente: String(f.fuente ?? 'censo'),
-    // FRONTEND-19C2-4: este cast YA NO es cierto sin más. `prospecto_estado_dominio`
-    // (0105) garantizaba el dominio cuando `EstadoProspecto` tenía las mismas 6
-    // llaves que el CHECK — pero la 0181 amplió el CHECK con los 11 estados del
-    // embudo de Cal.com sin ampliar este tipo. La base puede devolver un valor
-    // que NO está en `EstadoProspecto`; quien consuma `estado` debe validar con
-    // `esEstadoProspecto` antes de indexar un `Record<EstadoProspecto, ...>`
-    // con él (ver `agruparConteos`) — no asumir el cast a ciegas.
-    estado: f.estado as EstadoProspecto,
+    // La 0181 admite los 11 canónicos y los tres nombres históricos. El tipo
+    // persistido refleja ambos; los conteos y vistas lo normalizan antes de
+    // indexar una columna canónica.
+    estado: f.estado as EstadoProspectoPersistido,
     vendedorId: (f.vendedor_id as string) ?? null,
     tenantId: (f.tenant_id as string) ?? null,
     notas: (f.notas as string) ?? null,
@@ -464,8 +507,9 @@ export async function listarVendedores(): Promise<VendedorRow[]> {
       conteos,
       asignados,
       vivos,
-      cerrados: conteos.cerrado,
-      tasaConversion: asignados > 0 ? conteos.cerrado / asignados : null,
+      // `cerrado` histórico ya fue absorbido por `won` en agruparConteos.
+      cerrados: conteos.won,
+      tasaConversion: asignados > 0 ? conteos.won / asignados : null,
     };
   }).sort((a, b) => (a.nombre ?? a.email).localeCompare(b.nombre ?? b.email, 'es'));
 }
@@ -588,7 +632,7 @@ export async function asignarProspecto(prospectoId: string, vendedorId: string |
 /**
  * Mover un prospecto en el embudo — SOLO transiciones del dominio.
  *
- * Al pasar a `cerrado` estampa `cerrado_en` (el constraint
+ * Al pasar a `won` o su alias `cerrado` estampa `cerrado_en` (el constraint
  * `prospecto_cerrado_coherente` lo exige en los dos sentidos). El UPDATE va
  * anclado al estado LEÍDO: si otro agente lo movió entre la lectura y la
  * escritura, tocamos cero filas y se dice, en vez de pisar su movimiento.
@@ -613,20 +657,24 @@ export async function cambiarEstadoProspecto(
   if (!fila) throw new DatoInvalido('Ese prospecto no existe o no es tuyo.');
 
   const actual = String((fila as Record<string, unknown>).estado);
+  const actualCanonico = normalizarEstadoProspecto(actual);
   if (!puedeTransicionar(actual, estadoNuevo)) {
     throw new DatoInvalido(
       `De "${rotuloEstado(actual)}" no se puede pasar a "${rotuloEstado(estadoNuevo)}". `
-      + (actual === 'cerrado'
+      + (actualCanonico === 'won'
         ? 'Un trato cerrado no se reabre desde el tablero: ya tiene fecha de cierre y de él cuelga la comisión.'
         : 'Mueve el prospecto por las etapas del embudo.'),
     );
   }
 
+  const estadoCanonicoNuevo = normalizarEstadoProspecto(estadoNuevo)!;
   const cambios: Record<string, unknown> = {
-    estado: estadoNuevo,
+    // Los alias solo existen en la frontera de compatibilidad. Toda escritura
+    // nueva converge al vocabulario canónico para que el legado no crezca.
+    estado: estadoCanonicoNuevo,
     // `null` explícito en todo destino no-cerrado: cinturón y tirantes con el
     // constraint — nunca puede quedar una fecha de cierre en un no-cerrado.
-    cerrado_en: estadoNuevo === 'cerrado' ? new Date().toISOString() : null,
+    cerrado_en: estadoCanonicoNuevo === 'won' ? new Date().toISOString() : null,
     updated_at: new Date().toISOString(),
   };
   if (notas !== undefined) cambios.notas = notas;

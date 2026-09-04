@@ -25,7 +25,7 @@ import { clasificacionDeGuardia } from '@/lib/admin/guardia';
 import { ultimasEntradasBitacora } from '@/lib/admin/bitacora';
 import { corridasRecientes, trazaDeCorrida } from '@/lib/admin/corridas-cruzadas';
 import { listarInterruptores } from '@/lib/likida/interruptores';
-import { listarProspectos, listarVendedores, conteosVacios } from '@/lib/likida/vendedores';
+import { listarProspectos, listarVendedores, conteosVacios, normalizarEstadoProspecto } from '@/lib/likida/vendedores';
 import { getPorCobrar } from '@/lib/saas/transferencia';
 import { ahoraMs } from '@/lib/saludo';
 
@@ -240,7 +240,8 @@ registerTool('pipeline_ventas', {
     const porEstado = conteosVacios();
     let sinVendedor = 0;
     for (const p of prospectos) {
-      porEstado[p.estado]++;
+      const estado = normalizarEstadoProspecto(p.estado);
+      if (estado !== null) porEstado[estado]++;
       if (p.vendedorId === null && p.estado === 'nuevo') sinVendedor++;
     }
     return {

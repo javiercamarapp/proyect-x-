@@ -1,9 +1,11 @@
 import { revalidatePath } from 'next/cache';
 import { Activity, BadgePercent, CalendarDays, CheckCircle2, Inbox } from 'lucide-react';
 import { getSessionTenant } from '@/lib/auth/session';
+import { veredictoMfaDeSesion } from '@/lib/auth/superadmin-mfa';
+import { MSG_MFA_SUPERADMIN } from '@/lib/auth/mfa';
 import {
   ESTADOS_PROSPECTO, ESTADOS_VIVOS, TRANSICIONES_PROSPECTO,
-  conteosVacios, reglaComision,
+  conteosVacios, normalizarEstadoProspecto, reglaComision,
   listarProspectos, listarVendedores, cambiarEstadoProspecto, actualizarNotasProspecto,
   type ProspectoRow, type VendedorRow,
 } from '@/lib/likida/vendedores';
@@ -40,13 +42,17 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
  * simplemente "no existe" para él (`soloDeVendedor` en vendedores.ts). El
  * superadmin (soporte) opera sin ancla, con su cinta puesta.
  */
-async function ejecutarComoVendedor(
+export async function ejecutarComoVendedor(
   hacer: (ancla: { soloDeVendedor?: string }) => Promise<void>,
   operacion: string,
 ): Promise<ResultadoAccion> {
   const s = await getSessionTenant();
   if (!s || (s.rol !== 'vendedor' && s.rol !== 'superadmin')) {
     return { ok: false, error: 'Tu sesión no puede tocar prospectos.' };
+  }
+  const veredictoMfa = await veredictoMfaDeSesion(s);
+  if (veredictoMfa !== 'ok') {
+    return { ok: false, error: MSG_MFA_SUPERADMIN[veredictoMfa] };
   }
   try {
     await hacer(s.rol === 'vendedor' ? { soloDeVendedor: s.userId } : {});
@@ -117,9 +123,12 @@ export async function PanelVendedor({
   const totales = conteosVacios();
   let columnas: ColumnaTablero[] | null = null;
   if (prospectos !== null) {
-    for (const p of prospectos) totales[p.estado]++;
+    for (const p of prospectos) {
+      const estado = normalizarEstadoProspecto(p.estado);
+      if (estado !== null) totales[estado]++;
+    }
     columnas = ESTADOS_PROSPECTO.map((e) => {
-      const en = prospectos.filter((p) => p.estado === e.valor);
+      const en = prospectos.filter((p) => normalizarEstadoProspecto(p.estado) === e.valor);
       // Solo la columna expandida pagina; las demás enseñan su primer tramo.
       const esta = e.valor === expandida;
       const desde = esta ? (pagina - 1) * TOPE_COLUMNA : 0;
@@ -149,7 +158,7 @@ export async function PanelVendedor({
           vacante: p.vacante,
           ciudad: p.ciudad,
           notas: p.notas,
-          estado: p.estado,
+          estado: normalizarEstadoProspecto(p.estado) ?? p.estado,
           vendedorId: p.vendedorId,
           // En SU panel el dueño de cada tarjeta es él (la línea de vendedor
           // ni se pinta — `conVendedor` abajo); al superadmin sí le sirve.
@@ -191,8 +200,8 @@ export async function PanelVendedor({
             <>
               <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <StatCard icono={<Activity {...ICONO} />} etiqueta={esVendedor ? 'Mi cartera viva' : 'Cartera viva (todos)'} valor={vivos} formato="entero" />
-                <StatCard icono={<CheckCircle2 {...ICONO} />} etiqueta={esVendedor ? 'Mis cerrados' : 'Cerrados (todos)'} valor={totales.cerrado} formato="entero" />
-                <StatCard icono={<Inbox {...ICONO} />} etiqueta="En negociación" valor={totales.negociacion} formato="entero" />
+                <StatCard icono={<CheckCircle2 {...ICONO} />} etiqueta={esVendedor ? 'Mis ganados' : 'Ganados (todos)'} valor={totales.won} formato="entero" />
+                <StatCard icono={<Inbox {...ICONO} />} etiqueta="Propuesta o piloto" valor={totales.proposal + totales.pilot} formato="entero" />
               </div>
 
               {/* La regla de comisión, con su aclaración pegada: 50/20 es la

@@ -216,9 +216,9 @@ describe('redactarCorreoFrio', () => {
     }));
   });
 
-  it('a un cerrado/perdido no se le redacta correo frío', async () => {
-    respuestas.set('prospecto', [{ data: { ...PROSPECTO, estado: 'perdido' }, error: null }]);
-    await expect(redactarCorreoFrio('pr-1', 'Javier', 'manual', CONTEXTO)).rejects.toThrow(/perdido/);
+  it.each(['cerrado', 'perdido', 'won', 'lost'])('a un %s no se le redacta correo frío', async (estado) => {
+    respuestas.set('prospecto', [{ data: { ...PROSPECTO, estado }, error: null }]);
+    await expect(redactarCorreoFrio('pr-1', 'Javier', 'manual', CONTEXTO)).rejects.toThrow(new RegExp(estado));
     expect(generateStructured).not.toHaveBeenCalled();
   });
 

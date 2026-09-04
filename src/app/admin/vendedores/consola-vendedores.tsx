@@ -1,30 +1,27 @@
-import { appUrl } from '@/lib/env';
 import Link from 'next/link';
-import { revalidatePath } from 'next/cache';
 import {
   Activity, BadgePercent, Bot, Building2, CalendarDays, CheckCircle2, Inbox,
   Search, Users,
 } from 'lucide-react';
-import { getSessionTenant } from '@/lib/auth/session';
 import {
   ESTADOS_PROSPECTO, ESTADOS_VIVOS, TRANSICIONES_PROSPECTO,
-  conteosVacios, esEstadoProspecto, filtrarProspectosTexto, reglaComision,
-  validarProspecto, crearProspecto, listarProspectos, listarVendedores,
-  asignarProspecto, cambiarEstadoProspecto, actualizarNotasProspecto,
-  invitarVendedor, asignarPendientes,
+  conteosVacios, normalizarEstadoProspecto, esEstadoVivo,
+  filtrarProspectosTexto, reglaComision,
+  listarProspectos, listarVendedores,
   type ProspectoRow, type VendedorRow,
 } from '@/lib/likida/vendedores';
 import { ultimasCorridasNegocio, duracionLegible, type CorridaRegistrada } from '@/lib/likida/agentes/corridas';
-import { redactarCorreoFrio } from '@/lib/likida/agentes/redactor';
-import { descifrarErrorProvision } from '@/lib/auth/invitar';
-import { mensajeParaPantalla } from '@/lib/likida/errores';
 import { saludo, ahoraMs } from '@/lib/saludo';
 import { fechaMx, fechaHoraMx, hoyMx } from '@/lib/formato';
 import { resolverFormato } from '../ui/formato-preset';
 import { StatCard, StatusPill, EstadoVacio, type Estado } from '../ui/kit';
 import { BarraPagina, ChipFecha, HeroSaludo, TituloSeccion } from '../../dashboard/resumen-visual';
-import { TableroProspectos, type ColumnaTablero, type ResultadoAccion } from './tablero';
-import { FormaProspecto, FormaInvitarVendedor, BotonRepartir, type ResultadoForma } from './formas';
+import { TableroProspectos, type ColumnaTablero } from './tablero';
+import { FormaProspecto, FormaInvitarVendedor, BotonRepartir } from './formas';
+import {
+  accionMover, accionAsignar, accionNota, accionRedactar,
+  accionCrearProspecto, accionInvitar, accionRepartir,
+} from './acciones';
 
 const RUTA = '/admin/vendedores';
 
@@ -40,27 +37,6 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | null> {
 }
 
 /**
- * El envoltorio de TODA escritura de esta consola: re-gatea superadmin (una
- * server action es un endpoint POST alcanzable sin pasar por el render) y
- * traduce el error para pantalla. Vive a nivel de módulo a propósito: las
- * actions inline lo referencian sin meterlo a sus capturas serializadas.
- */
-async function ejecutarComoSuperadmin(
-  hacer: () => Promise<void>,
-  operacion: string,
-): Promise<ResultadoAccion> {
-  const s = await getSessionTenant();
-  if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin administra la zona de vendedores.' };
-  try {
-    await hacer();
-    revalidatePath(RUTA);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: mensajeParaPantalla(e, operacion) };
-  }
-}
-
-/**
  * LA CONSOLA DEL EQUIPO DE VENTAS — el contenido completo de
  * /admin/vendedores, SIN el gate. Vive en su propio archivo, exportado, por
  * la misma razón #2 que `dashboard/inicio-contenido.tsx` documenta: la
@@ -70,7 +46,7 @@ async function ejecutarComoSuperadmin(
  *
  * La AUTORIZACIÓN no se relaja con la extracción: el gate de pantalla sigue
  * en admin/layout.tsx + page.tsx, y cada server action de aquí re-gatea
- * superadmin por sesión (`ejecutarComoSuperadmin`) — montar el componente no
+ * superadmin por sesión y MFA en `acciones.ts` — montar el componente no
  * regala ninguna escritura.
  */
 export async function ConsolaVendedores({
@@ -85,119 +61,6 @@ export async function ConsolaVendedores({
     safe<CorridaRegistrada[]>(() => ultimasCorridasNegocio('ventas', 5)),
   ]);
 
-  // ── Server actions — cada una re-gatea superadmin vía el envoltorio ──────
-
-  async function accionMover(id: string, a: string): Promise<ResultadoAccion> {
-    'use server';
-    return ejecutarComoSuperadmin(() => cambiarEstadoProspecto(String(id), String(a)), 'mover el prospecto');
-  }
-
-  async function accionAsignar(id: string, vendedorId: string): Promise<ResultadoAccion> {
-    'use server';
-    return ejecutarComoSuperadmin(
-      () => asignarProspecto(String(id), vendedorId === '' ? null : String(vendedorId)),
-      'asignar el prospecto',
-    );
-  }
-
-  async function accionNota(id: string, nota: string): Promise<ResultadoAccion> {
-    'use server';
-    return ejecutarComoSuperadmin(() => actualizarNotasProspecto(String(id), String(nota)), 'guardar la nota');
-  }
-
-  // El Redactor (C5, Fase 2) devuelve mensaje al ok — no cabe en el
-  // envoltorio (que solo sabe {ok:true} pelón), así que re-gatea igual pero
-  // arma su propia respuesta con el asunto y el aviso del agente.
-  async function accionRedactar(id: string): Promise<ResultadoAccion> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin administra la zona de vendedores.' };
-    try {
-      // El superadmin de LIKIDA no tiene tenant: su gasto es de plataforma
-      // (c5-10), con el techo del runner sobre el gasto medido del día.
-      const r = await redactarCorreoFrio(String(id), s.nombre ?? 'Javier', 'manual',
-        s.tenantId ? { tenantId: s.tenantId } : { plataforma: true });
-      revalidatePath(RUTA);
-      return {
-        ok: true,
-        mensaje: `«${r.asunto}» quedó en la cola — apruébala en Aprobaciones.${r.aviso ? ` OJO: ${r.aviso}` : ''}`,
-      };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(e, 'redactar el correo') };
-    }
-  }
-
-  async function accionCrearProspecto(_previo: ResultadoForma, fd: FormData): Promise<ResultadoForma> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin da de alta prospectos.' };
-    try {
-      const v = validarProspecto({
-        empresa: String(fd.get('empresa') ?? ''),
-        contactoNombre: String(fd.get('contacto') ?? ''),
-        telefono: String(fd.get('telefono') ?? ''),
-        correo: String(fd.get('correo') ?? ''),
-        ciudad: String(fd.get('ciudad') ?? ''),
-        vacante: String(fd.get('vacante') ?? ''),
-        notas: String(fd.get('notas') ?? ''),
-        vendedorId: String(fd.get('vendedor') ?? ''),
-      });
-      await crearProspecto(v, 'manual');
-      revalidatePath(RUTA);
-      return { ok: true, mensaje: `${v.empresa} entró al tablero${v.vendedorId ? '' : ' sin vendedor — lo puede tomar el asignador'}.` };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(e, 'dar de alta el prospecto') };
-    }
-  }
-
-  async function accionInvitar(_previo: ResultadoForma, fd: FormData): Promise<ResultadoForma> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin invita vendedores.' };
-    try {
-      const { email } = await invitarVendedor(String(fd.get('email') ?? ''), String(fd.get('nombre') ?? ''));
-      revalidatePath(RUTA);
-      // La verdad del flujo, igual que en /dashboard/usuarios: no se emite
-      // correo de invitación todavía — prometer "le llegó" sería mentira.
-      const liga = appUrl();
-      return {
-        ok: true,
-        mensaje: `${email} ya puede entrar con su correo (enlace mágico) y aterriza en /vendedor. ` +
-          `No le llega invitación por correo todavía — pásale tú la liga: ${liga}/login`,
-      };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(descifrarErrorProvision(e) ?? e, 'invitar al vendedor') };
-    }
-  }
-
-  // Sin parámetros a propósito: el botón no captura nada — una función de
-  // menos parámetros es asignable a `AccionForma` y eslint no carga argumentos
-  // muertos.
-  async function accionRepartir(): Promise<ResultadoForma> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin corre el asignador.' };
-    try {
-      const r = await asignarPendientes();
-      revalidatePath(RUTA);
-      if (r.apagado) {
-        // La palanca (0110) con sus palabras: "no había pendientes" mentiría.
-        return { ok: false, error: 'El asignador (agente:ventas) está apagado desde Observabilidad. Enciéndelo para repartir.' };
-      }
-      if (r.sinVendedores) {
-        return { ok: false, error: 'No hay vendedores a quienes repartir. Invita al primero aquí abajo y vuelve a correr.' };
-      }
-      if (r.pendientes === 0) return { ok: true, mensaje: 'No había prospectos pendientes (sin vendedor y en Nuevo) que repartir.' };
-      if (r.repartidos === 0) {
-        return { ok: false, error: 'No se pudo repartir ninguno — revisa la bitácora del asignador aquí abajo.' };
-      }
-      const detalle = r.porVendedor.map((v) => `${v.nombre} (${v.n})`).join(', ');
-      return { ok: true, mensaje: `Repartió ${r.repartidos} de ${r.pendientes}: ${detalle}. La corrida quedó en la bitácora.` };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(e, 'repartir los pendientes') };
-    }
-  }
-
   // ── Datos derivados (solo si las lecturas llegaron) ──────────────────────
 
   const nombresVendedor = new Map((vendedores ?? []).map((v) => [v.id, v.nombre ?? v.email]));
@@ -208,14 +71,11 @@ export async function ConsolaVendedores({
   const totales = conteosVacios();
   let vivosSinVendedor = 0;
   if (prospectos !== null) {
-    // FRONTEND-19C2-4 / DATOS-19C2-6: la mig. 0181 amplió el CHECK de
-    // `prospecto.estado` con los 11 valores del embudo de Cal.com
-    // (`appointment`, `rescheduled`, ...), pero `conteosVacios()` sigue
-    // devolviendo solo las 6 llaves de `ESTADOS_PROSPECTO` — sin la guardia,
-    // `totales['appointment']++` es `undefined++` → `NaN` en el tablero.
-    // Mismo guardia que `agruparConteos` ya usa para el mismo dato.
-    for (const p of prospectos) if (esEstadoProspecto(p.estado)) totales[p.estado]++;
-    vivosSinVendedor = prospectos.filter((p) => p.vendedorId === null && (ESTADOS_VIVOS as readonly string[]).includes(p.estado)).length;
+    for (const p of prospectos) {
+      const estado = normalizarEstadoProspecto(p.estado);
+      if (estado !== null) totales[estado]++;
+    }
+    vivosSinVendedor = prospectos.filter((p) => p.vendedorId === null && esEstadoVivo(p.estado)).length;
 
     const porTexto = filtrarProspectosTexto(prospectos, sp.q);
     const filtrados = sp.vendedor === 'sin'
@@ -225,7 +85,9 @@ export async function ConsolaVendedores({
         : porTexto;
 
     columnas = ESTADOS_PROSPECTO.map((e) => {
-      const en = filtrados.filter((p) => p.estado === e.valor);
+      // Las filas históricas se agrupan en su significado canónico; no
+      // desaparecen ni crean una segunda columna semánticamente idéntica.
+      const en = filtrados.filter((p) => normalizarEstadoProspecto(p.estado) === e.valor);
       return {
         estado: e.valor,
         rotulo: e.rotulo,
@@ -236,7 +98,7 @@ export async function ConsolaVendedores({
           vacante: p.vacante,
           ciudad: p.ciudad,
           notas: p.notas,
-          estado: p.estado,
+          estado: normalizarEstadoProspecto(p.estado) ?? p.estado,
           vendedorId: p.vendedorId,
           vendedorNombre: p.vendedorId ? nombresVendedor.get(p.vendedorId) ?? null : null,
         })),
@@ -278,8 +140,8 @@ export async function ConsolaVendedores({
           ) : (
             <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2">
               <StatCard icono={<Building2 {...ICONO} />} etiqueta="Prospectos en el pipeline" valor={totalProspectos} formato="entero" />
-              <StatCard icono={<Activity {...ICONO} />} etiqueta="Vivos (Nuevo a Negociación)" valor={vivos} formato="entero" />
-              <StatCard icono={<CheckCircle2 {...ICONO} />} etiqueta="Cerrados" valor={totales.cerrado} formato="entero" />
+              <StatCard icono={<Activity {...ICONO} />} etiqueta="Prospectos con seguimiento" valor={vivos} formato="entero" />
+              <StatCard icono={<CheckCircle2 {...ICONO} />} etiqueta="Ganados" valor={totales.won} formato="entero" />
               <StatCard icono={<Inbox {...ICONO} />} etiqueta="Vivos sin vendedor" valor={vivosSinVendedor} formato="entero" />
               {vendedores !== null
                 ? <StatCard icono={<Users {...ICONO} />} etiqueta="Vendedores con cuenta" valor={vendedores.length} formato="entero" />

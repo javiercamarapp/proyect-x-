@@ -20,6 +20,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { conteo, exigir, traerTodo, traerPorIds, PAGINA, LecturaIncompleta, type RespuestaPg } from '@/lib/likida/pg';
 import { logger } from '@/lib/logger';
 import { anotarBitacora } from '@/lib/likida/bitacora_escritura';
+import { normalizarEstadoProspecto } from '@/lib/likida/vendedores';
 import {
   type DatosMapa, type DetalleProspecto, type FilaCompacta, type Giro,
   type ProspectoMapa, type Tamano, type TextosProspecto,
@@ -261,16 +262,18 @@ export function scoreCierre(p: {
   if (g === 'transportista') s += 15;
   else if (g === 'logistica') s += 10;
   else if (g === 'flota_propia') s += 8;
-  // El embudo manda: lo avanzado pesa más que cualquier señal.
-  if (p.estado === 'contactado') s += 15;
-  else if (p.estado === 'appointment') s += 18;
-  else if (p.estado === 'rescheduled') s += 16;
-  else if (p.estado === 'demo') s += 25;
-  else if (p.estado === 'proposal') s += 32;
-  else if (p.estado === 'pilot') s += 40;
-  else if (p.estado === 'negociacion') s += 35;
-  else if (p.estado === 'won' || p.estado === 'cerrado') return 100;
-  else if (p.estado === 'lost' || p.estado === 'perdido' || p.estado === 'cancelled') return 0;
+  // El embudo manda: lo avanzado pesa más que cualquier señal. Los alias se
+  // normalizan antes de puntuar; una fila histórica no puede cambiar de score
+  // solo por usar el nombre anterior de la misma etapa.
+  const estado = normalizarEstadoProspecto(p.estado);
+  if (estado === 'contactado') s += 15;
+  else if (estado === 'appointment') s += 18;
+  else if (estado === 'rescheduled') s += 16;
+  else if (estado === 'demo') s += 25;
+  else if (estado === 'proposal') s += 32;
+  else if (estado === 'pilot') s += 40;
+  else if (estado === 'won') return 100;
+  else if (estado === 'lost' || estado === 'cancelled') return 0;
 
   // Fleet size is a fit signal, not an urgency signal. Prefer the researched
   // fact and fall back to the floor of the declared range.

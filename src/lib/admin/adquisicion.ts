@@ -17,7 +17,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { traerTodo, conteo } from '@/lib/likida/pg';
-import { listarProspectos, type ProspectoRow } from '@/lib/likida/vendedores';
+import {
+  listarProspectos,
+  normalizarEstadoProspecto,
+  type ProspectoRow,
+} from '@/lib/likida/vendedores';
 
 export interface FuenteAdquisicion {
   fuente: string;
@@ -144,7 +148,7 @@ export async function getAdquisicion(ahoraMs: number): Promise<Adquisicion> {
   // Quemados = perdidos sobre los que salieron de `nuevo` (contactados en
   // adelante) — SIEMPRE con el absoluto al lado, nunca el % suelto.
   const tocados = prospectos.filter((p) => p.estado !== 'nuevo');
-  const perdidos = tocados.filter((p) => p.estado === 'perdido');
+  const perdidos = tocados.filter((p) => normalizarEstadoProspecto(p.estado) === 'lost');
   if (tocados.length > 0) {
     const pct = (perdidos.length / tocados.length) * 100;
     if (pct > PCT_LEADS_QUEMADOS) {
