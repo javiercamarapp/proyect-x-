@@ -21,7 +21,8 @@
 //  3. Cada llamada deja su fila de costo: el tablero de /admin y el costo
 //     por flota la cuentan.
 import { NextResponse, type NextRequest } from 'next/server';
-import { MAX_DATAURL } from './limites';
+import { MAX_DATAURL, MAX_CUERPO_BYTES } from './limites';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { getSessionTenant } from '@/lib/auth/session';
 import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerArea } from '@/lib/auth/visibilidad';
@@ -37,6 +38,7 @@ import { tenantEfectivoChat } from '../chat/tenant';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+const ERROR_TAMANO = 'La imagen pesa demasiado (máx ~3 MB de foto). Vuelve a tomarla en calidad normal o recórtala al ticket.';
 
 
 export async function POST(req: NextRequest) {
@@ -59,9 +61,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'demasiadas lecturas seguidas; espera un minuto' }, { status: 429 });
   }
 
+  const lectura = await leerTextoAcotado(req, MAX_CUERPO_BYTES);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande' ? ERROR_TAMANO : 'cuerpo inválido' },
+    { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let imagen: unknown;
   try {
-    ({ imagen } = await req.json());
+    ({ imagen } = JSON.parse(lectura.texto));
   } catch {
     return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 });
   }
@@ -70,7 +75,7 @@ export async function POST(req: NextRequest) {
   }
   if (imagen.length > MAX_DATAURL) {
     return NextResponse.json({
-      error: 'La imagen pesa demasiado (máx ~3 MB de foto). Vuelve a tomarla en calidad normal o recórtala al ticket.',
+      error: ERROR_TAMANO,
     }, { status: 413 });
   }
 

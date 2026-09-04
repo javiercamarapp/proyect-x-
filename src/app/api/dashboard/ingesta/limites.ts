@@ -22,3 +22,4 @@
  * calidad máxima no, y para ésa el mensaje ahora sí llega.
  */
 export const MAX_DATAURL = 4_000_000;
+export const MAX_CUERPO_BYTES = MAX_DATAURL + 16_384;

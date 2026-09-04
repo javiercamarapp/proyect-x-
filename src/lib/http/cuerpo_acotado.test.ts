@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { leerTextoAcotado } from './cuerpo_acotado';
+import { leerBytesAcotados, leerTextoAcotado } from './cuerpo_acotado';
 
 function peticionDeStream(
   trozos: Uint8Array[],
@@ -24,6 +24,19 @@ function peticionDeStream(
 }
 
 describe('leerTextoAcotado', () => {
+  it('el lector binario preserva bytes que no son UTF-8', async () => {
+    const datos = new Uint8Array([0, 255, 192, 128, 13, 10, 239, 0]);
+    const r = await leerBytesAcotados(peticionDeStream([datos.slice(0, 3), datos.slice(3)]), datos.length);
+    expect(r).toEqual({ ok: true, datos, bytes: datos.length });
+  });
+
+  it('un fallo del stream no entrega un prefijo parcial para parsear', async () => {
+    const req = new Request('https://app.likida.ai/api/prueba', {
+      method: 'POST', body: new ReadableStream({ pull(c) { c.error(new Error('cortado')); } }),
+      duplex: 'half',
+    } as RequestInit);
+    expect(await leerBytesAcotados(req, 1000)).toEqual({ ok: false, motivo: 'lectura_fallida' });
+  });
   it('corta un cuerpo chunked por bytes mientras se lee, antes de consumir el resto', async () => {
     let pedidos = 0;
     const trozos = Array.from({ length: 100 }, () => new Uint8Array(1024).fill(120));

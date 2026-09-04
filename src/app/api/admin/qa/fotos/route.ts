@@ -26,6 +26,7 @@ import { validarVerdadTerreno } from '@/lib/admin/qa-tipos';
 import { sesionSuperadmin } from '../puerta';
 import { vieneDeNuestroSitio } from '@/lib/auth/csrf';
 import { bodyExcede } from '@/lib/ratelimit';
+import { leerBytesAcotados, leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -83,9 +84,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: MENSAJE_LOTE }, { status: 413 });
   }
 
+  const lectura = await leerBytesAcotados(req, MAX_LOTE_BYTES);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande'
+    ? MENSAJE_LOTE : 'se esperaba multipart/form-data con archivos' },
+  { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let form: FormData;
   try {
-    form = await req.formData();
+    form = await new Response(lectura.datos, {
+      headers: { 'content-type': req.headers.get('content-type') ?? '' },
+    }).formData();
   } catch {
     return NextResponse.json({ error: 'se esperaba multipart/form-data con archivos' }, { status: 400 });
   }
@@ -136,11 +143,12 @@ export async function PATCH(req: Request) {
   const { error, sesion } = await sesionSuperadmin();
   if (error) return error;
 
-  const crudo = await req.text();
-  if (crudo.length > MAX_BODY_PATCH) return NextResponse.json({ error: 'payload muy grande' }, { status: 413 });
+  const lectura = await leerTextoAcotado(req, MAX_BODY_PATCH);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let body: unknown;
   try {
-    body = JSON.parse(crudo);
+    body = JSON.parse(lectura.texto);
   } catch {
     return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
   }

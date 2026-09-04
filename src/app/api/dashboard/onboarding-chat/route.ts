@@ -8,6 +8,8 @@ import { tenantEfectivoChat } from '@/app/api/dashboard/chat/tenant';
 import { rateLimit } from '@/lib/ratelimit';
 import { logger } from '@/lib/logger';
 import { vieneDeNuestroSitio } from '@/lib/auth/csrf';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
+import { MAX_CHAT_BYTES } from '../chat/limites';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
@@ -63,8 +65,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'demasiados turnos seguidos; espera un minuto' }, { status: 429 });
   }
 
+  const lectura = await leerTextoAcotado(req, MAX_CHAT_BYTES);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande' ? 'cuerpo demasiado grande' : 'cuerpo inválido' },
+    { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let cuerpo: unknown;
-  try { cuerpo = await req.json(); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
+  try { cuerpo = JSON.parse(lectura.texto); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
   const mensajes = validarMensajes((cuerpo as { mensajes?: unknown })?.mensajes);
   if (!mensajes) return NextResponse.json({ error: 'mensajes inválidos' }, { status: 400 });
 

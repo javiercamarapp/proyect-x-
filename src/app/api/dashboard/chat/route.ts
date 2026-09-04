@@ -27,6 +27,8 @@ import { validarMensajes, validarConversacionId } from './validacion';
 import { topeDiaUsd, gastoChatHoyUsd } from './tope';
 import { tenantEfectivoChat } from './tenant';
 import { vieneDeNuestroSitio } from '@/lib/auth/csrf';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
+import { MAX_CHAT_BYTES } from './limites';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -70,8 +72,11 @@ export async function POST(req: NextRequest) {
     { status: req.nextUrl.searchParams.get('tenant') ? 503 : 403 });
   const { tenantId, nombreFlota } = efectivo;
 
+  const lectura = await leerTextoAcotado(req, MAX_CHAT_BYTES);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande' ? 'cuerpo demasiado grande' : 'cuerpo inválido' },
+    { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let cuerpo: unknown;
-  try { cuerpo = await req.json(); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
+  try { cuerpo = JSON.parse(lectura.texto); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
   const mensajes = validarMensajes((cuerpo as { mensajes?: unknown })?.mensajes);
   if (!mensajes) return NextResponse.json({ error: 'mensajes inválidos' }, { status: 400 });
   // El id de conversación al que anexar (historial 0088). Inválido o ajeno →

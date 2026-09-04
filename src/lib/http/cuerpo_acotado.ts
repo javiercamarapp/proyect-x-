@@ -2,10 +2,15 @@ export type ResultadoTextoAcotado =
   | { ok: true; texto: string; bytes: number }
   | { ok: false; motivo: 'demasiado_grande' | 'lectura_fallida' };
 
-export async function leerTextoAcotado(
+export type ResultadoBytesAcotados =
+  | { ok: true; datos: Uint8Array<ArrayBuffer>; bytes: number }
+  | { ok: false; motivo: 'demasiado_grande' | 'lectura_fallida' };
+
+/** Conserva bytes binarios; el límite incluye campos y envoltura multipart. */
+export async function leerBytesAcotados(
   req: Request,
   maxBytes: number,
-): Promise<ResultadoTextoAcotado> {
+): Promise<ResultadoBytesAcotados> {
   const declaradoCrudo = req.headers.get('content-length');
   if (declaradoCrudo !== null) {
     const declarado = Number(declaradoCrudo);
@@ -14,7 +19,7 @@ export async function leerTextoAcotado(
     }
   }
 
-  if (!req.body) return { ok: true, texto: '', bytes: 0 };
+  if (!req.body) return { ok: true, datos: new Uint8Array(0), bytes: 0 };
 
   const lector = req.body.getReader();
   const partes: Uint8Array[] = [];
@@ -42,5 +47,14 @@ export async function leerTextoAcotado(
     bytes.set(parte, offset);
     offset += parte.byteLength;
   }
-  return { ok: true, texto: new TextDecoder().decode(bytes), bytes: total };
+  return { ok: true, datos: bytes, bytes: total };
+}
+
+export async function leerTextoAcotado(
+  req: Request,
+  maxBytes: number,
+): Promise<ResultadoTextoAcotado> {
+  const resultado = await leerBytesAcotados(req, maxBytes);
+  if (!resultado.ok) return resultado;
+  return { ok: true, texto: new TextDecoder().decode(resultado.datos), bytes: resultado.bytes };
 }

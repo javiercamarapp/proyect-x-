@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LA SONDA DE INGESTA GASTA VISIÓN — lo que se fija (AUDITORÍA 18, A6/A25):
@@ -66,6 +67,21 @@ beforeEach(() => {
   sesion = { userId: 'u-1', tenantId: 't-1', rol: 'contador', nombre: 'C' };
   permitido = true; gastado = 0; mfaRechazado = false;
   extraer.mockClear(); registrarCosto.mockClear(); rateLimit.mockClear(); tenantEfectivoChat.mockClear();
+});
+
+it.each([true, false])('stream excesivo con cuota permitida=%s no consume OCR ni presupuesto', async (cuota) => {
+  permitido = cuota;
+  const p = peticionStream('https://app.likida.ai/api/dashboard/ingesta', JSON.stringify({
+    imagen: IMG, ignorado: 'x'.repeat(4_200_000),
+  }));
+  expect((await POST(p.req as never)).status).toBe(cuota ? 413 : 429);
+  expect(extraer).not.toHaveBeenCalled();
+  expect(registrarCosto).not.toHaveBeenCalled();
+  expect(tenantEfectivoChat).not.toHaveBeenCalled();
+  expect(rateLimit).toHaveBeenCalledTimes(1);
+  expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  if (cuota) expect(p.estado().cancelado).toBe(true);
+  else expect(p.estado().leidos).toBe(0);
 });
 
 describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {

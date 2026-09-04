@@ -19,6 +19,9 @@
  * mano (partir el archivo), en vez de con una pantalla de la plataforma.
  */
 export const MAX_BASE64 = 4_000_000;
+// Incluye nombre, prefijo data URL y envoltura JSON; también acota campos
+// desconocidos antes de materializarlos. El límite del archivo sigue aparte.
+export const MAX_CUERPO_BYTES = MAX_BASE64 + 16_384;
 
 /**
  * Peticiones por minuto por USUARIO al lector (auditoría 21, MEDIO).
