@@ -40,10 +40,14 @@ vi.mock('@/lib/admin/salud', () => ({
 const reclamarSalidasWhatsApp = vi.fn(async () => [
   { id: 'out-1', payload: { messaging_product: 'whatsapp', to: '5215512345678', text: { body: 'Tu liquidación está lista' } } },
 ]);
-const finalizarSalidaWhatsApp = vi.fn(async () => {});
+const finalizarSalidaWhatsApp = vi.fn(async () => ({ ok: true, muerta: false }));
 vi.mock('@/lib/likida/wa_outbox', () => ({
   reclamarSalidasWhatsApp: (...a: unknown[]) => reclamarSalidasWhatsApp(...(a as [])),
   finalizarSalidaWhatsApp: (...a: unknown[]) => finalizarSalidaWhatsApp(...(a as [])),
+}));
+
+vi.mock('@/lib/supabase/admin', () => ({
+  supabaseAdmin: () => ({ rpc: async () => ({ data: 0, error: null }) }),
 }));
 
 vi.mock('@/lib/likida/lotes', () => ({

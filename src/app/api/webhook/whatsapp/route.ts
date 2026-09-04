@@ -490,6 +490,9 @@ export async function POST(req: NextRequest) {
       try {
         const resultado = await supabaseAdmin().rpc('registrar_estado_wa_meta', {
           p_wamid: e.id, p_estado: e.status,
+          // T2 pertenece al evento de Meta, no al instante en que Vercel
+          // alcanzó a procesar este webhook (que puede venir reintentado).
+          p_ahora: instanteEstadoMeta(e.timestamp),
           p_error: e.status === 'failed'
             ? `${esReintentableMeta(e.errors?.[0]?.code) ? 'retryable:' : 'terminal:'}${e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? 'Meta failed'}`
             : null,
@@ -551,6 +554,7 @@ export async function POST(req: NextRequest) {
 interface WaEstado {
   id: string;
   status: string;            // sent | delivered | read | failed
+  timestamp?: string;        // UNIX en segundos, como string
   recipient_id?: string;
   errors?: Array<{ code?: number; title?: string; message?: string; error_data?: { details?: string } }>;
 }
@@ -633,6 +637,20 @@ function extractStatuses(p: WaWebhook): WaEstado[] {
     }
   }
   return out;
+}
+
+/** Convierte el reloj de Meta a T2. Si falta o no es un Unix entero plausible,
+ * usa de forma explícita el reloj de recepción local: nunca pasa Invalid Date,
+ * infinito ni una fecha futura controlada por el payload a PostgreSQL. */
+function instanteEstadoMeta(timestamp: string | undefined): string {
+  const recibidoAhora = new Date();
+  if (!/^\d+$/.test(timestamp ?? '')) return recibidoAhora.toISOString();
+  const segundos = Number(timestamp);
+  const maximoConDeriva = Math.floor(recibidoAhora.getTime() / 1000) + 5 * 60;
+  if (!Number.isSafeInteger(segundos) || segundos < 946_684_800 || segundos > maximoConDeriva) {
+    return recibidoAhora.toISOString();
+  }
+  return new Date(segundos * 1000).toISOString();
 }
 
 function extractMessages(p: WaWebhook): InboundMessage[] {

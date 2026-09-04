@@ -205,19 +205,19 @@ describe('finalizarSalidaWhatsApp lee el contrato de tabla de la 0189', () => {
 
   it('muerta: true cuando la fila agotó reintentos', async () => {
     rpc.mockResolvedValue({ data: [{ ok: true, muerta: true }], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: true });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: true, muerta: true });
   });
 
   it('muerta: false en un envío exitoso', async () => {
     rpc.mockResolvedValue({ data: [{ ok: true, muerta: false }], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, 'wamid.1')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, 'wamid.1')).toEqual({ ok: true, muerta: false });
   });
 
-  it('muerta: false (no true por accidente) si la RPC falla o el claim se perdió', async () => {
+  it('ok: false distingue un fallo RPC o claim perdido de una finalización exitosa', async () => {
     rpc.mockResolvedValue({ data: null, error: { message: 'boom' } });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: false, muerta: false });
 
     rpc.mockResolvedValue({ data: [], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: false, muerta: false });
   });
 });

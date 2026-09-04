@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // CRÍTICO de la auditoría 5 (agéntico): "El PDF se da por entregado con el 200
 // de Meta, y el aviso de que no se entregó se tira sin leerlo."
@@ -46,6 +46,7 @@ const conStatus = (status: string, extra: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => { logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset(); rpc.mockReset(); rpc.mockResolvedValue({ data: true, error: null }); });
+afterEach(() => { vi.useRealTimers(); });
 
 describe('acuses de entrega de WhatsApp', () => {
   it('un mensaje que NO se entregó deja un error con el wamid y la causa', async () => {
@@ -74,6 +75,27 @@ describe('acuses de entrega de WhatsApp', () => {
     expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({ p_wamid: 'wamid.PDF123', p_estado: 'delivered' }));
     expect(logger.error).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith('wa.estado', { id: 'wamid.PDF123', estado: 'delivered' });
+  });
+
+  it('GPS R4: usa statuses[].timestamp Unix como T2 del receipt', async () => {
+    await pedir(conStatus('delivered', { timestamp: '1700000000' }));
+
+    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({
+      p_wamid: 'wamid.PDF123',
+      p_ahora: '2023-11-14T22:13:20.000Z',
+    }));
+  });
+
+  it.each(['-1', '1700000000.5', 'no-es-unix', '999999999999'])('GPS R4: timestamp Meta inválido %s usa un fallback local explícito', async (timestamp) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-04T15:16:17.000Z'));
+
+    await pedir(conStatus('read', { timestamp }));
+
+    expect(rpc).toHaveBeenCalledWith('registrar_estado_wa_meta', expect.objectContaining({
+      p_wamid: 'wamid.PDF123',
+      p_ahora: '2026-09-04T15:16:17.000Z',
+    }));
   });
 
   it('la respuesta distingue mensajes de acuses', async () => {
