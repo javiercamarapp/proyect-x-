@@ -22,6 +22,10 @@ const RAIZ = process.cwd();
 // Las pone la plataforma o el arnés de pruebas: no van en `.env.example`.
 const DE_LA_PLATAFORMA = new Set([
   'NODE_ENV', 'VERCEL_ENV', 'NEXT_RUNTIME',
+  // Inyectada por Vercel al ejecutar la función; identifica al worker y tiene
+  // fallback local. No es un secreto ni configuración manual del operador.
+  // https://vercel.com/docs/environment-variables/system-environment-variables#vercel_region
+  'VERCEL_REGION',
   // El sha del deploy, inyectado por Vercel en build (lo leen /api/health y el
   // agente `releases`, 0234).
   'VERCEL_GIT_COMMIT_SHA',
