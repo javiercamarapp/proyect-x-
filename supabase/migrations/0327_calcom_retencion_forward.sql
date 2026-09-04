@@ -1,6 +1,5 @@
--- 0327 — Cal.com retención forward-only.
--- Reaplica idempotentemente el contrato vigente de 0323 sobre bases con una
--- versión anterior: elimina índice/hash legacy y redefine todas las RPC.
+-- 0327 — Cal.com retención forward-only: reaplica el contrato vigente de 0323
+-- sobre bases previas, eliminando hash/índice legacy y redefiniendo las RPC.
 -- 0323 — Cal.com: ledger recuperable, identidad de reserva y embudo en una
 -- sola transacción. Esta migración todavía no está desplegada en producción;
 -- por eso se corrige aquí, sin crear una numeración posterior.
@@ -367,7 +366,6 @@ declare
   v_pend_precedencia smallint;
   v_pend_destino text;
   v_antiguo boolean;
-  v_muy_futuro boolean;
 begin
   if nullif(btrim(p_clave), '') is null
       or nullif(v_tipo, '') is null
@@ -379,8 +377,6 @@ begin
   -- idempotencia y se devuelve el estado actual sin rehidratar PII.
   v_antiguo := p_creado_en is not null
     and p_creado_en < clock_timestamp() - interval '365 days';
-  v_muy_futuro := p_creado_en is not null
-    and p_creado_en > clock_timestamp() + interval '365 days';
   if v_antiguo then
     select ce.id, ce.estado_proceso, ce.prospecto_id
       into v_evento_id, v_evento_estado, v_evento_prospecto
@@ -408,11 +404,9 @@ begin
     return;
   end if;
 
-  -- Un reloj muy adelantado no se hace durable: así no se conserva payload/
-  -- correo que pudiera rehidratarse tras una purga antes de que llegue el
-  -- evento real. Una deriva pequeña sigue usando cuarentena para tolerar
-  -- desajustes de reloj operativos.
-  if v_muy_futuro then
+  -- Todo reloj adelantado fuera de la tolerancia se rechaza sin ledger:
+  -- conservar payload/correo/UID permitiría rehidratar PII tras una purga.
+  if v_futuro then
     return query select 'ignorado'::text,
       (select pr.estado from public.prospecto pr
         where pr.id = p_prospecto and pr.duplicado_de is null);
@@ -514,16 +508,6 @@ begin
            vinculo_correo = coalesce(nullif(lower(btrim(p_vinculo_correo)), ''), vinculo_correo),
            vinculo_error = p_error_vinculo
      where id = v_evento_id;
-  end if;
-
-  if v_futuro then
-    update public.comercial_evento
-       set estado_proceso = 'cuarentena', procesado_en = clock_timestamp(),
-           error = 'created_at_futuro'
-     where id = v_evento_id;
-    return query select 'cuarentena'::text,
-      (select pr.estado from public.prospecto pr where pr.id = p_prospecto);
-    return;
   end if;
 
   if p_prospecto is null then

@@ -270,6 +270,7 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     ['fecha imposible', '2026-02-30T12:00:00Z'],
     ['sin zona', '2026-08-20T12:00:00'],
     ['valor corto', '0'],
+    ['espacios', ' 2026-08-20T12:00:00Z '],
   ])('createdAt %s rechaza 400 y no llama RPC', async (_caso, createdAt) => {
     const cuerpo = JSON.stringify({
       triggerEvent: 'BOOKING_CREATED', bookingId: `sin-reloj-${_caso}`,

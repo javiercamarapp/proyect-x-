@@ -125,9 +125,7 @@ function participanteDelEvento(evt: CalcomEvent, tipo: string): ParticipanteEven
  * cita) ni un reloj local. Un payload antiguo sin este campo sigue entrando,
  * pero queda sujeto a la precedencia conservadora de estado. */
 function instanteFirmado(evt: CalcomEvent): string | null {
-  const valor = texto(evt.createdAt);
-  if (!valor) return null;
-  return instanteRFC3339(valor);
+  return instanteRFC3339(evt.createdAt);
 }
 
 export async function POST(req: Request) {

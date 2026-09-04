@@ -17,6 +17,7 @@ declare
   ventana timestamptz;
   cursor_guardado text;
   purga_id uuid;
+  futuro_lejano timestamptz := clock_timestamp() + interval '180 days';
 begin
   delete from public.comercial_evento where prospecto_id in (p, q)
      or clave_idempotencia like 'calcom:TEST0323:%';
@@ -44,21 +45,18 @@ begin
     select 1 from public.prospecto where id = p and estado = 'appointment' and calcom_booking_id = 'B'
   ) then raise exception 'CREATED(A) sin reloj reemplazó la reserva B'; end if;
 
-  -- Un reloj futuro queda registrado/cuarentenado, pero no cambia estado ni
-  -- el marcador de secuencia vigente.
+  -- Un reloj futuro se rechaza sin crear ledger ni cambiar estado.
   select * into r from public.aplicar_evento_calcom_tx(
     'calcom:BOOKING_CREATED:FUTURO', 'BOOKING_CREATED', 'FUTURO', p, '{}'::jsonb,
     clock_timestamp() + interval '1 day', null
   );
-  if r.resultado <> 'cuarentena' then raise exception 'futuro no fue a cuarentena: %', r.resultado; end if;
+  if r.resultado <> 'ignorado' then raise exception 'futuro no fue rechazado: %', r.resultado; end if;
   if not exists (
     select 1 from public.prospecto where id = p and estado = 'appointment' and calcom_booking_id = 'B'
   ) then raise exception 'evento futuro envenenó prospecto/secuencia'; end if;
-  if not exists (
-    select 1 from public.comercial_evento
-     where clave_idempotencia = 'calcom:BOOKING_CREATED:FUTURO'
-       and estado_proceso = 'cuarentena' and orden_en is null
-  ) then raise exception 'evento futuro no quedó auditable y fuera de secuencia'; end if;
+  if exists (select 1 from public.comercial_evento
+     where clave_idempotencia = 'calcom:BOOKING_CREATED:FUTURO')
+  then raise exception 'evento futuro creó ledger'; end if;
   select * into r from public.aplicar_evento_calcom_tx(
     'calcom:BOOKING_RESCHEDULED:B-VALIDO', 'BOOKING_RESCHEDULED', 'B', p, '{}'::jsonb,
     clock_timestamp(), null
@@ -265,8 +263,7 @@ begin
     raise exception 'correo_normalizado no es case-insensitive';
   end if;
 
-  -- Cuarentena también es recuperable: para no dormir el test, la segunda
-  -- entrega representa el mismo createdAt una vez que ya dejó de ser futuro.
+  -- Todo futuro fuera de tolerancia se rechaza y no puede rehidratarse.
   update public.prospecto set estado='contactado', calcom_booking_id=null,
     calcom_booking_aliases='{}', calcom_evento_en=null,
     calcom_evento_precedencia=null where id=p;
@@ -275,13 +272,34 @@ begin
     '{"uid":"F"}'::jsonb, clock_timestamp() + interval '1 day', null,
     array['uid:F'], '{}'::text[], null
   );
-  if r.resultado <> 'cuarentena' then raise exception 'futuro no quedó recuperable'; end if;
+  if r.resultado <> 'ignorado' then raise exception 'futuro no quedó rechazado'; end if;
   select * into r from public.aplicar_evento_calcom_tx(
     'calcom:TEST0323:RECUPERA:CUARENTENA', 'BOOKING_CREATED', 'uid:F', p,
     '{"uid":"F"}'::jsonb, clock_timestamp(), null,
     array['uid:F'], '{}'::text[], null
   );
-  if r.resultado <> 'aplicado' then raise exception 'reentrega de cuarentena quedó como duplicado: %', r.resultado; end if;
+  if r.resultado <> 'aplicado' then raise exception 'reentrega con fecha ya válida no aplicó: %', r.resultado; end if;
+
+  -- Futuro lejano: la misma entrega no debe crear ledger ni conservar PII,
+  -- tampoco en una segunda llamada con exactamente el mismo createdAt.
+  select * into r from public.aplicar_evento_calcom_tx(
+    'calcom:TEST0323:FUTURO:LEJANO', 'BOOKING_CREATED', 'uid:F180', p,
+    '{"uid":"F180","attendees":[{"email":"futuro-180@example.test"}]}'::jsonb,
+    futuro_lejano, null, array['uid:F180'], '{}'::text[], null,
+    'futuro-180@example.test', null
+  );
+  if r.resultado <> 'ignorado' then raise exception 'futuro lejano no fue ignorado: %', r.resultado; end if;
+  select * into r from public.aplicar_evento_calcom_tx(
+    'calcom:TEST0323:FUTURO:LEJANO', 'BOOKING_CREATED', 'uid:F180', p,
+    '{"uid":"F180","attendees":[{"email":"futuro-180@example.test"}]}'::jsonb,
+    futuro_lejano, null, array['uid:F180'], '{}'::text[], null,
+    'futuro-180@example.test', null
+  );
+  select count(*) into n from public.comercial_evento
+   where clave_idempotencia = 'calcom:TEST0323:FUTURO:LEJANO';
+  if r.resultado <> 'ignorado' or n <> 0 then
+    raise exception 'futuro lejano creó ledger/replay: %/%', r.resultado, n;
+  end if;
 
   -- El barrido propio recupera sin pedirle a Cal.com otra entrega. Un correo
   -- único se enlaza; uno ambiguo queda durable/observable y no se adivina.
@@ -315,28 +333,6 @@ begin
        and prospecto_id is null and estado_proceso='sin_prospecto'
        and error='correo_ambiguo' and vinculo_error='correo_ambiguo'
   ) then raise exception 'correo ambiguo fue elegido o perdió diagnóstico'; end if;
-
-  -- Cuarentena tampoco depende de reentrega. Simulamos que transcurrió el
-  -- tiempo moviendo sólo el reloj durable preservado y el barrido reanuda la
-  -- MISMA clave/payload.
-  select * into r from public.aplicar_evento_calcom_tx(
-    'calcom:TEST0323:BARRIDO:CUARENTENA', 'BOOKING_RESCHEDULED', 'uid:G', p,
-    '{}'::jsonb, clock_timestamp() + interval '1 day', 'uid:F',
-    array['uid:G'], array['uid:F'], null, 'calcom-0323@example.test', null
-  );
-  if r.resultado <> 'cuarentena' then raise exception 'fixture de cuarentena no entró'; end if;
-  update public.comercial_evento
-     set orden_original_en=clock_timestamp(), reintentar_despues=clock_timestamp()
-   where clave_idempotencia='calcom:TEST0323:BARRIDO:CUARENTENA';
-  perform public.reconciliar_eventos_calcom_pendientes(250);
-  if not exists (
-    select 1 from public.comercial_evento
-     where clave_idempotencia='calcom:TEST0323:BARRIDO:CUARENTENA'
-       and estado_proceso='aplicado'
-  ) or not exists (
-    select 1 from public.prospecto where id=p and estado='rescheduled'
-      and calcom_booking_id='uid:G'
-  ) then raise exception 'barrido propio no recuperó cuarentena vencida'; end if;
 
   -- BOOKING_NO_SHOW_UPDATED oficial: true marca; false desmarca y restaura el
   -- estado activo anterior. La entrega sin reloj jamás resucita terminales.
