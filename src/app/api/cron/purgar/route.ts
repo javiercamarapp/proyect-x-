@@ -60,6 +60,78 @@ const DIAS_WA = 30;
 const PLAZO_VUELTA_MS = 60_000;
 /** Techo duro de vueltas por corrida, por si `parcial` nunca baja. */
 const MAX_VUELTAS = 3;
+/** 20 × 5,000 = hasta 100k filas por tabla y corrida, sin retener los locks
+ * entre lotes porque cada RPC es una transacción independiente. */
+const MAX_LOTES_RETENCION_0104 = 20;
+/** Reserva 15 s del maxDuration para Storage/producto/MCP y la respuesta. */
+const MARGEN_FINAL_MS = 15_000;
+
+type NombrePurga0104 = 'purgar_wa_conversacion' | 'purgar_codigo_pendiente';
+type ResultadoDrenaje0104 = {
+  borradas: number;
+  lotes: number;
+  parcial: boolean;
+  agotado: boolean;
+  error: string | null;
+};
+
+async function drenarPurga0104(
+  nombre: NombrePurga0104,
+  ahora: string,
+  venceMs: number,
+  yaAgotadaEnMantenimiento: boolean,
+): Promise<ResultadoDrenaje0104> {
+  const total: ResultadoDrenaje0104 = {
+    borradas: 0,
+    lotes: 0,
+    parcial: true,
+    agotado: false,
+    error: null,
+  };
+
+  // mantenimiento_de_datos ya ejecutó la primera tanda. Si esa tanda dijo
+  // que no queda backlog, no hacemos una RPC vacía adicional. Cuando queda
+  // parcial (o la versión de BD aún no trae la señal), este ciclo complementa
+  // en transacciones independientes y libera locks/WAL entre llamadas.
+  if (yaAgotadaEnMantenimiento) {
+    total.parcial = false;
+    total.agotado = true;
+    return total;
+  }
+
+  while (total.lotes < MAX_LOTES_RETENCION_0104 && Date.now() < venceMs) {
+    const respuesta = await supabaseAdmin().rpc(nombre, {
+      p_dias: 180,
+      p_ahora: ahora,
+      p_vence: new Date(venceMs).toISOString(),
+    });
+    if (respuesta.error) {
+      total.error = respuesta.error.message;
+      logger.error('cron.purgar.retencion_0104_falló', { nombre, error: total.error, lotes: total.lotes });
+      await alertarOperador('cron.purgar.retencion_0104', { nombre, error: total.error });
+      return total;
+    }
+
+    const dato = (respuesta.data ?? {}) as Record<string, unknown>;
+    const borradas = Number(dato.borradas);
+    const parcial = dato.parcial === true;
+    const agotado = dato.agotado === true;
+    if (!Number.isSafeInteger(borradas) || borradas < 0 || parcial === agotado) {
+      total.error = 'respuesta_invalida';
+      logger.error('cron.purgar.retencion_0104_respuesta_invalida', { nombre, dato });
+      await alertarOperador('cron.purgar.retencion_0104', { nombre, error: total.error });
+      return total;
+    }
+
+    total.borradas += borradas;
+    total.lotes++;
+    total.parcial = parcial;
+    total.agotado = agotado;
+    if (agotado) return total;
+  }
+
+  return total;
+}
 
 export async function GET(req: Request) {
   // La puerta (RES-7): sin secreto 500 + alerta; 401 con log y código
@@ -104,6 +176,15 @@ export async function GET(req: Request) {
     let vueltas = 0;
     let data: Record<string, unknown> = {};
     let parcial = false;
+    let otrasPurgasParcial: boolean | null = null;
+    let conversacionesBorradasEnMantenimiento = 0;
+    let codigosBorradosEnMantenimiento = 0;
+    let lotesConversacionEnMantenimiento = 0;
+    let lotesCodigoEnMantenimiento = 0;
+    let conversacionesParcialConocido = false;
+    let codigosParcialConocido = false;
+    let conversacionesParcial = true;
+    let codigosParcial = true;
     do {
       vueltas++;
       const r = await supabaseAdmin().rpc('mantenimiento_de_datos', {
@@ -126,7 +207,26 @@ export async function GET(req: Request) {
         return NextResponse.json({ error: r.error.message, vueltas }, { status: 500 });
       }
       data = (r.data ?? {}) as Record<string, unknown>;
+      const conversacionesVuelta = Number(data.conversacionesPurgadas);
+      if (Number.isSafeInteger(conversacionesVuelta) && conversacionesVuelta >= 0) {
+        conversacionesBorradasEnMantenimiento += conversacionesVuelta;
+        lotesConversacionEnMantenimiento++;
+      }
+      const codigosVuelta = Number(data.codigosPurgados);
+      if (Number.isSafeInteger(codigosVuelta) && codigosVuelta >= 0) {
+        codigosBorradosEnMantenimiento += codigosVuelta;
+        lotesCodigoEnMantenimiento++;
+      }
+      if (typeof data.conversacionesParcial === 'boolean') {
+        conversacionesParcialConocido = true;
+        conversacionesParcial = data.conversacionesParcial;
+      }
+      if (typeof data.codigosParcial === 'boolean') {
+        codigosParcialConocido = true;
+        codigosParcial = data.codigosParcial;
+      }
       parcial = data.parcial === true;
+      if (typeof data.otrasPurgasParcial === 'boolean') otrasPurgasParcial = data.otrasPurgasParcial;
       if (parcial) logger.warn('cron.purgar.parcial', { vuelta: vueltas, transcurridoMs: Date.now() - inicio });
       // AUDITORÍA 19 (legal, reincidente #13): `mantenimiento_de_datos`
       // acumula en `fallos` cada purga que lanzó (0165) y NADIE leía la
@@ -146,6 +246,43 @@ export async function GET(req: Request) {
         break;
       }
     } while (parcial && vueltas < MAX_VUELTAS && Date.now() - inicio + PLAZO_VUELTA_MS < (maxDuration - 5) * 1000);
+
+    // 0332: conversación/códigos borran UNA tanda por RPC. El ciclo vive aquí,
+    // fuera de Postgres, para que cada lote confirme y libere locks/WAL antes
+    // del siguiente. Las dos tablas drenan en paralelo y comparten el deadline
+    // duro de la ruta; el techo impide un loop infinito ante backlog continuo.
+    const ahoraRetencion = new Date(inicio).toISOString();
+    const venceRetencionMs = inicio + maxDuration * 1000 - MARGEN_FINAL_MS;
+    const [conversacionesDrenaje, codigosDrenaje] = await Promise.all([
+      drenarPurga0104('purgar_wa_conversacion', ahoraRetencion, venceRetencionMs,
+        conversacionesParcialConocido && !conversacionesParcial),
+      drenarPurga0104('purgar_codigo_pendiente', ahoraRetencion, venceRetencionMs,
+        codigosParcialConocido && !codigosParcial),
+    ]);
+    const conversaciones0104 = {
+      ...conversacionesDrenaje,
+      borradas: conversacionesBorradasEnMantenimiento + conversacionesDrenaje.borradas,
+      lotes: lotesConversacionEnMantenimiento + conversacionesDrenaje.lotes,
+      borradasMantenimiento: conversacionesBorradasEnMantenimiento,
+      lotesMantenimiento: lotesConversacionEnMantenimiento,
+      borradasDrenaje: conversacionesDrenaje.borradas,
+      lotesDrenaje: conversacionesDrenaje.lotes,
+    };
+    const codigos0104 = {
+      ...codigosDrenaje,
+      borradas: codigosBorradosEnMantenimiento + codigosDrenaje.borradas,
+      lotes: lotesCodigoEnMantenimiento + codigosDrenaje.lotes,
+      borradasMantenimiento: codigosBorradosEnMantenimiento,
+      lotesMantenimiento: lotesCodigoEnMantenimiento,
+      borradasDrenaje: codigosDrenaje.borradas,
+      lotesDrenaje: codigosDrenaje.lotes,
+    };
+    const retencion0104 = { conversaciones: conversaciones0104, codigos: codigos0104 };
+    const erroresRetencion0104 = [
+      conversaciones0104.error && `wa_conversacion: ${conversaciones0104.error}`,
+      codigos0104.error && `codigo_pendiente: ${codigos0104.error}`,
+    ].filter((error): error is string => typeof error === 'string');
+    const retencionParcial = conversaciones0104.parcial || codigos0104.parcial || erroresRetencion0104.length > 0;
 
     // ── EL BORRADO DE STORAGE (23-ago-2026) ────────────────────────────────
     // `mantenimiento_de_datos` MARCA archivos en `storage_huerfano_candidato`
@@ -218,9 +355,18 @@ export async function GET(req: Request) {
       await alertarOperador('cron.purgar.mcp_oauth', { error });
     }
 
-    logger.info('cron.purgar.ok', { ...data, vueltas, storage, productoEvento, mcpOauth });
-    await registrarLatido('purgar', parcial ? 'parcial' : 'ok', { vueltas });
-    return NextResponse.json({ corrio: true, ...data, vueltas, storage, productoEvento, mcpOauth });
+    // 0332 separa la señal de las purgas restantes: si conversación/códigos
+    // ya se drenaron fuera de la RPC, no conservamos un `parcial` obsoleto de
+    // la última tanda de mantenimiento. En rollout sobre una BD anterior se
+    // usa el agregado legado, que es el fallback conservador.
+    const parcialGlobal = (otrasPurgasParcial ?? parcial) || retencionParcial;
+    const estado = erroresRetencion0104.length > 0 ? 'fallo' : parcialGlobal ? 'parcial' : 'ok';
+    const detalleFinal = { ...data, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, mcpOauth };
+    if (estado === 'fallo') logger.error('cron.purgar.retencion_0104_incompleta', detalleFinal);
+    else if (estado === 'parcial') logger.warn('cron.purgar.incompleta', detalleFinal);
+    else logger.info('cron.purgar.ok', detalleFinal);
+    await registrarLatido('purgar', estado, { vueltas, parcial: parcialGlobal, erroresRetencion0104, retencion0104 });
+    return NextResponse.json({ corrio: true, ...data, parcial: parcialGlobal, estado, vueltas, retencion0104, erroresRetencion0104, storage, productoEvento, mcpOauth });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     // Mismo criterio que el `if (error)` de arriba, para el camino que lanza.

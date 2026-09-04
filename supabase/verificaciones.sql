@@ -116,6 +116,46 @@ begin
   raise exception E'MUTEX  1er=%  concurrente=%  tras-unlock=%   (esperado t / f / t)', l1, l2, l3;
 end $$;
 
+-- ── 264. Retención DB: una tanda, sin encoger producto y sin perder la purga geográfica (mig. 0332) ──
+-- La carrera SKIP LOCKED, que necesita dos sesiones, vive en
+-- supabase/tests/0332_db_retencion_concurrencia.sh. Este bloque fija las
+-- garantías observables de una sesión y revierte sus datos con el RAISE final.
+do $$
+declare
+  t uuid := '33200000-0000-4000-8000-000000000090';
+  i uuid := '33200000-0000-4000-8000-000000000091';
+  r jsonb; m jsonb;
+  producto_ok boolean; deadline_ok boolean; geo_ok boolean; llaves_ok boolean;
+begin
+  insert into public.tenant(id,nombre) values(t,'__verif_0332__');
+  -- El entorno persistente pudo ejecutar mantenimiento antes. Esta mutación
+  -- vive dentro del bloque que termina en RAISE/rollback y fuerza el estado
+  -- de transición cuya garantía verificamos: sin watermark no se puede
+  -- ocultar detalle antiguo aún no consolidado.
+  update public.producto_evento_estado set detalle_desde=null where singleton;
+  insert into public.producto_evento(tenant_id,pantalla,accion,created_at)
+    values(t,'viajes','pageview',now()-interval '120 days');
+  select coalesce(sum(eventos),0)=1 into producto_ok
+    from public.uso_producto_mensual() where tenant_id=t;
+
+  insert into public.wa_conversacion(tenant_id,telefono,updated_at)
+    values(t,'529993320090',now()-interval '181 days');
+  r := public.purgar_wa_conversacion(180,now(),clock_timestamp()-interval '1 second');
+  deadline_ok := (r->>'borradas')::bigint=0 and (r->>'parcial')::boolean
+    and not (r->>'agotado')::boolean
+    and exists(select 1 from public.wa_conversacion where tenant_id=t);
+
+  insert into public.incidencia(id,tenant_id,tipo,estado,resuelta_en,lat,lng)
+    values(i,t,'desvio','resuelta',now()-interval '100 days',20.9,-89.6);
+  m := public.mantenimiento_de_datos(30,now());
+  select lat is null and lng is null into geo_ok from public.incidencia where id=i;
+  llaves_ok := m ? 'incidenciaGeoPurgada' and m ? 'incidenciaEventoGeoPurgado'
+    and m ? 'conversacionesParcial' and m ? 'codigosParcial' and m ? 'otrasPurgasParcial';
+
+  raise exception E'DB_RETENCION_0332 producto=% deadline=% geo=% llaves=%   (esperado t / t / t / t)',
+    producto_ok, deadline_ok, geo_ok, llaves_ok;
+end $$;
+
 -- ── 266. Arranque puramente catalogal, exacto y server-only (mig. 0326) ──
 -- Esperado: STARTUP_CATALOGO_0326 completo=t estable=t sin-escrituras=t permisos=t
 do $$
@@ -4129,8 +4169,8 @@ begin
   res := public.mantenimiento_de_datos(30);
   select count(*) into quedan_conv from public.wa_conversacion where tenant_id = t;
   select count(*) into quedan_cod from public.codigo_pendiente where tenant_id = t;
-  select has_function_privilege('anon', 'public.purgar_wa_conversacion(integer, timestamptz)', 'EXECUTE') into anon_conv;
-  select has_function_privilege('anon', 'public.purgar_codigo_pendiente(integer, timestamptz)', 'EXECUTE') into anon_cod;
+  select has_function_privilege('anon', 'public.purgar_wa_conversacion(integer, timestamptz, timestamptz)', 'EXECUTE') into anon_conv;
+  select has_function_privilege('anon', 'public.purgar_codigo_pendiente(integer, timestamptz, timestamptz)', 'EXECUTE') into anon_cod;
   raise exception E'RETENCION_0104  conv_purgadas=%  cod_purgados=%  quedan_conv=%  quedan_cod=%  anon_conv=%  anon_cod=%   (esperado >=1 / >=1 / 1 / 1 / f / f)',
     (res->>'conversacionesPurgadas'), (res->>'codigosPurgados'), quedan_conv, quedan_cod, anon_conv, anon_cod;
 end $$;
