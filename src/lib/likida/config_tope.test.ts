@@ -20,7 +20,15 @@ const servidorMudo = net.createServer((s) => {
   s.on('close', () => conexionesMudas.delete(s));
   s.on('error', () => {}); /* acepta y calla */
 });
-await new Promise<void>((r) => servidorMudo.listen(0, '127.0.0.1', () => r()));
+await new Promise<void>((resolve, reject) => {
+  // Fallar al abrir el socket (p. ej. sandbox) debe rechazar la importación;
+  // sin listener de error la suite espera una promesa que nunca se resuelve.
+  servidorMudo.once('error', reject);
+  servidorMudo.listen(0, '127.0.0.1', () => {
+    servidorMudo.off('error', reject);
+    resolve();
+  });
+});
 const puerto = (servidorMudo.address() as net.AddressInfo).port;
 
 // `process.env.X = ...` NO se auto-restaura entre archivos de prueba (a
