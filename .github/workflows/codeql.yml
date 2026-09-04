@@ -27,6 +27,12 @@ name: CodeQL
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: '23 7 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

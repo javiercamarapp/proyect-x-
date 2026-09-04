@@ -38,3 +38,12 @@ jobs:
           set -euo pipefail
           [ -n "$VERCEL_TOKEN" ] || { echo "::error::Falta VERCEL_TOKEN."; exit 1; }
           npx --yes vercel@41.7.3 rollback "$URL" --token "$VERCEL_TOKEN"
+      - name: Verificar salud del deployment restaurado
+        env:
+          URL: ${{ inputs.deployment_url }}
+        run: |
+          set -euo pipefail
+          respuesta=$(curl --fail --silent --show-error --retry 5 --retry-all-errors --max-time 15 "$URL/api/health")
+          printf '%s' "$respuesta" | jq -e '.status == "ok" and .checks.db == "ok"' >/dev/null
+          echo '### Rollback verificado' >> "$GITHUB_STEP_SUMMARY"
+          echo '- `/api/health`: status=ok, db=ok.' >> "$GITHUB_STEP_SUMMARY"
