@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // ═══════════════════════════════════════════════════════════════════════════
 // LA API DEL BUS PARA WORKERS (0135) — el reemplazo del service role en la
 // Mac. Cada acción exige SU capacidad; el resolver falla cerrado y deja
@@ -34,7 +35,28 @@ export async function POST(req: Request, ctx: { params: Promise<{ accion: string
   const quien = await resolverLlaveWorker(req.headers.get('x-worker-key'), cap);
   if (!quien.ok) return NextResponse.json({ error: quien.error }, { status: 403 });
 
-  const cuerpo = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // 50 encargos de 20,000 caracteres escapados (~6 MB) o media de 4 MiB en base64.
+  const lecturaCuerpo = await leerTextoAcotado(req, 8 * 1024 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
+  try {
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
+  const camposTexto = accion === 'pieza'
+    ? ['rutina', 'carpeta', 'titulo', 'tipo', 'copyMd', 'mediaBase64', 'mediaNombre', 'mediaMime']
+    : accion === 'corrida-inicio' ? ['rutina']
+      : accion === 'corrida-fin' ? ['id', 'prUrl', 'veredicto']
+        : accion === 'ordenes-resolver' ? ['id', 'resultado'] : accion === 'ordenes-claim' ? ['id'] : [];
+  if (camposTexto.some((campo) => cuerpo[campo] != null && typeof cuerpo[campo] !== 'string')
+      || (accion === 'corrida-fin' && cuerpo.exitCode != null && (typeof cuerpo.exitCode !== 'number' || !Number.isFinite(cuerpo.exitCode)))
+      || (accion === 'ordenes-resolver' && cuerpo.ok != null && typeof cuerpo.ok !== 'boolean')) {
+    return NextResponse.json({ error: 'Tipos de campos inválidos.' }, { status: 400 });
+  }
   const admin = supabaseAdmin();
 
   try {
@@ -97,7 +119,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ accion: string
       }
       case 'catalogo': {
         const rutinas = Array.isArray(cuerpo?.rutinas) ? cuerpo.rutinas.slice(0, 50) : null;
-        if (!rutinas) return NextResponse.json({ error: 'Faltan rutinas.' }, { status: 400 });
+        if (!rutinas || rutinas.some((x) => !x || typeof x !== 'object' || Array.isArray(x)
+          || ['nombre', 'horario', 'descripcion', 'encargo_md'].some((campo) => {
+            const valor = (x as Record<string, unknown>)[campo];
+            return valor != null && typeof valor !== 'string';
+          }))) return NextResponse.json({ error: 'Rutinas inválidas.' }, { status: 400 });
         const filas = rutinas.map((r) => {
           const x = r as Record<string, unknown>;
           return {

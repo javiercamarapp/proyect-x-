@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -98,4 +99,22 @@ describe('la puerta de rol sigue en pie', () => {
       expect(encender).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/palette',JSON.stringify({...{ operacion:'apagar',id:'global',motivo:'prueba' },ignorado:'x'.repeat(32768)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(apagar).not.toHaveBeenCalled();expect(encender).not.toHaveBeenCalled();
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/palette',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(apagar).not.toHaveBeenCalled();expect(encender).not.toHaveBeenCalled();
+ });
+});
+
+it.each([{operacion:'apagar',id:['global']},{operacion:'apagar',id:'global',motivo:42}])('tipos inválidos no cambian interruptores %j',async(cuerpo)=>{
+ const p=peticionStream('https://app.likida.ai/api/admin/palette',JSON.stringify(cuerpo));
+ expect((await POST(p.req)).status).toBe(400);expect(apagar).not.toHaveBeenCalled();expect(encender).not.toHaveBeenCalled();
 });

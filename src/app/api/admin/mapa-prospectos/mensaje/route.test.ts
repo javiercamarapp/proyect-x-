@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -52,7 +53,8 @@ vi.mock('@/lib/llm/openrouter', () => ({
     });
   },
 }));
-vi.mock('@/lib/ratelimit', () => ({ rateLimit: () => Promise.resolve(true) }));
+const cuotaMensaje = vi.fn(async () => true);
+vi.mock('@/lib/ratelimit', () => ({ rateLimit: () => cuotaMensaje() }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../puerta', () => ({
   sesionSuperadmin: () => Promise.resolve({
@@ -70,6 +72,7 @@ function postear(cabeceras?: Record<string, string>) {
 }
 
 beforeEach(() => {
+  cuotaMensaje.mockReset();cuotaMensaje.mockResolvedValue(true);
   llamadas.length = 0;
   escrituras.length = 0;
   errorAlGuardar = null;
@@ -179,4 +182,26 @@ describe('BE-29 — lo que ya se pagó se entrega, aunque no se pueda guardar', 
     expect(j.guardado).toBe(true);
     expect(j.aviso).toBeUndefined();
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({...{id:PROSPECTO.id},ignorado:'x'.repeat(20000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+ });
+});
+
+it('cuota agotada no lee ni genera',async()=>{
+ cuotaMensaje.mockResolvedValue(false);const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({id:PROSPECTO.id}));
+ expect((await POST(p.req)).status).toBe(429);expect(p.estado().leidos).toBe(0);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+});
+it('id con tipo array no se convierte en UUID',async()=>{
+ const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({id:[PROSPECTO.id]}));
+ expect((await POST(p.req)).status).toBe(400);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
 });

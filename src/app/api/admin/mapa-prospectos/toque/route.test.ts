@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -59,4 +60,21 @@ describe('la puerta de sesión sigue en pie', () => {
     expect(r.status).toBe(401);
     expect(insertados).toHaveLength(0);
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/toque',JSON.stringify({...TOQUE,ignorado:'x'.repeat(20000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(insertados).toHaveLength(0);
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/toque',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(insertados).toHaveLength(0);
+ });
+});
+
+it.each([{...TOQUE,id:[TOQUE.id]},{...TOQUE,canal:['whatsapp']},{...TOQUE,resumen:42}])('tipos inválidos no escriben %j',async(cuerpo)=>{
+ expect((await postear(cuerpo)).status).toBe(400);expect(insertados).toHaveLength(0);
 });

@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // ═══════════════════════════════════════════════════════════════════════════
 // EL AGENTE EXPERTO EN MENSAJES — POST /api/admin/mapa-prospectos/mensaje
 //
@@ -75,9 +76,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Tope de generación por hora alcanzado — respira y vuelve.' }, { status: 429 });
   }
 
-  const cuerpo = (await req.json().catch(() => null)) as { id?: string } | null;
+  // Un UUID y envoltura; el mensaje se construye en el servidor.
+  const lecturaCuerpo = await leerTextoAcotado(req, 8 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
+  try {
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
   const id = cuerpo?.id;
-  if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+  if (typeof id !== 'string' || !id || !/^[0-9a-f-]{36}$/.test(id)) {
     return NextResponse.json({ error: 'Falta el id del prospecto.' }, { status: 400 });
   }
 

@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // ═══════════════════════════════════════════════════════════════════════════
 // EL ENDPOINT DEL COPILOTO DEL FUNDADOR — /api/admin/copiloto.
 //
@@ -128,18 +129,26 @@ export async function POST(req: Request) {
     }, { status: 503 });
   }
 
-  let cuerpo: Record<string, unknown>;
-  try { cuerpo = await req.json() as Record<string, unknown>; } catch {
-    return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 });
+  // La cuota corta es común a chat y acciones; el turno diario sólo se cobra al chat.
+  if (!(await rateLimit(`copiloto:min:${sesion.userId}`, 20, 60_000))) {
+    return NextResponse.json({ error: 'tope por minuto del copiloto (20/min) — espera un momento' }, { status: 429 });
   }
-
+  // 24 turnos de 2,000 caracteres, incluso escapados en JSON, más envoltura.
+  const lecturaCuerpo = await leerTextoAcotado(req, 512 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
+  try {
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
   // ── Camino 2: ejecutar una acción con su INTENT (sin modelo, sin stream) ─
   if (cuerpo.accion !== undefined || cuerpo.intentId !== undefined) {
     // Las acciones no consumen LLM ni presupuesto diario de turnos, pero sí
     // conservan el freno corto contra replay/bucles de cliente.
-    if (!(await rateLimit(`copiloto:min:${sesion.userId}`, 20, 60_000))) {
-      return NextResponse.json({ error: 'tope por minuto del copiloto (20/min) — espera un momento' }, { status: 429 });
-    }
     const a = cuerpo.accion as { id?: unknown; objetivo?: unknown; motivo?: unknown } | null;
     const accionId = typeof a?.id === 'string' ? a.id : '';
     const objetivo = typeof a?.objetivo === 'string' ? a.objetivo : '';
@@ -211,8 +220,8 @@ export async function POST(req: Request) {
   const mensajes = validarMensajes(cuerpo.mensajes);
   if (!mensajes) return NextResponse.json({ error: 'mensajes inválidos' }, { status: 400 });
   // El commit 0c5d3de elimina deliberadamente el tenant global por env. Esta
-  // comprobación hace el fail-closed visible ANTES del rate limit y del
-  // stream: no se quema un turno ni se devuelve un NDJSON condenado.
+  // comprobación hace el fail-closed visible ANTES del turno diario y del
+  // stream: no se cobra un turno de chat ni se devuelve un NDJSON condenado.
   if (!sesion.tenantId) {
     logger.warn('copiloto.presupuesto_sin_tenant', { userId: sesion.userId });
     return NextResponse.json({
@@ -220,11 +229,8 @@ export async function POST(req: Request) {
       codigo: 'copiloto_presupuesto_sin_tenant',
     }, { status: 503 });
   }
-  // Anti-bucle (20/min) + techo diario de turnos, ambos por el userId de la
-  // sesión. El ledger 0186 aplica además el límite monetario atómico.
-  if (!(await rateLimit(`copiloto:min:${sesion.userId}`, 20, 60_000))) {
-    return NextResponse.json({ error: 'tope por minuto del copiloto (20/min) — espera un momento' }, { status: 429 });
-  }
+  // Techo diario exclusivo del chat. La cuota común por minuto ya pasó.
+  // El ledger 0186 aplica además el límite monetario atómico.
   if (!(await rateLimit(`copiloto:dia:${sesion.userId}`, topeTurnosDia(), DIA_MS))) {
     return NextResponse.json({ error: `tope diario del copiloto (${topeTurnosDia()} turnos) — sube LIKIDA_COPILOTO_TOPE_TURNOS_DIA si es a propósito` }, { status: 429 });
   }

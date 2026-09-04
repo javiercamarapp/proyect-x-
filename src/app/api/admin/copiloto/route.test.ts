@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -409,12 +410,13 @@ describe('el historial (0121)', () => {
 });
 
 describe('el freno de gasto (16-ago) — el único camino LLM que no tenía techo', () => {
-  it('superadmin sin tenant de presupuesto: 503 temprano, sin modelo ni rate limit', async () => {
+  it('superadmin sin tenant de presupuesto: 503 sin modelo ni turno diario, conserva cuota corta', async () => {
     sesion = { userId: 'u-javier', tenantId: null, rol: 'superadmin' };
     const res = await POST(pedir({ mensajes: [{ rol: 'usuario', texto: 'hola' }] }));
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toMatchObject({ codigo: 'copiloto_presupuesto_sin_tenant' });
-    expect(rateLimit).not.toHaveBeenCalled();
+    expect(rateLimit).toHaveBeenCalledTimes(1);
+    expect(rateLimit).toHaveBeenCalledWith('copiloto:min:u-javier', 20, 60_000);
     expect(ejecutarCopiloto).not.toHaveBeenCalled();
   });
 
@@ -501,4 +503,37 @@ describe('M23 — el borde del POST tiene reloj propio', () => {
     await r.text();
     expect(logMock.info).toHaveBeenCalledWith('copiloto.costo', expect.objectContaining({ modelo: 'prueba' }));
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/copiloto',JSON.stringify({...{ mensajes:[{rol:'usuario',texto:'hola'}] },ignorado:'x'.repeat(700000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(ejecutarCopiloto).not.toHaveBeenCalled();expect(ejecutarAccionCopiloto).not.toHaveBeenCalled();
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/copiloto',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(ejecutarCopiloto).not.toHaveBeenCalled();expect(ejecutarAccionCopiloto).not.toHaveBeenCalled();
+ });
+});
+
+it.each(['chat','accion'])('cuota agotada %s no lee cuerpo ni cuota diaria',async(camino)=>{
+ rateLimit.mockResolvedValue(false);
+ const cuerpo=camino==='chat'?{mensajes:[{rol:'usuario',texto:'hola'}]}:{accion:{id:'apagar_agente'},intentId:'x'};
+ const p=peticionStream('https://app.likida.ai/api/admin/copiloto',JSON.stringify(cuerpo));
+ expect((await POST(p.req)).status).toBe(429);expect(p.estado().leidos).toBe(0);
+ expect(rateLimit).toHaveBeenCalledTimes(1);expect(ejecutarCopiloto).not.toHaveBeenCalled();expect(ejecutarAccionCopiloto).not.toHaveBeenCalled();
+});
+it('24 turnos máximos con Unicode escapado siguen entrando',async()=>{
+ const mensajes=Array.from({length:24},()=>({rol:'usuario',texto:'漢'.repeat(2000)}));
+ const p=peticionStream('https://app.likida.ai/api/admin/copiloto',JSON.stringify({mensajes}).replace(/漢/g,'\\u6f22'));
+ const res=await POST(p.req);expect(res.status).toBe(200);await res.text();expect(ejecutarCopiloto).toHaveBeenCalled();expect(p.estado().cancelado).toBe(false);
+});
+
+it.each(['sin sesion','apagado'])('%s no lee cuerpo ni consume cuotas',async(motivo)=>{
+ if(motivo==='sin sesion')sesion=null;else palancaCopilotoApagada.mockResolvedValue(true);
+ const p=peticionStream('https://app.likida.ai/api/admin/copiloto','{}');
+ expect((await POST(p.req)).status).toBe(motivo==='sin sesion'?401:503);
+ expect(p.estado().leidos).toBe(0);expect(rateLimit).not.toHaveBeenCalled();
 });

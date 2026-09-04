@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // ═══════════════════════════════════════════════════════════════════════════
 // CORRER EL OCR REAL CONTRA EL BANCO — /api/admin/qa/fotos/ocr (POST).
 //
@@ -94,11 +95,14 @@ export async function POST(req: Request) {
   const { error: puerta, sesion } = await sesionSuperadmin();
   if (puerta) return puerta;
 
-  const crudo = await req.text();
-  if (crudo.length > MAX_BODY) return NextResponse.json({ error: 'payload muy grande' }, { status: 413 });
-  let body: unknown;
+  const lecturaCuerpo = await leerTextoAcotado(req, MAX_BODY);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let body: Record<string, unknown>;
   try {
-    body = JSON.parse(crudo);
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    body = valor as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
   }

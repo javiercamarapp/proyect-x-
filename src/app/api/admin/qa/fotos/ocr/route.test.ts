@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { FotoBanco, VerdadTerreno } from '@/lib/admin/qa-tipos';
 import type { RespuestaOcrBanco } from '@/lib/admin/qa-verdad';
@@ -329,4 +330,17 @@ describe('EL RELOJ — nada de cortes mudos', () => {
     expect(d.resultados).toHaveLength(3);
     expect(d.resumen.medidos).toBe(21);
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/qa/fotos/ocr',JSON.stringify({...{fotoIds:[ID_A]},ignorado:'x'.repeat(20000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(extraerComprobante).not.toHaveBeenCalled();expect(guardarLectura).not.toHaveBeenCalled();
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/qa/fotos/ocr',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(extraerComprobante).not.toHaveBeenCalled();expect(guardarLectura).not.toHaveBeenCalled();
+ });
 });
