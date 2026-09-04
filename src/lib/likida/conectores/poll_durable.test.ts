@@ -8,7 +8,7 @@ const estado = vi.hoisted(() => ({
   llamadas: [] as Array<{ nombre: string; args: Record<string, unknown> }>,
 }));
 
-const rpc = vi.hoisted(() => vi.fn(async (nombre: string, args: Record<string, unknown>) => {
+const rpc = vi.hoisted(() => vi.fn(async (nombre: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }> => {
   estado.llamadas.push({ nombre, args });
   if (nombre === 'reclamar_polls_conector') {
     return {
@@ -99,5 +99,27 @@ describe('estado durable del poll GPS/eventos', () => {
       p_tail_watermark_en: '2026-09-03T12:00:00.000Z',
       p_invalidos: 3,
     });
+  });
+});
+
+describe('frontera de persistencia del poll', () => {
+  it('no convierte una respuesta de claim inválida ni un error SQL en cola vacía', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(reclamarPolls('eventos', ['samsara'])).rejects.toThrow('respuesta inválida');
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'sin permisos' } });
+    await expect(reclamarPolls('posiciones', ['samsara'])).rejects.toThrow('posiciones.claims: sin permisos');
+  });
+
+  it('preserva tenant, proveedor y fencing al finalizar y recorta sólo el diagnóstico', async () => {
+    estado.token = 'claim-frontera';
+    const [claim] = await reclamarPolls('eventos', ['samsara'], 17);
+    await finalizarPoll('eventos', claim, { completo: false, error: 'x'.repeat(1200) });
+    expect(rpc).toHaveBeenLastCalledWith('finalizar_poll_conector', expect.objectContaining({
+      p_tenant: 't-1', p_proveedor: 'samsara', p_recurso: 'eventos',
+      p_claim_token: 'claim-frontera', p_error: 'x'.repeat(1000),
+    }));
+    expect(rpc).toHaveBeenCalledWith('reclamar_polls_conector', expect.objectContaining({
+      p_limite: 17, p_lease_segundos: 360, p_worker: expect.any(String),
+    }));
   });
 });

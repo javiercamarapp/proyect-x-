@@ -445,6 +445,22 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
     expect(doubles.postLocal).toHaveBeenCalledTimes(1);
     expect(JSON.parse(await (doubles.postLocal.mock.calls[0][0] as Request).text()).triggerEvent)
       .toBe('BOOKING_CREATED');
+
+    // Cero o varias coincidencias deben llegar al ledger: nunca elegir la
+    // primera de dos filas arbitrarias para omitir el evento de presencia.
+    for (const prospectos of [[], [
+      { id: 'p-a', estado: 'appointment', calcom_booking_id: 'uid:A' },
+      { id: 'p-b', estado: 'appointment', calcom_booking_id: 'uid:A' },
+    ]]) {
+      doubles.prospectos = prospectos;
+      doubles.postLocal.mockClear();
+      await ejecutarMantenimientoCalcom({
+        config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom', venceEn: Date.now() + 30_000,
+      });
+      expect(doubles.postLocal).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(await (doubles.postLocal.mock.calls[1][0] as Request).text()).triggerEvent)
+        .toBe('BOOKING_NO_SHOW_UPDATED');
+    }
   });
 
   it.each([

@@ -474,6 +474,8 @@ async function entregarEventoCalcomLocal(
   if (meta?.soloSiNoShowVigente) {
     const { correo, aliases } = datosReservaEvento(evento);
     if (!correo || aliases.length === 0) return;
+    // CRM global de LIKIDA (0105): el prospecto aún no pertenece a una flota.
+    // orden-no-importa: limit(2) distingue cero, una o varias coincidencias; sólo se inspecciona la fila cuando es única.
     const { data, error } = await supabaseAdmin().from('prospecto')
       .select('id,estado,calcom_booking_id,calcom_booking_aliases')
       .eq('correo_normalizado', correo).is('duplicado_de', null).limit(2);

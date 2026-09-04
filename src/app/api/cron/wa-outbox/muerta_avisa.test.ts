@@ -18,7 +18,8 @@ vi.mock('@/lib/admin/salud', () => ({
 
 const reclamarSalidasWhatsApp = vi.fn();
 const finalizarSalidaWhatsApp = vi.fn();
-vi.mock('@/lib/likida/wa_outbox', () => ({
+vi.mock('@/lib/likida/wa_outbox', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/likida/wa_outbox')>(),
   reclamarSalidasWhatsApp: () => reclamarSalidasWhatsApp(),
   finalizarSalidaWhatsApp: (s: unknown, messageId?: string, error?: string) => finalizarSalidaWhatsApp(s, messageId, error),
 }));

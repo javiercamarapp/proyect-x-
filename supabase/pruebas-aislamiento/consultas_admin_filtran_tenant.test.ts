@@ -291,6 +291,18 @@ const ALLOWLIST: Record<string, string> = {
   'src/lib/saas/transferencia.ts': '`conciliar`/`timbrarFactura` tocan `factura_saas` — la facturación de LIKIDA a sus clientes, no un dato de flota — y su ÚNICO llamador es `/admin/costos-facturacion` (confirmado por grep en todo `src/app`), gateado por `requireSuperadmin()` en `admin/layout.tsx`. `/dashboard` (cliente) no las importa.',
 };
 
+// Exención por cadena exacta: no libera otras consultas del módulo Cal.com.
+const CALCOM_LOOKUP = ".from('prospecto').select('id,estado,calcom_booking_id,calcom_booking_aliases').eq('correo_normalizado', correo).is('duplicado_de', null).limit(2)";
+const EXENCIONES_CONSULTA = [{
+  archivo: 'src/lib/admin/calcom.ts', tabla: 'prospecto', cadena: CALCOM_LOOKUP,
+  razon: 'CRM global de LIKIDA (0105): tenant_id sólo existe al cerrar. Este SELECT por correo canónico y no duplicado decide 0/1/>1 para reconciliar no-show; la entrada productiva es cron/escalar tras puertaCron y la entrega usa el webhook firmado. No exime escrituras ni otras tablas o consultas.',
+}];
+function consultaExenta(archivo: string, tabla: string, cadena: string): boolean {
+  const normalizar = (s: string) => s.replace(/\s+/g, '');
+  return EXENCIONES_CONSULTA.some((e) => e.archivo === archivo && e.tabla === tabla
+    && normalizar(e.cadena) === normalizar(cadena));
+}
+
 const tenantTablas = tablasConTenantId();
 const archivosLib = [
   ...fuentesDeProduccion(DIR_LIB),
@@ -321,6 +333,7 @@ for (const archivo of archivosLib) {
       if (/tenant_id/.test(ampliada)) continue;
     }
 
+    if (consultaExenta(archivo, tabla, ventana)) continue;
     if (ALLOWLIST[archivo]) continue; // exento a nivel de archivo, con su razón
 
     hallazgos.push({ archivo, tabla, contexto: ventana.slice(0, 140).replace(/\s+/g, ' ') });
@@ -346,5 +359,29 @@ describe('capa 2 · toda consulta con supabaseAdmin contra una tabla con tenant_
         `\n\nSi es un olvido real del filtro: agrégalo. Si es a propósito (como ` +
         `\`lib/admin/negocio.ts\`): añade el archivo al ALLOWLIST de este archivo, con la razón.`,
     ).toEqual([]);
+  });
+});
+
+describe('exención estrecha del lookup CRM de Cal.com', () => {
+  it('autoriza sólo la consulta revisada, no todo el archivo ni la tabla', () => {
+    const archivo = 'src/lib/admin/calcom.ts';
+    expect(ALLOWLIST[archivo]).toBeUndefined();
+    expect(EXENCIONES_CONSULTA[0].razon.length).toBeGreaterThan(100);
+    expect(consultaExenta(archivo, 'prospecto', CALCOM_LOOKUP)).toBe(true);
+    expect(consultaExenta(archivo, 'viaje', CALCOM_LOOKUP)).toBe(false);
+    expect(consultaExenta('src/lib/admin/otro.ts', 'prospecto', CALCOM_LOOKUP)).toBe(false);
+    expect(consultaExenta(archivo, 'prospecto', CALCOM_LOOKUP.replace(".eq('correo_normalizado', correo)", ''))).toBe(false);
+    expect(consultaExenta(archivo, 'prospecto', ".from('prospecto').update({estado:'cerrado'}).eq('id', id)")).toBe(false);
+  });
+
+  it('la exención coincide con una consulta real y el cron exige su puerta antes del mantenimiento', () => {
+    const fuente = sinComentarios(readFileSync('src/lib/admin/calcom.ts', 'utf8'));
+    const exentas = llamadasFrom(fuente).filter(({ tabla, desde }) =>
+      consultaExenta('src/lib/admin/calcom.ts', tabla, ventanaDeCadena(fuente, desde)));
+    expect(exentas).toHaveLength(1);
+    const cron = sinComentarios(readFileSync('src/app/api/cron/escalar/route.ts', 'utf8'));
+    expect(cron).toMatch(/await puertaCron\('escalar'/);
+    expect(cron.indexOf('if (puerta) return puerta')).toBeGreaterThan(-1);
+    expect(cron.indexOf('if (puerta) return puerta')).toBeLessThan(cron.indexOf('await ejecutarMantenimientoCalcom('));
   });
 });

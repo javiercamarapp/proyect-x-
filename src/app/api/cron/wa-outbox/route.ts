@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { puertaCron, registrarLatido } from '@/lib/admin/salud';
-import { reclamarSalidasWhatsApp, finalizarSalidaWhatsApp } from '@/lib/likida/wa_outbox';
+import { reclamarSalidasWhatsApp, finalizarSalidaWhatsApp, reconciliarReceiptsWhatsApp, purgarReceiptsWhatsApp } from '@/lib/likida/wa_outbox';
 import { conPool } from '@/lib/likida/lotes';
 import { leerInterruptor } from '@/lib/likida/interruptores';
 import { logger } from '@/lib/logger';
 import { alertarOperador } from '@/lib/observability/alerta';
-import { supabaseAdmin } from '@/lib/supabase/admin';
 import { esReintentableMeta } from '@/lib/meta/client';
 
 export const runtime = 'nodejs';
@@ -110,30 +109,14 @@ export async function GET(req: Request) {
   try {
     const fallosBackstop: string[] = [];
     try {
-      const reconciliacion = await supabaseAdmin().rpc('reconciliar_wa_meta_receipts', { p_limite: 100 });
-      if (reconciliacion.error) {
-        const detalle = `reconciliacion: ${reconciliacion.error.message}`;
-        fallosBackstop.push(detalle);
-        logger.warn('wa.receipts.reconciliacion_fallo', { error: reconciliacion.error.message });
-      } else if (!Number.isInteger(reconciliacion.data) || reconciliacion.data < 0) {
-        fallosBackstop.push('reconciliacion: respuesta inválida');
-        logger.warn('wa.receipts.reconciliacion_fallo', { error: 'respuesta inválida' });
-      }
+      await reconciliarReceiptsWhatsApp();
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       fallosBackstop.push(`reconciliacion: ${error}`);
       logger.warn('wa.receipts.reconciliacion_fallo', { error });
     }
     try {
-      const purga = await supabaseAdmin().rpc('purgar_wa_meta_receipts', { p_limite: 100 });
-      if (purga.error) {
-        const detalle = `purga: ${purga.error.message}`;
-        fallosBackstop.push(detalle);
-        logger.warn('wa.receipts.purga_fallo', { error: purga.error.message });
-      } else if (!Number.isInteger(purga.data) || purga.data < 0) {
-        fallosBackstop.push('purga: respuesta inválida');
-        logger.warn('wa.receipts.purga_fallo', { error: 'respuesta inválida' });
-      }
+      await purgarReceiptsWhatsApp();
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       fallosBackstop.push(`purga: ${error}`);

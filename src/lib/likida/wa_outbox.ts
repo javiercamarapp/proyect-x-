@@ -153,3 +153,23 @@ export async function finalizarSalidaWhatsApp(s: SalidaOutbox, messageId?: strin
   }
   return { ok: true, muerta: fila.muerta === true };
 }
+
+/** Los receipts pertenecen al outbox: una respuesta inválida jamás equivale
+ * a cero trabajo. El cron conserva la observabilidad y decide si continuar. */
+async function mantenerReceiptsWhatsApp(
+  operacion: 'reconciliar_wa_meta_receipts' | 'purgar_wa_meta_receipts',
+  limite: number,
+): Promise<number> {
+  const { data, error } = await acotada(supabaseAdmin().rpc(operacion, { p_limite: limite }), operacion);
+  if (error) throw new Error(error.message);
+  if (!Number.isInteger(data) || data < 0) throw new Error('respuesta inválida');
+  return data;
+}
+
+export function reconciliarReceiptsWhatsApp(limite = 100): Promise<number> {
+  return mantenerReceiptsWhatsApp('reconciliar_wa_meta_receipts', limite);
+}
+
+export function purgarReceiptsWhatsApp(limite = 100): Promise<number> {
+  return mantenerReceiptsWhatsApp('purgar_wa_meta_receipts', limite);
+}

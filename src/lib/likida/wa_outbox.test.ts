@@ -16,7 +16,7 @@ vi.mock('@/lib/logger', () => ({ logger: { error: loggerError } }));
 
 const {
   finalizarSalidaWhatsApp, encolarSalidaWhatsApp, encolarSalidaWhatsAppDedupe,
-  reclamarSalidasWhatsApp,
+  reclamarSalidasWhatsApp, reconciliarReceiptsWhatsApp, purgarReceiptsWhatsApp,
   WA_OUTBOX_LEASE_SECONDS, RETRASO_AMBIGUO_SEGUNDOS,
 } = await import('./wa_outbox');
 
@@ -219,5 +219,23 @@ describe('finalizarSalidaWhatsApp lee el contrato de tabla de la 0189', () => {
 
     rpc.mockResolvedValue({ data: [], error: null });
     expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: false, muerta: false });
+  });
+});
+
+describe('mantenimiento de receipts conserva el contrato escalar de PostgreSQL', () => {
+  beforeEach(() => rpc.mockReset());
+  it.each([
+    ['reconciliar_wa_meta_receipts', reconciliarReceiptsWhatsApp],
+    ['purgar_wa_meta_receipts', purgarReceiptsWhatsApp],
+  ] as const)('%s pasa el lote y rechaza errores o conteos inválidos', async (nombre, ejecutar) => {
+    rpc.mockResolvedValue({ data: 7, error: null });
+    await expect(ejecutar(40)).resolves.toBe(7);
+    expect(rpc).toHaveBeenLastCalledWith(nombre, { p_limite: 40 });
+    for (const data of [null, -1, 1.5, '7', {}, []]) {
+      rpc.mockResolvedValue({ data, error: null });
+      await expect(ejecutar()).rejects.toThrow('respuesta inválida');
+    }
+    rpc.mockResolvedValue({ data: 0, error: { message: 'denegado' } });
+    await expect(ejecutar()).rejects.toThrow('denegado');
   });
 });
