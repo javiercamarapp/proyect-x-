@@ -166,17 +166,18 @@ jobs:
           done
           echo "$n migraciones aplicadas limpias."
 
-      # Los tres contratos de 0332 ya vivían en el repo pero no en CI. Corren
-      # aquí, sobre la misma base efímera y dentro del mismo job: cero workflow
-      # o ejecución adicional. Los SQL hacen rollback; el script de dos
-      # sesiones limpia sus tenants al salir.
-      - name: DB retención 0332 — exactitud, 0104 y concurrencia
+      # Contratos acumulados de retención 0332/0335/0338. Corren sobre la misma
+      # base efímera y dentro del mismo job: cero workflow o ejecución adicional.
+      # Los SQL hacen rollback; los scripts de dos sesiones limpian sus tenants.
+      - name: DB retención — exactitud, deadlines, locks y concurrencia
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0330_db_producto_uso_red.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0330_db_retencion_0104_red.sql
           PGUSER=postgres bash supabase/tests/0332_db_retencion_concurrencia.sh localhost 5432 postgres
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0335_db_retencion_r3_red.sql
           PGUSER=postgres bash supabase/tests/0335_db_retencion_r3_concurrencia.sh localhost 5432 postgres
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0338_db_retencion_r5_red.sql
+          PGUSER=postgres bash supabase/tests/0338_db_retencion_r5_concurrencia.sh localhost 5432 postgres
 
       # ── Capa 0: contratos de leases/fencing en Postgres real ───────────
       # Este archivo no es informativo: pg_prove interpreta el TAP y falla

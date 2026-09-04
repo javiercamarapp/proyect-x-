@@ -129,6 +129,7 @@ ni un Supabase local disponible.
 3. Repite `npm ci`, auditoría runtime, typecheck, lint ratchet, resiliencia,
    cobertura y build antes de obtener credenciales de despliegue.
 4. En el environment `staging`, enlaza el proyecto de staging y ejecuta
+   el preflight de índices concurrentes de 0332 antes de
    `supabase db push --dry-run`; cualquier secreto ausente o drift falla cerrado.
 5. Solo después crea una Preview prebuilt y ejecuta el smoke público sobre su
    URL exacta.
@@ -139,9 +140,21 @@ ni un Supabase local disponible.
 
 Configurar los environments `staging`, `preview` y `production` con reviewers
 y secretos de mínimo alcance. Staging requiere `SUPABASE_ACCESS_TOKEN`,
-`SUPABASE_DB_PASSWORD` y `SUPABASE_PROJECT_REF_STAGING`; producción usa los dos
-primeros y `SUPABASE_PROJECT_REF_PRODUCTION`; Preview requiere `VERCEL_TOKEN`,
-`VERCEL_ORG_ID` y `VERCEL_PROJECT_ID`. Sin ellos no se simula éxito. Nunca usar
+`SUPABASE_DB_PASSWORD`, `SUPABASE_PROJECT_REF_STAGING` y
+`SUPABASE_DB_URL_STAGING`; producción usa los dos primeros,
+`SUPABASE_PROJECT_REF_PRODUCTION` y `SUPABASE_DB_URL_PRODUCTION`. Las dos URL
+directas son obligatorias desde 0332: permiten a `psql` crear/verificar los
+índices con `CONCURRENTLY` antes de que `supabase db push` abra sus migraciones.
+No se derivan ni se imprimen desde la contraseña. Verificar sólo sus nombres,
+sin revelar valores, antes de promover:
+
+```bash
+gh secret list --repo javiercamarapp/proyect-x- --env staging
+gh secret list --repo javiercamarapp/proyect-x- --env production
+```
+
+Preview requiere `VERCEL_TOKEN`, `VERCEL_ORG_ID` y `VERCEL_PROJECT_ID`. Sin
+ellos no se simula éxito. Nunca usar
 el ref móvil `master` para una promoción: pegar el SHA ya revisado del PR.
 
 ## Rollback
