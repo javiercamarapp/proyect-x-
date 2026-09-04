@@ -602,10 +602,30 @@ $$;
 -- Snapshot durable de la versión que realmente se confirmó. Tras purgar la
 -- cola, la auditoría de una corrección debe conservar exactamente previous y
 -- new; no basta con un texto genérico o con reconstruir sólo el hash nuevo.
-create temporary table audit_historico_versiones_0325 as
-select operador_id, processed_version as previous_input_version
-  from public.jornada_derivacion_trabajo
- where tenant_id='32500000-0000-4000-8000-000000000090';
+create temporary table audit_historico_versiones_0325(
+  operador_id uuid not null,
+  previous_input_version text
+);
+do $$
+begin
+  -- Desde 0331 la fuente durable vive en jornada_dia. Mantener el fallback
+  -- permite que esta misma suite siga validando 0325 de forma aislada.
+  if exists (
+    select 1 from pg_attribute where attrelid='public.jornada_dia'::regclass
+      and attname='input_version' and not attisdropped
+  ) then
+    execute $sql$
+      insert into audit_historico_versiones_0325
+      select operador_id,input_version from public.jornada_dia
+       where tenant_id='32500000-0000-4000-8000-000000000090'
+    $sql$;
+  else
+    insert into audit_historico_versiones_0325
+    select operador_id,processed_version from public.jornada_derivacion_trabajo
+     where tenant_id='32500000-0000-4000-8000-000000000090';
+  end if;
+end;
+$$;
 
 -- Cerrar y obtener conformidad es estado VIVO, no permiso para presentar una
 -- versión vieja tras cambiar la evidencia. La invalidación debe conservar el
