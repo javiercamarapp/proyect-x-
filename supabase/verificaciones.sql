@@ -116,6 +116,143 @@ begin
   raise exception E'MUTEX  1er=%  concurrente=%  tras-unlock=%   (esperado t / f / t)', l1, l2, l3;
 end $$;
 
+-- ── 261. Jornada versionada: GPS tardío amplía sin pisar declaración (mig. 0319) ──
+-- Esperado: JORNADA_VERSION_0319 reabre=t actualiza=t historial=t manual=t
+do $$
+declare
+  ta uuid := gen_random_uuid(); op uuid := gen_random_uuid(); opm uuid := gen_random_uuid();
+  u uuid := gen_random_uuid(); vi uuid := gen_random_uuid(); jd uuid := gen_random_uuid();
+  jdm uuid := gen_random_uuid(); c1 uuid; c2 uuid; ver1 text; ver2 text;
+  r1 text; r2 text; rm1 text; rm2 text;
+  reabre boolean; actualiza boolean; historial boolean; manual boolean;
+begin
+  insert into public.tenant(id,nombre) values(ta,'ZZZ JORNADA VERSION 0319');
+  insert into public.operador(id,tenant_id,nombre,telefono) values
+    (op,ta,'Operador derivado 0319','529993703191'),
+    (opm,ta,'Operador manual 0319','529993703192');
+  insert into public.unidad(id,tenant_id,numero_economico) values(u,ta,'VER-0319');
+  insert into public.viaje(id,tenant_id,operador_id,unidad_id,avisado_en,aceptado_en)
+    values(vi,ta,op,u,'2026-09-02 07:59-06','2026-09-02 08:00-06');
+  insert into public.posicion(tenant_id,unidad_id,lat,lng,medida_en,proveedor) values
+    (ta,u,20,-89,'2026-09-02 07:00-06','verif-0319'),
+    (ta,u,20,-89,'2026-09-02 16:00-06','verif-0319');
+  insert into public.jornada_dia(id,tenant_id,operador_id,dia) values
+    (jd,ta,op,'2026-09-02'),(jdm,ta,opm,'2026-09-02');
+
+  select claim_token,input_version into c1,ver1
+    from public.reclamar_jornadas_por_derivar(
+      '2026-09-02 00:00-06','2026-09-02 23:59:59-06',1,'verif-0319-a',30
+    ) where operador_id=op;
+  r1 := public.asentar_extremo_jornada_derivado(
+    jd,ta,'fin_jornada','2026-09-02 16:00-06','gps','gps:0319:16',vi,u,'{}'
+  );
+  perform public.finalizar_jornada_derivacion(c1,'verif-0319-a',true,null,3600);
+
+  insert into public.posicion(tenant_id,unidad_id,lat,lng,medida_en,proveedor)
+    values(ta,u,20,-89,'2026-09-02 23:00-06','verif-0319');
+  select claim_token,input_version into c2,ver2
+    from public.reclamar_jornadas_por_derivar(
+      '2026-09-02 00:00-06','2026-09-02 23:59:59-06',1,'verif-0319-b',30
+    ) where operador_id=op;
+  reabre := c2 is not null and ver2 is distinct from ver1;
+  r2 := public.asentar_extremo_jornada_derivado(
+    jd,ta,'fin_jornada','2026-09-02 23:00-06','gps','gps:0319:23',vi,u,'{}'
+  );
+  actualiza := r1='asentado' and r2='actualizado' and exists(
+    select 1 from public.jornada_asiento
+     where jornada_id=jd and tipo='fin_jornada' and momento='2026-09-02 23:00-06'
+       and anulado_en is null
+  );
+  historial := exists(
+    select 1 from public.jornada_asiento nuevo
+    join public.jornada_asiento viejo on viejo.id=nuevo.corrige_a
+    where nuevo.jornada_id=jd and nuevo.momento='2026-09-02 23:00-06'
+      and viejo.momento='2026-09-02 16:00-06' and viejo.anulado_en is not null
+  );
+
+  insert into public.jornada_asiento(
+    tenant_id,jornada_id,tipo,momento,procedencia,wa_message_id
+  ) values
+    (ta,jdm,'inicio_jornada','2026-09-02 08:00-06','declarado_operador','wamid.verif.0319.i'),
+    (ta,jdm,'fin_jornada','2026-09-02 18:00-06','declarado_operador','wamid.verif.0319.f');
+  rm1 := public.asentar_extremo_jornada_derivado(
+    jdm,ta,'inicio_jornada','2026-09-02 06:00-06','gps','gps:0319:manual:i',null,u,'{}'
+  );
+  rm2 := public.asentar_extremo_jornada_derivado(
+    jdm,ta,'fin_jornada','2026-09-02 23:00-06','gps','gps:0319:manual:f',null,u,'{}'
+  );
+  manual := rm1='ya_estaba' and rm2='ya_estaba' and (
+    select count(*)=2 from public.jornada_asiento
+     where jornada_id=jdm and procedencia='declarado_operador' and anulado_en is null
+  );
+
+  raise exception E'JORNADA_VERSION_0319 reabre=% actualiza=% historial=% manual=%   (esperado t / t / t / t)',
+    reabre, actualiza, historial, manual;
+end $$;
+
+-- ── 262. Fairness 5 tenants/5,000 trabajos y fence WA vencido (mig. 0319) ──
+-- Esperado: CAPACIDAD_0319 cinco-mil=5000 min=80 max=80 primeros-min=2
+-- primeros-max=2 solapes=0 stale-wa=f permisos=t
+do $$
+declare
+  i int; stale_id uuid; stale_ok boolean; permisos boolean;
+  cinco_mil int; minimo int; maximo int; primeros_min int; primeros_max int; solapes int;
+begin
+  create temporary table verif_0319_tenant(id uuid primary key,n int) on commit drop;
+  insert into verif_0319_tenant
+    select gen_random_uuid(),g from generate_series(1,5) g;
+  insert into public.tenant(id,nombre)
+    select id,'ZZZ FAIR 0319-'||n from verif_0319_tenant;
+
+  create temporary table verif_0319_op(id uuid primary key,tenant_id uuid,tn int,n int) on commit drop;
+  insert into verif_0319_op
+    select gen_random_uuid(),t.id,t.n,g
+      from verif_0319_tenant t cross join generate_series(1,1000) g;
+  insert into public.operador(id,tenant_id,nombre,telefono)
+    select id,tenant_id,'OP-'||n,'58'||tn||lpad(n::text,9,'0') from verif_0319_op;
+  insert into public.viaje(id,tenant_id,operador_id,estatus,avisado_en,aceptado_en)
+    select gen_random_uuid(),tenant_id,id,'abierto','2026-09-02 07:59-06','2026-09-02 08:00-06'
+      from verif_0319_op;
+
+  create temporary table verif_0319_a on commit drop as
+    select r.* from public.reclamar_jornadas_por_derivar(
+      '2026-09-02 00:00-06','2026-09-02 23:59:59-06',400,'fair-0319-a',300
+    ) with ordinality as r(
+      id,tenant_id,operador_id,unidad_id,unidad_ids,aceptado_en,dia,
+      claim_token,input_version,intentos,hay_mas,orden
+    );
+  create temporary table verif_0319_b on commit drop as
+    select r.* from public.reclamar_jornadas_por_derivar(
+      '2026-09-02 00:00-06','2026-09-02 23:59:59-06',400,'fair-0319-b',300
+    ) with ordinality as r(
+      id,tenant_id,operador_id,unidad_id,unidad_ids,aceptado_en,dia,
+      claim_token,input_version,intentos,hay_mas,orden
+    );
+  select min(n),max(n),min(p),max(p) into minimo,maximo,primeros_min,primeros_max
+    from (
+      select tenant_id,count(*) n,count(*) filter(where orden<=10) p
+        from verif_0319_a group by tenant_id
+    ) x;
+  select count(*) into solapes from verif_0319_a a
+    join verif_0319_b b using(tenant_id,operador_id,dia);
+  select count(*) into cinco_mil from public.jornada_derivacion_trabajo
+    where tenant_id in(select id from verif_0319_tenant);
+
+  update public.wa_drenado_cadena set cadena_id=null,lease_expires_at=null where singleton;
+  stale_id := public.iniciar_cadena_wa(30);
+  update public.wa_drenado_cadena set lease_expires_at=clock_timestamp()-interval '1 second' where singleton;
+  stale_ok := public.renovar_cadena_wa(stale_id,30);
+  permisos := not has_function_privilege(
+      'anon','public.asentar_extremo_jornada_derivado(uuid,uuid,text,timestamptz,text,text,uuid,uuid,jsonb)','EXECUTE'
+    ) and not has_function_privilege(
+      'authenticated','public.asentar_extremo_jornada_derivado(uuid,uuid,text,timestamptz,text,text,uuid,uuid,jsonb)','EXECUTE'
+    ) and has_function_privilege(
+      'service_role','public.asentar_extremo_jornada_derivado(uuid,uuid,text,timestamptz,text,text,uuid,uuid,jsonb)','EXECUTE'
+    );
+
+  raise exception E'CAPACIDAD_0319 cinco-mil=% min=% max=% primeros-min=% primeros-max=% solapes=% stale-wa=% permisos=%   (esperado 5000 / 80 / 80 / 2 / 2 / 0 / f / t)',
+    cinco_mil,minimo,maximo,primeros_min,primeros_max,solapes,stale_ok,permisos;
+end $$;
 
 -- ── 2. Doble cierre (mig. 0013 + liquidacion_viaje_uidx) ────────────────────
 -- Aunque el mutex se abra (fail-open ante RPC ausente), la base tiene que
@@ -138,7 +275,6 @@ begin
   raise exception E'CIERRE  liquidaciones=%  mismo-id=%  pdf-sobrevive=%  viaje=%   (esperado 1 / t / la url / liquidado)',
     n, (id1 = id2), pdf, est;
 end $$;
-
 
 -- ── 3. Claim del acercamiento (mig. 0017) ───────────────────────────────────
 -- El segundo acercamiento no pisa el folio del primero — ese folio es el que la
@@ -218,10 +354,10 @@ begin
   join pg_namespace ns on ns.oid = p.pronamespace
   where ns.nspname = 'public' and p.proname = 'guardar_liquidacion_tx';
 
-  -- 13 desde la 0158 (DAT-02): `p_n_gastos` se sumó al final con `default
-  -- null`, y la firma de 12 se DROPEÓ en la misma migración — que es lo que
+  -- 15 desde la 0321: a los 13 de la 0158 se sumaron hash+versión con default
+  -- NULL, y la firma de 13 se DROPEÓ en la misma migración — que es lo que
   -- este bloque vigila desde la 0022.
-  raise exception E'RPC ÚNICA  firmas=%  con-n-argumentos=%   (esperado 1 / 13)', n, nargs;
+  raise exception E'RPC ÚNICA  firmas=%  con-n-argumentos=%   (esperado 1 / 15)', n, nargs;
 end $$;
 
 
@@ -17283,6 +17419,8 @@ begin
 
   raise exception E'RECHAZADA_NO_CUENTA_0307  poliza-sin-rechazada=%  poliza-con-pendiente=%  reasignar-tras-rechazo=%  reasignar-tras-aprobada-rebota=%   (esperado t / t / t / t)',
     poliza_sin_rechazada, poliza_con_pendiente, reasignar_tras_rechazo, reasignar_tras_aprobada_rebota;
+end $$;
+
 -- ── 253. El upsert del webhook de Stripe contra `factura_saas` YA NO revienta con 42P10 (mig. 0309) ──
 --
 -- AUDITORÍA 25, DATOS-A2 (ALTO). `factura_saas_stripe_unica` nació PARCIAL
@@ -17409,6 +17547,8 @@ begin
 
   raise exception E'TENANT_PERFIL_MERGE_REVOKE_0312  anon=%  authenticated=%   (esperado f / f)',
     anon_ok, authenticated_ok;
+end $$;
+
 -- ── 256. `viaje` y `cfdi_consolidado_linea` entran al dominio de ve_finanzas() (mig. 0314) ──
 --
 -- AUDITORÍA 25, SEGURIDAD (ALTO, línea 88). El jefe de tráfico (`encargado`)
@@ -17466,4 +17606,260 @@ begin
   service_role_puede := has_function_privilege('service_role', 'public.tenant_perfil_merge(uuid,jsonb,uuid)', 'EXECUTE');
   raise exception E'GRANT_TENANT_PERFIL_MERGE_0315  anon-ejecuta=%  authenticated-ejecuta=%  service-role-ejecuta=%   (esperado false / false / true)',
     anon_puede, authenticated_puede, service_role_puede;
+end $$;
+
+-- ── 258. Un superadmin inactivo no conserva PII ni siquiera con JWT vivo (mig. 0320) ──
+-- Esperado: RLS_INACTIVO_PROSPECTO_0320 activo-ve-pii=1 inactivo-ve-pii=0 inactivo-ve-self=0
+do $$
+declare
+  u_activo uuid := gen_random_uuid();
+  u_baja uuid := gen_random_uuid();
+  p uuid;
+  activo_ve_pii int;
+  inactivo_ve_pii int;
+  inactivo_ve_self int;
+begin
+  insert into public.app_user (id, email, nombre, rol)
+    values (u_activo, 'activo-0320@verif.local', 'Activo 0320', 'superadmin');
+  insert into public.app_user (id, email, nombre, rol, activo, desactivado_en, desactivado_por)
+    values (u_baja, 'baja-0320@verif.local', 'Baja 0320', 'superadmin', false, now(), u_activo);
+  insert into public.prospecto (empresa) values ('ZZZ VERIF PII 0320') returning id into p;
+  insert into public.prospecto_persona (prospecto_id, nombre, correo, origen, confianza)
+    values (p, 'Persona 0320', 'persona-0320@example.invalid', 'sitio_empresa', 'alta');
+
+  set local role authenticated;
+  perform set_config('request.jwt.claims', json_build_object('sub', u_activo)::text, true);
+  select count(*) into activo_ve_pii from public.prospecto_persona where prospecto_id = p;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', u_baja)::text, true);
+  select count(*) into inactivo_ve_pii from public.prospecto_persona where prospecto_id = p;
+  select count(*) into inactivo_ve_self from public.app_user where id = u_baja;
+  reset role;
+
+  raise exception E'RLS_INACTIVO_PROSPECTO_0320 activo-ve-pii=% inactivo-ve-pii=% inactivo-ve-self=%   (esperado 1 / 0 / 0)',
+    activo_ve_pii, inactivo_ve_pii, inactivo_ve_self;
+end $$;
+
+-- ── 263. Cal.com aplica ledger, orden y embudo en una sola transacción (mig. 0323) ──
+-- Esperado: CALCOM_ATOMICO_0323 aplica=t unico=t orden=t terminal=t permisos=t
+do $$
+declare
+  p uuid := gen_random_uuid();
+  base timestamptz := clock_timestamp() - interval '3 hours';
+  r record;
+  aplica boolean := false;
+  unico boolean := false;
+  orden boolean := false;
+  terminal boolean := false;
+  permisos boolean := false;
+begin
+  insert into public.prospecto(id, empresa, correo, estado)
+    values (p, 'ZZZ CALCOM ATOMICO 0323', 'calcom-0323@verif.invalid', 'contactado');
+
+  select * into r from public.aplicar_evento_calcom_tx(
+    'verif-0323-created-' || p, 'BOOKING_CREATED', 'booking-0323', p,
+    '{}'::jsonb, base, null
+  );
+  aplica := r.resultado = 'aplicado' and exists (
+    select 1 from public.prospecto
+     where id = p and estado = 'appointment' and calcom_booking_id = 'booking-0323'
+  );
+
+  select * into r from public.aplicar_evento_calcom_tx(
+    'verif-0323-created-' || p, 'BOOKING_CREATED', 'booking-0323', p,
+    '{}'::jsonb, base, null
+  );
+  unico := r.resultado = 'repetido' and 1 = (
+    select count(*) from public.comercial_evento
+     where clave_idempotencia = 'verif-0323-created-' || p
+  );
+
+  perform public.aplicar_evento_calcom_tx(
+    'verif-0323-cancel-' || p, 'BOOKING_CANCELLED', 'booking-0323', p,
+    '{}'::jsonb, base + interval '2 hours', null
+  );
+  select * into r from public.aplicar_evento_calcom_tx(
+    'verif-0323-late-' || p, 'BOOKING_CREATED', 'booking-0323', p,
+    '{}'::jsonb, base + interval '1 hour', null
+  );
+  orden := r.resultado = 'ignorado' and exists (
+    select 1 from public.prospecto where id = p and estado = 'cancelled'
+  );
+
+  update public.prospecto set estado = 'won', cerrado_en = clock_timestamp() where id = p;
+  select * into r from public.aplicar_evento_calcom_tx(
+    'verif-0323-terminal-' || p, 'BOOKING_RESCHEDULED', 'booking-0323-b', p,
+    '{}'::jsonb, clock_timestamp(), 'booking-0323'
+  );
+  terminal := r.resultado = 'ignorado' and exists (
+    select 1 from public.prospecto where id = p and estado = 'won'
+  );
+
+  select proc.prosecdef
+      and coalesce(array_to_string(proc.proconfig, ','), '') like '%search_path=""%'
+      and not has_function_privilege('anon', proc.oid, 'execute')
+      and not has_function_privilege('authenticated', proc.oid, 'execute')
+      and has_function_privilege('service_role', proc.oid, 'execute')
+    into permisos
+    from pg_proc proc
+   where proc.oid = 'public.aplicar_evento_calcom_tx(text,text,text,uuid,jsonb,timestamptz,text)'::regprocedure;
+
+  raise exception E'CALCOM_ATOMICO_0323 aplica=% unico=% orden=% terminal=% permisos=%   (esperado t / t / t / t / t)',
+    aplica, unico, orden, terminal, permisos;
+end $$;
+
+-- ── 259. Snapshot de cierre: mismo conteo ya no oculta cambios fiscales (mig. 0321) ──
+--
+-- Toma un snapshot con UN gasto y conserva exactamente una fila mientras
+-- cambia, por separado, monto, IVA y UUID; después prueba DELETE+INSERT con el
+-- mismo conteo. Las cuatro llamadas deben abortar con CU006/snapshot_changed.
+-- Finalmente toma el hash vigente y el cierre feliz debe guardar ese mismo
+-- sello v1. Todo el DO termina con RAISE, así que no deja datos de verificación.
+-- Esperado: CIERRE_SNAPSHOT_0321 monto=t iva=t uuid=t reemplazo=t feliz=t sello=t
+do $$
+declare
+  ta uuid := gen_random_uuid();
+  op uuid := gen_random_uuid();
+  vi uuid := gen_random_uuid();
+  ga uuid := gen_random_uuid();
+  gb uuid := gen_random_uuid();
+  h text;
+  li uuid;
+  monto_bloqueado boolean := false;
+  iva_bloqueado boolean := false;
+  uuid_bloqueado boolean := false;
+  reemplazo_bloqueado boolean := false;
+  feliz boolean := false;
+  sello boolean := false;
+begin
+  insert into public.tenant (id, nombre, rfc, config, perfil)
+    values (ta, 'ZZZ VERIF SNAPSHOT 0321', 'EKU9003173C9', '{}', '{}');
+  insert into public.operador (id, tenant_id, nombre, telefono, rfc)
+    values (op, ta, 'Operador 0321', '529993703217', 'EKU9003173C9');
+  insert into public.viaje (id, tenant_id, operador_id, folio, anticipo, fecha_inicio)
+    values (vi, ta, op, 'ZZZ-0321', 1000, date '2026-09-03');
+  insert into public.gasto (
+    id, tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm,
+    cfdi_uuid, cfdi_orden, sub_total, iva_traslado, forma_pago
+  ) values (
+    ga, ta, vi, 'diesel', 1000, date '2026-09-03', 'A-0321', 'A-0321',
+    '11111111-1111-4111-8111-111111111111', 1, 862.07, 137.93, '04'
+  );
+
+  h := public.cierre_insumos_hash(ta, vi);
+  update public.gasto set monto = 900 where id = ga;
+  begin
+    perform public.guardar_liquidacion_tx(
+      ta, vi, 900, 1000, 100, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+    );
+  exception when sqlstate 'CU006' then monto_bloqueado := true;
+  end;
+
+  update public.gasto set monto = 1000 where id = ga;
+  h := public.cierre_insumos_hash(ta, vi);
+  update public.gasto set iva_traslado = 99 where id = ga;
+  begin
+    perform public.guardar_liquidacion_tx(
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 99, 0, null, 0, 1, h, 1
+    );
+  exception when sqlstate 'CU006' then iva_bloqueado := true;
+  end;
+
+  update public.gasto set iva_traslado = 137.93 where id = ga;
+  h := public.cierre_insumos_hash(ta, vi);
+  update public.gasto set cfdi_uuid = '22222222-2222-4222-8222-222222222222' where id = ga;
+  begin
+    perform public.guardar_liquidacion_tx(
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+    );
+  exception when sqlstate 'CU006' then uuid_bloqueado := true;
+  end;
+
+  h := public.cierre_insumos_hash(ta, vi);
+  delete from public.gasto where id = ga;
+  insert into public.gasto (
+    id, tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm,
+    cfdi_uuid, cfdi_orden, sub_total, iva_traslado, forma_pago
+  ) values (
+    gb, ta, vi, 'diesel', 1000, date '2026-09-03', 'A-0321', 'A-0321',
+    '22222222-2222-4222-8222-222222222222', 1, 862.07, 137.93, '04'
+  );
+  begin
+    perform public.guardar_liquidacion_tx(
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+    );
+  exception when sqlstate 'CU006' then reemplazo_bloqueado := true;
+  end;
+
+  h := public.cierre_insumos_hash(ta, vi);
+  li := public.guardar_liquidacion_tx(
+    ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+  );
+  select estatus = 'liquidado' into feliz from public.viaje where id = vi;
+  select insumos_hash = h and insumos_hash_version = 1 into sello
+    from public.liquidacion where id = li;
+
+  raise exception E'CIERRE_SNAPSHOT_0321 monto=% iva=% uuid=% reemplazo=% feliz=% sello=%   (esperado t / t / t / t / t / t)',
+    monto_bloqueado, iva_bloqueado, uuid_bloqueado, reemplazo_bloqueado, feliz, sello;
+end $$;
+
+-- ── 260. Huérfano OCR: registro/vínculo atómico sin secuestro (mig. 0322) ──
+-- Esperado: HUERFANO_VINCULO_0322 mismo=t vinculado=t secuestro=t permisos=t
+do $$
+declare
+  ta uuid := gen_random_uuid();
+  op1 uuid := gen_random_uuid();
+  vi1 uuid := gen_random_uuid();
+  vi2 uuid := gen_random_uuid();
+  h jsonb := jsonb_build_object('id', gen_random_uuid(), 'concepto', 'diesel', 'monto', 0, 'imgHash', repeat('a', 64));
+  id1 uuid;
+  id2 uuid;
+  mismo boolean := false;
+  vinculado boolean := false;
+  secuestro_bloqueado boolean := false;
+  permisos boolean := false;
+begin
+  insert into public.tenant (id, nombre) values (ta, 'ZZZ VERIF HUERFANO 0322');
+  insert into public.operador (id, tenant_id, nombre, telefono)
+    values (op1, ta, 'Operador 0322 A', '529993703221');
+  insert into public.viaje (id, tenant_id, operador_id, folio)
+    values (vi1, ta, op1, 'ZZZ-HU-0322-A');
+
+  id1 := public.guardar_comprobante_huerfano_tx(
+    ta, op1, h, 'fallo_ocr', 'ta/v1/a.jpg', null
+  );
+  id2 := public.guardar_comprobante_huerfano_tx(
+    ta, op1, h, 'fallo_ocr', 'ta/v1/a.jpg', vi1
+  );
+  mismo := id1 = id2;
+  select viaje_id = vi1 into vinculado
+    from public.comprobante_huerfano where id = id1;
+
+  -- El mismo operador ya terminó el viaje A y abre el B. Reenviar exactamente
+  -- la misma imagen no puede mover al B el incidente que quedó sellado en A.
+  update public.viaje set estatus = 'liquidado' where id = vi1;
+  insert into public.viaje (id, tenant_id, operador_id, folio)
+    values (vi2, ta, op1, 'ZZZ-HU-0322-B');
+  begin
+    perform public.guardar_comprobante_huerfano_tx(
+      ta, op1, h, 'fallo_ocr', 'ta/v2/a.jpg', vi2
+    );
+  exception when sqlstate 'HU001' then
+    secuestro_bloqueado := true;
+  end;
+  secuestro_bloqueado := secuestro_bloqueado and exists (
+    select 1 from public.comprobante_huerfano
+    where id = id1 and operador_id = op1 and viaje_id = vi1
+  );
+
+  permisos := not has_function_privilege(
+      'anon', 'public.guardar_comprobante_huerfano_tx(uuid,uuid,jsonb,text,text,uuid)', 'EXECUTE'
+    ) and not has_function_privilege(
+      'authenticated', 'public.guardar_comprobante_huerfano_tx(uuid,uuid,jsonb,text,text,uuid)', 'EXECUTE'
+    ) and has_function_privilege(
+      'service_role', 'public.guardar_comprobante_huerfano_tx(uuid,uuid,jsonb,text,text,uuid)', 'EXECUTE'
+    );
+
+  raise exception E'HUERFANO_VINCULO_0322 mismo=% vinculado=% secuestro=% permisos=%   (esperado t / t / t / t)',
+    mismo, vinculado, secuestro_bloqueado, permisos;
 end $$;
