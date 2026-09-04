@@ -18,6 +18,10 @@ declare
   cursor_guardado text;
   purga_id uuid;
   futuro_lejano timestamptz := clock_timestamp() + interval '180 days';
+  estado_antes text;
+  procesado_antes timestamptz;
+  error_antes text;
+  conteo_antes bigint;
 begin
   delete from public.comercial_evento where prospecto_id in (p, q)
      or clave_idempotencia like 'calcom:TEST0323:%';
@@ -74,6 +78,26 @@ begin
   if r.resultado <> 'repetido' or n <> 1 then
     raise exception 'duplicado resultado=% filas=%', r.resultado, n;
   end if;
+
+  -- Replay antiguo de una fila final: sólo es repetido, sin reabrir ni tocar
+  -- estado/procesado/error aunque el reloj durable ya haya envejecido.
+  select estado_proceso, procesado_en, error into estado_antes, procesado_antes, error_antes
+    from public.comercial_evento where clave_idempotencia='calcom:BOOKING_CREATED:B';
+  select count(*) into conteo_antes from public.comercial_evento;
+  update public.comercial_evento set ocurrido_en='2020-01-01 00:00:00+00'
+   where clave_idempotencia='calcom:BOOKING_CREATED:B';
+  select * into r from public.aplicar_evento_calcom_tx(
+    'calcom:BOOKING_CREATED:B', 'BOOKING_CREATED', 'B', p, '{}'::jsonb,
+    '2020-01-01 00:00:00+00', null
+  );
+  if r.resultado <> 'repetido' then raise exception 'replay final antiguo no repetido: %', r.resultado; end if;
+  if exists (select 1 from public.comercial_evento where clave_idempotencia='calcom:BOOKING_CREATED:B'
+    and (estado_proceso <> estado_antes or procesado_en is distinct from procesado_antes
+      or error is distinct from error_antes)) then
+    raise exception 'replay final antiguo mutó estado/procesado/error';
+  end if;
+  select count(*) into n from public.comercial_evento;
+  if n <> conteo_antes then raise exception 'replay final antiguo cambió conteo: %/%', conteo_antes, n; end if;
 
   -- El orden firmado no depende del orden de entrega: cancelar a las 12 y
   -- recibir después CREATED de las 10 conserva cancelled.

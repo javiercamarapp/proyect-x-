@@ -224,17 +224,18 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
     expect(db.filtrosEq).toContainEqual(['correo_normalizado', 'lead@landing.mx']);
   });
 
-  it('createdAt futuro se acepta tras quedar durable para el barrido propio', async () => {
-    db.rpcResultado = 'cuarentena';
+  it('createdAt futuro se rechaza sin convertirlo en deuda durable', async () => {
+    db.rpcResultado = 'ignorado';
     const cuerpo = JSON.stringify({
       triggerEvent: 'BOOKING_CREATED', bookingId: 'futuro',
       createdAt: '2099-01-01T00:00:00.000Z',
       payload: { attendees: [{ email: 'lead@landing.mx' }] },
     });
     const r = await postear(cuerpo);
-    expect(r.status).toBe(202);
+    expect(r.status).toBe(200);
     expect(r.headers.get('retry-after')).toBeNull();
     expect(db.rpcCalls[0].args.p_creado_en).toBe('2099-01-01T00:00:00.000Z');
+    expect(await r.json()).toMatchObject({ ok: true, resultado: 'ignorado' });
   });
 
   it('sin_prospecto contesta 202 porque el ledger durable tiene barrido propio', async () => {

@@ -453,11 +453,6 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z',
       attendees: [{ email: 'nuevo-aun-no-importado@cliente.test', absent: false }],
     }],
-    ['reloj futuro en cuarentena', {
-      id: 45, uid: 'FUTURO', status: 'accepted',
-      createdAt: '2099-01-01T10:00:00Z', updatedAt: '2099-01-01T10:00:00Z',
-      attendees: [{ email: 'futuro@cliente.test', absent: false }],
-    }],
   ])('un evento durable (%s) queda observable sin congelar el watermark de la fuente', async (_caso, booking) => {
     let barrido = 0;
     const orden: string[] = [];
@@ -491,6 +486,32 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       cortadasPorReloj: 1,
       ledger: { restantes: 1 },
     });
+    expect(orden).toContain('finalizar_sincronizacion_calcom');
+    expect(orden).not.toContain('pausar_sincronizacion_calcom');
+  });
+
+  it('un Booking muy futuro no crea deuda durable y la fuente finaliza', async () => {
+    const orden: string[] = [];
+    rpc.mockImplementation(async (nombre: string) => {
+      orden.push(nombre);
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        return { data: [{ revisados: 0, recuperados: 0, restantes: 0, elegibles: 0 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
+        claim_token: 'claim-futuro', desde_en: '2026-08-01T00:00:00Z',
+        ventana_hasta_en: '2026-08-02T00:00:00Z', cursor_siguiente: null,
+        debe_provisionar: false,
+      }], error: null };
+      return { data: true, error: null };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({ data: [{
+      id: 45, uid: 'FUTURO', status: 'accepted', createdAt: '2099-01-01T10:00:00Z',
+      updatedAt: '2099-01-01T10:00:00Z', attendees: [{ email: 'futuro@cliente.test', absent: false }],
+    }], pagination: { hasMore: false, nextCursor: null } })));
+    await expect(ejecutarMantenimientoCalcom({
+      config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: Date.now() + 30_000, entregar: async () => {},
+    })).resolves.toMatchObject({ completa: true, ledger: { restantes: 0 } });
     expect(orden).toContain('finalizar_sincronizacion_calcom');
     expect(orden).not.toContain('pausar_sincronizacion_calcom');
   });
