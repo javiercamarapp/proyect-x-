@@ -227,6 +227,19 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
     expect(ingest).not.toHaveBeenCalled();
   });
 
+  it.each(['2026-02-30T10:00:00Z', '2026-08-01T10:00:00', '0'])
+    ('rechaza fecha de Booking no RFC3339 real: %s', async (fecha) => {
+      const ingest = vi.fn(async () => {});
+      vi.stubGlobal('fetch', vi.fn(async () => json({
+        data: [{ id: 26, uid: 'FECHA-INVALIDA', status: 'accepted',
+          createdAt: fecha, updatedAt: '2026-08-01T11:00:00Z', attendees: [] }],
+        pagination: { hasMore: false, nextCursor: null },
+      })));
+      await expect(reconciliarReservasCalcom('2026-08-01T00:00:00Z', ingest, CONFIG))
+        .rejects.toThrow(/createdAt|reloj/i);
+      expect(ingest).not.toHaveBeenCalled();
+    });
+
   it('corta antes de cada evento sintético, conserva el cursor de la página y no cuenta el booking incompleto', async () => {
     let ahora = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => ahora);

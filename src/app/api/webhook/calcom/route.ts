@@ -42,6 +42,23 @@ function texto(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, 320) : null;
 }
 
+function instanteRFC3339(v: unknown): string | null {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(v)) return null;
+  const partes = v.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?([+-]\d{2}):(\d{2})$|^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/);
+  const year = Number(partes?.[1] ?? partes?.[9]);
+  const month = Number(partes?.[2] ?? partes?.[10]);
+  const day = Number(partes?.[3] ?? partes?.[11]);
+  const hour = Number(partes?.[4] ?? partes?.[12]);
+  const minute = Number(partes?.[5] ?? partes?.[13]);
+  const second = Number(partes?.[6] ?? partes?.[14]);
+  const offsetHour = Number(partes?.[7] ?? 0);
+  const offsetMinute = Number(partes?.[8] ?? 0);
+  if (!partes || month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+      || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) return null;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
 type IdentidadReserva = { canonica: string; aliases: string[] };
 
 function identidad(prefijo: 'uid' | 'id', valor: unknown): string | null {
@@ -110,8 +127,7 @@ function participanteDelEvento(evt: CalcomEvent, tipo: string): ParticipanteEven
 function instanteFirmado(evt: CalcomEvent): string | null {
   const valor = texto(evt.createdAt);
   if (!valor) return null;
-  const ms = Date.parse(valor);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  return instanteRFC3339(valor);
 }
 
 export async function POST(req: Request) {

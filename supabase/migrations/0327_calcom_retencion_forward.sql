@@ -1,3 +1,6 @@
+-- 0327 — Cal.com retención forward-only.
+-- Reaplica idempotentemente el contrato vigente de 0323 sobre bases con una
+-- versión anterior: elimina índice/hash legacy y redefine todas las RPC.
 -- 0323 — Cal.com: ledger recuperable, identidad de reserva y embudo en una
 -- sola transacción. Esta migración todavía no está desplegada en producción;
 -- por eso se corrige aquí, sin crear una numeración posterior.

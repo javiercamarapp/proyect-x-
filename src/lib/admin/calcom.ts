@@ -251,7 +251,7 @@ function eventosDeBooking(booking: BookingCalcom): EventoSnapshotCalcom[] {
   // reloj local, y falla cerrada si Cal.com devuelve datos incompletos.
   for (const campo of ['createdAt', 'updatedAt'] as const) {
     const valor = booking[campo];
-    if (typeof valor !== 'string' || !valor.trim() || !Number.isFinite(Date.parse(valor))) {
+    if (typeof valor !== 'string' || !fechaRFC3339(valor)) {
       throw new Error(`Cal.com booking sin ${campo} válido (reloj)`);
     }
   }
@@ -297,6 +297,17 @@ function eventosDeBooking(booking: BookingCalcom): EventoSnapshotCalcom[] {
     });
   }
   return eventos;
+}
+
+function fechaRFC3339(valor: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(valor)) return null;
+  const m = valor.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = m.slice(1).map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+      || hour > 23 || minute > 59 || second > 59) return null;
+  const ms = Date.parse(valor);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 function sinTiempo(venceEn: number | undefined): boolean {
