@@ -374,11 +374,13 @@ export async function GET(req: Request) {
     // y hay que mover la palanca (más lotes, otra cadencia, QStash). La racha se
     // lleva en el latido, que es el único estado que este cron ya persiste.
     const relojesCorte = resultado.relojes as { incidencias?: { cortadasPorReloj?: number }; vencimientos?: { cortadosPorReloj?: number } } | undefined;
+    const calcomCorte = Number((resultado.calcom as { cortadasPorReloj?: number } | undefined)?.cortadasPorReloj ?? 0);
     const cortados = Number((resultado.comprobacion as { cortadosPorReloj?: number } | undefined)?.cortadosPorReloj ?? 0)
       + Number((resultado.aceptacion as { cortadosPorReloj?: number } | undefined)?.cortadosPorReloj ?? 0)
       // BE-7: los barridos también cortan, y sus cortes cuentan en la racha.
       + Number(relojesCorte?.incidencias?.cortadasPorReloj ?? 0)
-      + Number(relojesCorte?.vencimientos?.cortadosPorReloj ?? 0);
+      + Number(relojesCorte?.vencimientos?.cortadosPorReloj ?? 0)
+      + calcomCorte;
     let cortesSeguidos = 0;
     if (cortados > 0 || corteDuro) {
       try {

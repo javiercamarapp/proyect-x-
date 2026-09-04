@@ -19,6 +19,7 @@ vi.mock('@/app/api/webhook/calcom/route', () => ({
   POST: (...a: unknown[]) => doubles.postLocal(...a),
 }));
 import {
+  calcomConfigurado,
   ejecutarMantenimientoCalcom,
   provisionarWebhookCalcom,
   reconciliarEventosCalcomPendientes,
@@ -27,8 +28,8 @@ import {
 } from './calcom';
 
 const CONFIG: CalcomConfig = {
-  apiUrl: 'https://api.cal.com', apiKey: 'cal_live_test',
-  webhookSecret: 'secreto-hmac', eventTypeId: '42',
+  apiUrl: 'https://api.cal.com', apiKey: 'cal_live_0123456789abcdefghijklmnop',
+  webhookSecret: '0123456789abcdefghijklmnopqrstuvwxyz-ABC', eventTypeId: '42',
 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'content-type': 'application/json' },
@@ -56,8 +57,8 @@ describe('provisionarWebhookCalcom — reconciliación idempotente API v2', () =
     expect(init.method).toBe('POST');
     expect(JSON.parse(String(init.body))).toEqual({
       subscriberUrl: 'https://app.likida.mx/api/webhook/calcom',
-      triggers: ['BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_CANCELLED', 'BOOKING_NO_SHOW_UPDATED'],
-      active: true, secret: 'secreto-hmac', version: '2021-10-20',
+      triggers: ['BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_REQUESTED', 'BOOKING_CANCELLED', 'BOOKING_REJECTED', 'BOOKING_NO_SHOW_UPDATED'],
+      active: true, secret: '0123456789abcdefghijklmnopqrstuvwxyz-ABC', version: '2021-10-20',
     });
   });
 
@@ -95,6 +96,17 @@ describe('provisionarWebhookCalcom — reconciliación idempotente API v2', () =
       'https://api.cal.com/v2/webhooks/wh-user',
     ]);
   });
+
+  it('rechaza secretos marcadores/débiles y orígenes/callbacks no públicos por HTTPS', async () => {
+    expect(calcomConfigurado({ ...CONFIG, apiKey: '[SENSITIVE]' })).toBe(false);
+    expect(calcomConfigurado({ ...CONFIG, webhookSecret: 'secreto-hmac' })).toBe(false);
+    expect(calcomConfigurado({ ...CONFIG, apiUrl: 'http://api.cal.com' })).toBe(false);
+    expect(calcomConfigurado({ ...CONFIG, apiUrl: 'https://127.0.0.1:3000' })).toBe(false);
+    await expect(provisionarWebhookCalcom('http://app.likida.mx/api/webhook/calcom', CONFIG))
+      .rejects.toThrow(/callback.*https|https.*callback/i);
+    await expect(provisionarWebhookCalcom('https://169.254.169.254/latest/meta-data', CONFIG))
+      .rejects.toThrow(/públic|interna|callback/i);
+  });
 });
 
 describe('reconciliarReservasCalcom — Bookings v2 real', () => {
@@ -129,14 +141,15 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
     expect(new Headers(init1.headers).get('cal-api-version')).toBe('2026-05-01');
     expect(ingest.mock.calls.map(([e]) => e.triggerEvent)).toEqual([
       'BOOKING_CREATED', 'BOOKING_NO_SHOW_UPDATED',
-      'BOOKING_RESCHEDULED', 'BOOKING_NO_SHOW_UPDATED',
-      'BOOKING_CANCELLED', 'BOOKING_NO_SHOW_UPDATED',
+      'BOOKING_CREATED', 'BOOKING_RESCHEDULED', 'BOOKING_NO_SHOW_UPDATED',
+      'BOOKING_CREATED', 'BOOKING_CANCELLED',
+      'BOOKING_CREATED', 'BOOKING_NO_SHOW_UPDATED',
     ]);
     expect(ingest.mock.calls.some(([e]) => e.triggerEvent === 'BOOKING_RECONCILED')).toBe(false);
-    expect(ingest.mock.calls[2][0]).toMatchObject({
+    expect(ingest.mock.calls[3][0]).toMatchObject({
       createdAt: '2026-08-02T10:00:00Z', payload: { uid: 'B', bookingId: 11, rescheduleUid: 'A' },
     });
-    expect(ingest.mock.calls[5][0]).toMatchObject({
+    expect(ingest.mock.calls[8][0]).toMatchObject({
       payload: { uid: 'D', attendees: [{ email: 'd@test.mx', absent: true, noShow: true }] },
     });
     expect(ingest.mock.calls[1]).toMatchObject([
@@ -149,6 +162,58 @@ describe('reconciliarReservasCalcom — Bookings v2 real', () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ data: [], pagination: { hasMore: true, nextCursor: null } })));
     await expect(reconciliarReservasCalcom('2026-08-01T00:00:00Z', async () => {}, CONFIG))
       .rejects.toThrow(/cursor/i);
+  });
+
+  it('mapea accepted/pending/cancelled/rejected sin convertir rejected en CREATED y falla cerrado ante desconocidos', async () => {
+    const entregados: Record<string, unknown>[] = [];
+    const bookings = [
+      { id: 21, uid: 'ACCEPTED', status: 'accepted', createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z', attendees: [{ email: 'a@test.mx', absent: false }] },
+      { id: 22, uid: 'PENDING', status: 'pending', createdAt: '2026-08-01T12:00:00Z', updatedAt: '2026-08-01T13:00:00Z', attendees: [{ email: 'p@test.mx', absent: false }] },
+      { id: 23, uid: 'CANCELLED', status: 'cancelled', createdAt: '2026-08-01T14:00:00Z', updatedAt: '2026-08-01T15:00:00Z', attendees: [{ email: 'c@test.mx', absent: false }] },
+      { id: 24, uid: 'REJECTED', status: 'rejected', createdAt: '2026-08-01T16:00:00Z', updatedAt: '2026-08-01T17:00:00Z', attendees: [{ email: 'r@test.mx', absent: false }] },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => json({ data: bookings, pagination: { hasMore: false, nextCursor: null } })));
+
+    await reconciliarReservasCalcom('2026-08-01T00:00:00Z', async (evento) => { entregados.push(evento); }, CONFIG);
+    const porUid = (uid: string) => entregados
+      .filter((e) => (e.payload as { uid?: string }).uid === uid)
+      .map((e) => e.triggerEvent);
+    expect(porUid('ACCEPTED')).toEqual(['BOOKING_CREATED', 'BOOKING_NO_SHOW_UPDATED']);
+    expect(porUid('PENDING')).toEqual(['BOOKING_REQUESTED']);
+    expect(porUid('CANCELLED')).toEqual(['BOOKING_CREATED', 'BOOKING_CANCELLED']);
+    expect(porUid('REJECTED')).toEqual(['BOOKING_REQUESTED', 'BOOKING_REJECTED']);
+    expect(porUid('REJECTED')).not.toContain('BOOKING_CREATED');
+
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      data: [{ ...bookings[0], uid: 'UNKNOWN', status: 'awaiting_host' }],
+      pagination: { hasMore: false, nextCursor: null },
+    })));
+    await expect(reconciliarReservasCalcom('2026-08-01T00:00:00Z', async () => {}, CONFIG))
+      .rejects.toThrow(/status.*no soportado/i);
+  });
+
+  it('corta antes de cada evento sintético, conserva el cursor de la página y no cuenta el booking incompleto', async () => {
+    let ahora = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => ahora);
+    vi.stubGlobal('fetch', vi.fn(async () => json({ data: [{
+      id: 30, uid: 'CUT', status: 'cancelled',
+      createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z',
+      attendees: [{ email: 'cut@test.mx', absent: false }],
+    }], pagination: { hasMore: false, nextCursor: null } })));
+    const ingeridos: string[] = [];
+    const guardarCursor = vi.fn(async () => {});
+    const resultado = await reconciliarReservasCalcom(
+      '2026-08-01T00:00:00Z',
+      async (evento) => {
+        ingeridos.push(String(evento.triggerEvent));
+        ahora = 900;
+      },
+      CONFIG,
+      { cursor: 'CURSOR-PAGINA', venceEn: 1_000, guardarCursor },
+    );
+    expect(ingeridos).toEqual(['BOOKING_CREATED']);
+    expect(resultado).toEqual({ configured: true, revisadas: 0, completa: false, cursor: 'CURSOR-PAGINA' });
+    expect(guardarCursor).not.toHaveBeenCalled();
   });
 });
 
@@ -205,6 +270,7 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       'reconciliar_eventos_calcom_pendientes',
       'iniciar_sincronizacion_calcom',
       'registrar_webhook_sincronizacion_calcom',
+      'reconciliar_eventos_calcom_pendientes',
       'finalizar_sincronizacion_calcom',
     ]);
     expect(entregar).toHaveBeenCalledTimes(1);
@@ -256,5 +322,67 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
     expect(doubles.postLocal).toHaveBeenCalledTimes(1);
     expect(JSON.parse(await (doubles.postLocal.mock.calls[0][0] as Request).text()).triggerEvent)
       .toBe('BOOKING_CREATED');
+  });
+
+  it('un backlog nuevo (incluido esperando_vinculo) pausa la ventana y el cron reporta corte acumulable', async () => {
+    let barrido = 0;
+    const orden: string[] = [];
+    rpc.mockImplementation(async (nombre: string) => {
+      orden.push(nombre);
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        barrido += 1;
+        return barrido === 1
+          ? { data: [{ revisados: 0, recuperados: 0, restantes: 0 }], error: null }
+          : { data: [{ revisados: 1, recuperados: 0, restantes: 1 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
+        claim_token: 'claim-backlog', desde_en: '2026-08-01T00:00:00Z',
+        ventana_hasta_en: '2026-08-02T00:00:00Z', cursor_siguiente: null,
+        debe_provisionar: false,
+      }], error: null };
+      return { data: true, error: null };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      data: [{ id: 44, uid: 'TERMINAL', status: 'cancelled', createdAt: '2026-08-01T10:00:00Z', updatedAt: '2026-08-01T11:00:00Z', attendees: [] }],
+      pagination: { hasMore: false, nextCursor: null },
+    })));
+
+    await expect(ejecutarMantenimientoCalcom({
+      config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: Date.now() + 30_000, entregar: async () => {},
+    })).resolves.toMatchObject({ completa: false, cortadasPorReloj: 1, ledger: { restantes: 1 } });
+    expect(orden).toContain('pausar_sincronizacion_calcom');
+    expect(orden).not.toContain('finalizar_sincronizacion_calcom');
+  });
+
+  it('no finaliza si se agotó el reloj antes del segundo barrido aunque la última página terminó', async () => {
+    let ahora = 0;
+    const orden: string[] = [];
+    vi.spyOn(Date, 'now').mockImplementation(() => ahora);
+    rpc.mockImplementation(async (nombre: string) => {
+      orden.push(nombre);
+      if (nombre === 'reconciliar_eventos_calcom_pendientes') {
+        return { data: [{ revisados: 0, recuperados: 0, restantes: 0 }], error: null };
+      }
+      if (nombre === 'iniciar_sincronizacion_calcom') return { data: [{
+        claim_token: 'claim-reloj', desde_en: '2026-08-01T00:00:00Z',
+        ventana_hasta_en: '2026-08-02T00:00:00Z', cursor_siguiente: null,
+        debe_provisionar: false,
+      }], error: null };
+      return { data: true, error: null };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => json({ data: [{
+      id: 45, uid: 'ULTIMO', status: 'accepted', createdAt: '2026-08-01T10:00:00Z',
+      updatedAt: '2026-08-01T10:00:00Z', attendees: [],
+    }], pagination: { hasMore: false, nextCursor: null } })));
+    const resultado = await ejecutarMantenimientoCalcom({
+      config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
+      venceEn: 1_000,
+      entregar: async () => { ahora = 900; },
+    });
+    expect(resultado).toMatchObject({ completa: false, cortadasPorReloj: 1 });
+    expect(orden.filter((n) => n === 'reconciliar_eventos_calcom_pendientes')).toHaveLength(1);
+    expect(orden).toContain('pausar_sincronizacion_calcom');
+    expect(orden).not.toContain('finalizar_sincronizacion_calcom');
   });
 });

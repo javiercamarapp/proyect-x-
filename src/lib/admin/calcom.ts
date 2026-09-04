@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { secretoEntornoSeguro, valorEntornoReal } from '@/lib/env';
 
 export type CalcomConfig = {
   apiUrl: string;
@@ -24,12 +25,47 @@ export function calcomConfig(env: Partial<NodeJS.ProcessEnv> = {
   };
 }
 
+function hostPrivado(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::' || host === '::1'
+      || host.endsWith('.localhost') || host.endsWith('.local')
+      || host.endsWith('.internal') || host.endsWith('.localdomain')) return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const octetos = ipv4.slice(1).map(Number);
+    if (octetos.some((n) => n > 255)) return true;
+    const [a, b] = octetos;
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (host.includes(':')) return host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80:');
+  return false;
+}
+
+function urlPublicaHttps(valor: string): boolean {
+  try {
+    const url = new URL(valor);
+    return url.protocol === 'https:' && !url.username && !url.password
+      && Boolean(url.hostname) && !hostPrivado(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function calcomConfigurado(config = calcomConfig()): boolean {
-  return Boolean(config.apiKey && config.webhookSecret);
+  return valorEntornoReal(config.apiKey)
+    && /^cal_[A-Za-z0-9_-]{20,}$/.test(config.apiKey.trim())
+    && secretoEntornoSeguro(config.webhookSecret)
+    && urlPublicaHttps(config.apiUrl);
+}
+
+export function secretoCalcomConfigurado(secreto = calcomConfig().webhookSecret): boolean {
+  return secretoEntornoSeguro(secreto);
 }
 
 export function verificarFirmaCalcom(body: string, firma: string | null, secreto = calcomConfig().webhookSecret): boolean {
-  if (!firma || !secreto) return false;
+  if (!firma || !secretoCalcomConfigurado(secreto)) return false;
   const esperado = createHmac('sha256', secreto).update(body).digest('hex');
   const recibido = firma.replace(/^sha256=/i, '').trim();
   if (!/^[a-f0-9]{64}$/i.test(recibido)) return false;
@@ -41,7 +77,9 @@ export type CalcomProvisionResult = { configured: true; id: string | null } | { 
 const CALCOM_TRIGGERS = [
   'BOOKING_CREATED',
   'BOOKING_RESCHEDULED',
+  'BOOKING_REQUESTED',
   'BOOKING_CANCELLED',
+  'BOOKING_REJECTED',
   'BOOKING_NO_SHOW_UPDATED',
 ] as const;
 
@@ -71,7 +109,8 @@ export async function provisionarWebhookCalcom(
   config = calcomConfig(),
   opciones: { venceEn?: number } = {},
 ): Promise<CalcomProvisionResult> {
-  if (!calcomConfigurado(config)) return { configured: false, reason: 'CALCOM_API_KEY y CALCOM_WEBHOOK_SECRET son obligatorias.' };
+  if (!calcomConfigurado(config)) return { configured: false, reason: 'Cal.com exige API key/secret fuertes y un origen público por HTTPS.' };
+  if (!urlPublicaHttps(callbackUrl)) throw new Error('Cal.com callback debe ser una URL pública por HTTPS');
   const endpointScope = config.eventTypeId
     ? `${config.apiUrl}/v2/event-types/${encodeURIComponent(config.eventTypeId)}/webhooks`
     : `${config.apiUrl}/v2/webhooks`;
@@ -140,57 +179,73 @@ type BookingCalcom = Record<string, unknown> & {
   attendees?: Array<Record<string, unknown>>;
 };
 
-function eventoDeBooking(booking: BookingCalcom): {
-  principal: Record<string, unknown>;
-  limpiarNoShow: Record<string, unknown> | null;
-} {
+type EventoSnapshotCalcom = { evento: Record<string, unknown>; meta?: CalcomIngestMeta };
+
+function eventosDeBooking(booking: BookingCalcom): EventoSnapshotCalcom[] {
   if ((booking.uid === undefined || booking.uid === '') && booking.id === undefined) {
     throw new Error('Cal.com booking sin uid/id');
   }
   const attendees: Array<Record<string, unknown> & { noShow: boolean }> = Array.isArray(booking.attendees)
     ? booking.attendees.map((a) => ({ ...a, noShow: a.absent === true }))
     : [];
+  const status = String(booking.status ?? '').trim().toLowerCase();
+  if (!['accepted', 'pending', 'cancelled', 'rejected'].includes(status)) {
+    throw new Error(`Cal.com status no soportado: ${status || '(vacío)'}`);
+  }
   const noShow = attendees.some((a) => a.noShow === true);
-  const triggerEvent = String(booking.status).toLowerCase() === 'cancelled'
-    ? 'BOOKING_CANCELLED'
-    : booking.rescheduledFromUid
-      ? 'BOOKING_RESCHEDULED'
-      : noShow
-        ? 'BOOKING_NO_SHOW_UPDATED'
-        : 'BOOKING_CREATED';
-  const createdAt = triggerEvent === 'BOOKING_CREATED'
-    ? booking.createdAt ?? booking.updatedAt
-    : booking.updatedAt ?? booking.createdAt;
-  const principal = {
-    triggerEvent,
-    createdAt,
-    payload: {
-      ...booking,
-      uid: booking.uid,
-      bookingId: booking.id,
-      rescheduleUid: booking.rescheduledFromUid,
-      attendees,
-    },
+  const payload = {
+    ...booking,
+    uid: booking.uid,
+    bookingId: booking.id,
+    rescheduleUid: booking.rescheduledFromUid,
+    attendees,
   };
-  const attendeePresente = triggerEvent !== 'BOOKING_CANCELLED'
-    ? attendees.find((a) => a.absent === false && typeof a.email === 'string')
-    : undefined;
-  return {
-    principal,
-    // El snapshot `absent:false` puede ser la única evidencia de que se perdió
-    // NO_SHOW_UPDATED(false). El consumidor productivo lo aplica SÓLO si esa
-    // misma reserva sigue en no-show; para reservas sanas no crea ledger.
-    limpiarNoShow: attendeePresente ? {
-      triggerEvent: 'BOOKING_NO_SHOW_UPDATED',
-      createdAt: booking.updatedAt ?? booking.createdAt,
-      payload: {
-        ...booking,
-        uid: booking.uid,
-        bookingUid: booking.uid,
-        bookingId: booking.id,
-        attendees: [{ ...attendeePresente, noShow: false }],
+  const evento = (triggerEvent: string, createdAt: string | undefined): EventoSnapshotCalcom => ({ evento: {
+    triggerEvent, createdAt,
+    payload: {
+      ...payload,
+    },
+  } });
+  const base = status === 'pending' || status === 'rejected' ? 'BOOKING_REQUESTED' : 'BOOKING_CREATED';
+  const eventos: EventoSnapshotCalcom[] = [evento(base, booking.createdAt ?? booking.updatedAt)];
+  if (status === 'cancelled') eventos.push(evento('BOOKING_CANCELLED', booking.updatedAt ?? booking.createdAt));
+  if (status === 'rejected') eventos.push(evento('BOOKING_REJECTED', booking.updatedAt ?? booking.createdAt));
+  if (status === 'accepted' && booking.rescheduledFromUid) {
+    eventos.push(evento('BOOKING_RESCHEDULED', booking.updatedAt ?? booking.createdAt));
+  }
+  if (status === 'accepted' && noShow) {
+    eventos.push(evento('BOOKING_NO_SHOW_UPDATED', booking.updatedAt ?? booking.createdAt));
+  } else if (status === 'accepted') {
+    const attendeePresente = attendees.find((a) => a.absent === false && typeof a.email === 'string');
+    if (attendeePresente) eventos.push({
+      evento: {
+        triggerEvent: 'BOOKING_NO_SHOW_UPDATED',
+        createdAt: booking.updatedAt ?? booking.createdAt,
+        payload: { ...payload, bookingUid: booking.uid, attendees: [{ ...attendeePresente, noShow: false }] },
       },
-    } : null,
+      meta: { soloSiNoShowVigente: true },
+    });
+  }
+  return eventos;
+}
+
+function sinTiempo(venceEn: number | undefined): boolean {
+  return venceEn !== undefined && Date.now() + 250 >= venceEn;
+}
+
+function resultadoParcial(revisadas: number, cursor: string | null) {
+  return { configured: true, revisadas, completa: false, cursor };
+}
+
+function combinarLedger(
+  inicial: CalcomReconciliacionPendiente,
+  final: CalcomReconciliacionPendiente,
+): CalcomReconciliacionPendiente {
+  return {
+    configured: inicial.configured && final.configured,
+    revisados: inicial.revisados + final.revisados,
+    recuperados: inicial.recuperados + final.recuperados,
+    restantes: final.restantes,
   };
 }
 
@@ -217,8 +272,8 @@ export async function reconciliarReservasCalcom(
   let paginas = 0;
   const vistos = new Set<string>();
   do {
-    if (paginas >= (opciones.maxPaginas ?? 10) || (opciones.venceEn !== undefined && Date.now() + 250 >= opciones.venceEn)) {
-      return { configured: true, revisadas, completa: false, cursor };
+    if (paginas >= (opciones.maxPaginas ?? 10) || sinTiempo(opciones.venceEn)) {
+      return resultadoParcial(revisadas, cursor);
     }
     const url = new URL(`${config.apiUrl}/v2/bookings`);
     url.searchParams.set('afterUpdatedAt', desde);
@@ -239,10 +294,11 @@ export async function reconciliarReservasCalcom(
     };
     if (!Array.isArray(pagina.data)) throw new Error('Cal.com reconciliation sin data[]');
     for (const booking of pagina.data as BookingCalcom[]) {
-      const eventos = eventoDeBooking(booking);
-      await ingest(eventos.principal);
-      if (eventos.limpiarNoShow) {
-        await ingest(eventos.limpiarNoShow, { soloSiNoShowVigente: true });
+      if (sinTiempo(opciones.venceEn)) return resultadoParcial(revisadas, cursor);
+      const eventos = eventosDeBooking(booking);
+      for (const { evento, meta } of eventos) {
+        if (sinTiempo(opciones.venceEn)) return resultadoParcial(revisadas, cursor);
+        await ingest(evento, meta);
       }
       revisadas += 1;
     }
@@ -371,10 +427,11 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
   completa: boolean;
   provisionado: boolean;
   revisadas: number;
+  cortadasPorReloj: number;
   ledger: CalcomReconciliacionPendiente;
 }> {
   const config = opciones.config ?? calcomConfig();
-  const ledger = await reconciliarEventosCalcomPendientes(250, config);
+  const ledgerInicial = await reconciliarEventosCalcomPendientes(250, config);
   if (!calcomConfigurado(config)) {
     throw new Error('Cal.com no configurado: faltan API key o webhook secret');
   }
@@ -384,7 +441,7 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
   if (error) throw new Error(`iniciar_sincronizacion_calcom: ${error.message}`);
   const estado = (Array.isArray(data) ? data[0] : data) as EstadoSincronizacionCalcom | null;
   if (!estado?.claim_token) {
-    return { configured: true, completa: false, provisionado: false, revisadas: 0, ledger };
+    return { configured: true, completa: false, provisionado: false, revisadas: 0, cortadasPorReloj: 0, ledger: ledgerInicial };
   }
 
   const claim = estado.claim_token;
@@ -414,16 +471,24 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
         }),
       },
     );
+    const cortadoAntesSegundoBarrido = sinTiempo(opciones.venceEn);
+    const ledgerFinal = cortadoAntesSegundoBarrido
+      ? ledgerInicial
+      : combinarLedger(ledgerInicial, await reconciliarEventosCalcomPendientes(250, config));
+    // Si no hubo reloj para comprobar el ledger recién producido, no existe
+    // evidencia para avanzar el watermark aunque la página dijera hasMore=false.
+    const completa = reservas.completa && !cortadoAntesSegundoBarrido && ledgerFinal.restantes === 0;
     await rpcBooleana(
-      reservas.completa ? 'finalizar_sincronizacion_calcom' : 'pausar_sincronizacion_calcom',
+      completa ? 'finalizar_sincronizacion_calcom' : 'pausar_sincronizacion_calcom',
       { p_claim_token: claim },
     );
     return {
       configured: true,
-      completa: reservas.completa,
+      completa,
       provisionado,
       revisadas: reservas.revisadas,
-      ledger,
+      cortadasPorReloj: completa ? 0 : 1,
+      ledger: ledgerFinal,
     };
   } catch (e) {
     const mensaje = e instanceof Error ? e.message : String(e);

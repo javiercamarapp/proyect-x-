@@ -41,7 +41,11 @@ vi.mock('@/lib/likida/reglas/vigilante', () => ({
 }));
 // 0323: el mismo cron horario hospeda el barrido durable de Cal.com para no
 // sumar otra invocación facturable ni depender de reintentos del proveedor.
-const ejecutarMantenimientoCalcom = vi.fn(async () => ({ configured: true, completa: true, revisadas: 0 }));
+const ejecutarMantenimientoCalcom = vi.fn(async () => ({
+  configured: true, completa: true, provisionado: false, revisadas: 0,
+  cortadasPorReloj: 0,
+  ledger: { configured: true, revisados: 0, recuperados: 0, restantes: 0 },
+}));
 vi.mock('@/lib/admin/calcom', () => ({
   ejecutarMantenimientoCalcom: (...a: unknown[]) => ejecutarMantenimientoCalcom(...(a as [])),
 }));
@@ -115,6 +119,20 @@ describe('GET /api/cron/escalar — el cron ya no miente en verde', () => {
       .toBeLessThan(ejecutarMantenimientoCalcom.mock.invocationCallOrder[0]);
     expect(ejecutarCobranzaGlobal.mock.invocationCallOrder[0])
       .toBeLessThan(ejecutarMantenimientoCalcom.mock.invocationCallOrder[0]);
+  });
+
+  it('Cal.com parcial cuenta como corte, acumula racha y deja latido parcial', async () => {
+    ejecutarMantenimientoCalcom.mockResolvedValueOnce({
+      configured: true, completa: false, provisionado: false, revisadas: 1,
+      cortadasPorReloj: 1,
+      ledger: { configured: true, revisados: 1, recuperados: 0, restantes: 1 },
+    });
+    const res = await GET(peticion('Bearer secreto-de-prueba'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).cortadosPorReloj).toBe(1);
+    expect(registrarLatido).toHaveBeenCalledWith('escalar', 'parcial', {
+      cortesSeguidos: 1, cortados: 1,
+    });
   });
 
   it('si la ESCALACIÓN revienta: 500, el error viaja en el cuerpo, y la cobranza CORRE igual', async () => {

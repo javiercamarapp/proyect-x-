@@ -66,7 +66,7 @@ vi.mock('@/lib/logger', () => ({ logger: { warn: vi.fn(), error: vi.fn() } }));
 
 const { POST } = await import('./route');
 
-const SECRET = 'calcom-test-secret';
+const SECRET = '0123456789abcdefghijklmnopqrstuvwxyz-CALCOM';
 
 function firmar(cuerpo: string): string {
   return createHmac('sha256', SECRET).update(cuerpo).digest('hex');
@@ -131,8 +131,10 @@ describe('POST /api/webhook/calcom — frontera de la transacción 0323', () => 
 
   it.each([
     'BOOKING_CREATED',
+    'BOOKING_REQUESTED',
     'BOOKING_RESCHEDULED',
     'BOOKING_CANCELLED',
+    'BOOKING_REJECTED',
     'BOOKING_NO_SHOW',
   ])('%s llega a la RPC canónica sin rutas de escritura paralelas', async (triggerEvent) => {
     const cuerpo = JSON.stringify({

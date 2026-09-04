@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { bodyExcede } from '@/lib/ratelimit';
 import { logger } from '@/lib/logger';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { calcomConfig, verificarFirmaCalcom } from '@/lib/admin/calcom';
+import { calcomConfig, secretoCalcomConfigurado, verificarFirmaCalcom } from '@/lib/admin/calcom';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -10,8 +10,10 @@ export const dynamic = 'force-dynamic';
 const MAX_BODY = 256 * 1024;
 const EVENTOS_SOPORTADOS = new Set([
   'BOOKING_CREATED',
+  'BOOKING_REQUESTED',
   'BOOKING_RESCHEDULED',
   'BOOKING_CANCELLED',
+  'BOOKING_REJECTED',
   'BOOKING_NO_SHOW_UPDATED',
   // Nombre histórico aceptado por compatibilidad. El provisionamiento nuevo
   // sólo pide BOOKING_NO_SHOW_UPDATED, que es el trigger oficial de Cal.com.
@@ -114,7 +116,9 @@ function instanteFirmado(evt: CalcomEvent): string | null {
 
 export async function POST(req: Request) {
   const config = calcomConfig();
-  if (!config.webhookSecret) return new NextResponse('Cal.com webhook no configurado', { status: 503 });
+  if (!secretoCalcomConfigurado(config.webhookSecret)) {
+    return new NextResponse('Cal.com webhook no configurado de forma segura', { status: 503 });
+  }
   if (bodyExcede(req, MAX_BODY)) return new NextResponse('Payload too large', { status: 413 });
   const raw = await req.text();
   if (raw.length > MAX_BODY) return new NextResponse('Payload too large', { status: 413 });

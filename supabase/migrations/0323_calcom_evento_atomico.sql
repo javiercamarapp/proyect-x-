@@ -83,6 +83,55 @@ create index comercial_evento_calcom_recuperable_idx
   where fuente = 'calcom'
     and estado_proceso in ('pendiente', 'esperando_vinculo', 'sin_prospecto', 'cuarentena');
 
+-- 0245 no conocía todavía los identificadores/correos añadidos por 0323. Una
+-- purga que vacía payload pero conserva UID, aliases y correo sigue siendo
+-- reversible. Tras el plazo se conserva el hecho/tipo/instante, no la llave
+-- que permite volver a identificar la reserva en Cal.com.
+create or replace function public.purgar_comercial_evento(
+  p_dias integer default 365,
+  p_ahora timestamptz default now()
+) returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  anonimizadas bigint;
+  limite timestamptz := p_ahora - make_interval(days => p_dias);
+begin
+  if p_dias < 30 then
+    raise exception 'purgar_comercial_evento: % días es demasiado poco; el mínimo es 30', p_dias using errcode = 'PU001';
+  end if;
+  update public.comercial_evento ce
+     set payload = '{}'::jsonb,
+         error = null,
+         vinculo_correo = null,
+         vinculo_error = null,
+         externo_id = case when ce.fuente='calcom' then null else ce.externo_id end,
+         externo_aliases = case when ce.fuente='calcom' then '{}'::text[] else ce.externo_aliases end,
+         externo_anterior_aliases = case when ce.fuente='calcom' then '{}'::text[] else ce.externo_anterior_aliases end,
+         clave_idempotencia = case when ce.fuente='calcom' then 'purgado:calcom:' || ce.id::text else ce.clave_idempotencia end
+   where ce.ocurrido_en < limite
+     and (
+       ce.payload <> '{}'::jsonb or ce.error is not null
+       or ce.vinculo_correo is not null or ce.vinculo_error is not null
+       or (ce.fuente='calcom' and (
+         ce.externo_id is not null or ce.externo_aliases <> '{}'::text[]
+         or ce.externo_anterior_aliases <> '{}'::text[]
+         or ce.clave_idempotencia not like 'purgado:calcom:%'
+       ))
+     );
+  get diagnostics anonimizadas = row_count;
+  return anonimizadas;
+end;
+$$;
+
+revoke all on function public.purgar_comercial_evento(integer,timestamptz) from public, anon, authenticated;
+grant execute on function public.purgar_comercial_evento(integer,timestamptz) to service_role;
+
+comment on function public.purgar_comercial_evento(integer,timestamptz) is
+  '0323: anonimiza payload/error/correo y, para Cal.com, pseudónimos externos, aliases y clave idempotente después de la retención; conserva sólo el hecho comercial.';
+
 -- Durabilidad del reconciliador Bookings v2. Una ventana conserva límites
 -- estables mientras el cursor avanza; sólo al consumirla completa se mueve el
 -- watermark. Un crash conserva ventana/cursor y el lease fencing evita que el
@@ -310,9 +359,11 @@ begin
   end if;
 
   v_destino := case v_tipo
+    when 'BOOKING_REQUESTED' then 'appointment'
     when 'BOOKING_CREATED' then 'appointment'
     when 'BOOKING_RESCHEDULED' then 'rescheduled'
     when 'BOOKING_CANCELLED' then 'cancelled'
+    when 'BOOKING_REJECTED' then 'cancelled'
     when 'BOOKING_NO_SHOW' then 'no-show'
     when 'BOOKING_NO_SHOW_UPDATED' then case when p_no_show then 'no-show' else null end
     else null
@@ -321,11 +372,13 @@ begin
     raise exception 'tipo Cal.com no soportado: %', v_tipo using errcode = 'CR002';
   end if;
   v_precedencia := case v_tipo
+    when 'BOOKING_REQUESTED' then 0
     when 'BOOKING_CREATED' then 0
     when 'BOOKING_RESCHEDULED' then 1
     when 'BOOKING_NO_SHOW_UPDATED' then case when p_no_show then 3 else 2 end
     when 'BOOKING_NO_SHOW' then 3
     when 'BOOKING_CANCELLED' then 4
+    when 'BOOKING_REJECTED' then 4
   end;
 
   select coalesce(array_agg(distinct btrim(x) order by btrim(x)), '{}'::text[])
@@ -489,7 +542,7 @@ begin
     return;
   end if;
 
-  if v_tipo = 'BOOKING_CREATED' then
+  if v_tipo in ('BOOKING_CREATED', 'BOOKING_REQUESTED') then
     if p_creado_en is null and v_booking is not null and not v_misma_reserva then
       update public.comercial_evento
          set estado_proceso = 'ignorado', procesado_en = clock_timestamp(),
@@ -555,7 +608,7 @@ begin
       end;
       v_antes_no_show := null;
     end if;
-  elsif v_tipo = 'BOOKING_CANCELLED' then
+  elsif v_tipo in ('BOOKING_CANCELLED', 'BOOKING_REJECTED') then
     v_antes_no_show := null;
   else
     v_antes_no_show := null;
@@ -610,10 +663,12 @@ begin
     exit when not found;
 
     v_pend_precedencia := case v_pend.tipo
+      when 'BOOKING_REQUESTED' then 0
       when 'BOOKING_RESCHEDULED' then 1
       when 'BOOKING_NO_SHOW_UPDATED' then case when v_pend.calcom_no_show then 3 else 2 end
       when 'BOOKING_NO_SHOW' then 3
       when 'BOOKING_CANCELLED' then 4
+      when 'BOOKING_REJECTED' then 4
       else 0
     end;
 
@@ -643,8 +698,10 @@ begin
     end if;
 
     v_pend_destino := case v_pend.tipo
+      when 'BOOKING_REQUESTED' then 'appointment'
       when 'BOOKING_RESCHEDULED' then 'rescheduled'
       when 'BOOKING_CANCELLED' then 'cancelled'
+      when 'BOOKING_REJECTED' then 'cancelled'
       when 'BOOKING_NO_SHOW' then 'no-show'
       when 'BOOKING_NO_SHOW_UPDATED' then case when v_pend.calcom_no_show then 'no-show' else null end
       else null
@@ -682,7 +739,7 @@ begin
         end;
         v_antes_no_show := null;
       end if;
-    elsif v_pend.tipo = 'BOOKING_CANCELLED' then
+    elsif v_pend.tipo in ('BOOKING_CANCELLED', 'BOOKING_REJECTED') then
       v_antes_no_show := null;
     elsif v_pend.tipo = 'BOOKING_RESCHEDULED' then
       v_antes_no_show := null;
@@ -750,10 +807,10 @@ begin
     select ce.*
       from public.comercial_evento ce
      where ce.fuente='calcom'
-       and ce.estado_proceso in ('sin_prospecto','cuarentena')
+       and ce.estado_proceso in ('esperando_vinculo','sin_prospecto','cuarentena')
        and ce.reintentar_despues <= clock_timestamp()
        and (
-         ce.estado_proceso='sin_prospecto'
+         ce.estado_proceso in ('sin_prospecto','esperando_vinculo')
          or ce.orden_original_en is null
          or ce.orden_original_en <= clock_timestamp() + interval '5 minutes'
        )
@@ -802,13 +859,18 @@ begin
       ) a;
     if v_resultado in ('aplicado','ignorado','repetido') then
       v_recuperados := v_recuperados + 1;
+    elsif v_resultado = 'esperando_vinculo' then
+      update public.comercial_evento
+         set reintentos=least(reintentos+1,32767)::smallint,
+             reintentar_despues=clock_timestamp()+interval '15 minutes'
+       where id=v.id;
     end if;
   end loop;
 
   select count(*)::integer into restantes
     from public.comercial_evento ce
    where ce.fuente='calcom'
-     and ce.estado_proceso in ('sin_prospecto','cuarentena');
+     and ce.estado_proceso in ('esperando_vinculo','sin_prospecto','cuarentena');
   revisados := v_revisados;
   recuperados := v_recuperados;
   return next;
@@ -821,4 +883,4 @@ grant execute on function public.reconciliar_eventos_calcom_pendientes(integer)
   to service_role;
 
 comment on function public.reconciliar_eventos_calcom_pendientes(integer) is
-  '0323: reclama con SKIP LOCKED y recupera ledger Cal.com sin depender de reentregas HTTP; nunca elige un correo ambiguo.';
+  '0323: reclama con SKIP LOCKED esperando_vinculo/sin_prospecto/cuarentena, reporta todos los restantes y recupera sin depender de reentregas HTTP; nunca elige un correo ambiguo.';

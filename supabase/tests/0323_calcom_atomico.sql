@@ -16,6 +16,7 @@ declare
   token uuid;
   ventana timestamptz;
   cursor_guardado text;
+  purga_id uuid;
 begin
   delete from public.comercial_evento where prospecto_id in (p, q)
      or clave_idempotencia like 'calcom:TEST0323:%';
@@ -442,6 +443,63 @@ begin
   if public.finalizar_sincronizacion_calcom(token) then
     raise exception 'callback stale avanzó watermark';
   end if;
+
+  -- Status oficiales de Bookings v2: pending/rejected son REQUESTED/REJECTED,
+  -- nunca una cita aceptada inventada. El REQUESTED reconstruye el vínculo
+  -- base y REJECTED puede cerrar después de una pérdida de webhooks.
+  update public.prospecto set estado='contactado', calcom_booking_id=null,
+    calcom_booking_aliases='{}', calcom_evento_en=null,
+    calcom_evento_precedencia=null, calcom_estado_antes_no_show=null where id=p;
+  perform public.aplicar_evento_calcom_tx(
+    'calcom:TEST0323:REQUESTED:R', 'BOOKING_REQUESTED', 'uid:R', p,
+    '{}'::jsonb, '2026-08-23 10:00:00+00', null,
+    array['uid:R','id:901'], '{}'::text[], null
+  );
+  select * into r from public.aplicar_evento_calcom_tx(
+    'calcom:TEST0323:REJECTED:R', 'BOOKING_REJECTED', 'uid:R', p,
+    '{}'::jsonb, '2026-08-23 11:00:00+00', null,
+    array['uid:R','id:901'], '{}'::text[], null
+  );
+  if r.resultado <> 'aplicado' or r.estado_prospecto <> 'cancelled' then
+    raise exception 'REQUESTED→REJECTED no convergió: %/%', r.resultado, r.estado_prospecto;
+  end if;
+  if exists (
+    select 1 from public.comercial_evento
+     where clave_idempotencia in ('calcom:TEST0323:REQUESTED:R','calcom:TEST0323:REJECTED:R')
+       and estado_proceso <> 'aplicado'
+  ) then raise exception 'status pending/rejected dejó trabajo no final'; end if;
+
+  -- `esperando_vinculo` también es recuperable y tiene que aparecer en
+  -- restantes; de otro modo el reconciliador podría avanzar su watermark.
+  update public.prospecto set estado='contactado', calcom_booking_id=null,
+    calcom_booking_aliases='{}', calcom_evento_en=null,
+    calcom_evento_precedencia=null, calcom_estado_antes_no_show=null where id=p;
+  perform public.aplicar_evento_calcom_tx(
+    'calcom:TEST0323:ESPERA:TERMINAL', 'BOOKING_CANCELLED', 'uid:WAIT', p,
+    '{}'::jsonb, '2026-08-24 11:00:00+00', null,
+    array['uid:WAIT'], '{}'::text[], null
+  );
+  if not exists (
+    select 1 from public.reconciliar_eventos_calcom_pendientes(250)
+     where restantes >= 1
+  ) then raise exception 'esperando_vinculo quedó invisible para restantes'; end if;
+
+  -- La retención elimina correo y también todos los alias/identificadores
+  -- externos introducidos por 0323; conservarlos haría reversible la purga.
+  update public.comercial_evento
+     set ocurrido_en='2020-01-01 00:00:00+00',
+         vinculo_correo='persona@example.test', vinculo_error='sin_prospecto'
+   where clave_idempotencia='calcom:TEST0323:ESPERA:TERMINAL';
+  select id into purga_id from public.comercial_evento
+   where clave_idempotencia='calcom:TEST0323:ESPERA:TERMINAL';
+  perform public.purgar_comercial_evento(365, '2026-09-04 00:00:00+00');
+  if exists (
+    select 1 from public.comercial_evento
+     where id=purga_id and (clave_idempotencia <> 'purgado:calcom:' || purga_id::text
+        or vinculo_correo is not null or vinculo_error is not null
+        or externo_id is not null or externo_aliases <> '{}'::text[]
+        or externo_anterior_aliases <> '{}'::text[])
+  ) then raise exception 'purga Cal.com conservó correo/aliases/identificador'; end if;
 end $$;
 
 rollback;
