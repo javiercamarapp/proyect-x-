@@ -9,6 +9,41 @@ export interface SalidaOutbox {
   leaseToken: string;
 }
 
+export interface SalidaOutboxDedupe {
+  id: string;
+  estado: 'pending' | 'sending' | 'sent' | 'dead';
+  providerMessageId: string | null;
+}
+
+/** Persiste una intención de envío ANTES de tocar Meta. La llave estable
+ * vuelve idempotente el reintento tras timeout/kill del proceso. */
+export async function encolarSalidaWhatsAppDedupe(
+  dedupeKey: string,
+  payload: Record<string, unknown>,
+  motivo: string,
+): Promise<SalidaOutboxDedupe | null> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('encolar_wa_outbox_dedupe', {
+    p_dedupe_key: dedupeKey,
+    p_payload: payload,
+    p_error: motivo.slice(0, 500),
+  }), 'wa.outbox.encolar_dedupe');
+  const fila = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (error || !fila || typeof fila.id !== 'string') {
+    logger.error('wa.outbox_dedupe_no_encolado', { err: error?.message ?? 'respuesta inválida' });
+    return null;
+  }
+  const estado = String(fila.estado);
+  if (!['pending', 'sending', 'sent', 'dead'].includes(estado)) {
+    logger.error('wa.outbox_dedupe_no_encolado', { err: 'estado inválido' });
+    return null;
+  }
+  return {
+    id: fila.id,
+    estado: estado as SalidaOutboxDedupe['estado'],
+    providerMessageId: fila.provider_message_id == null ? null : String(fila.provider_message_id),
+  };
+}
+
 /**
  * AUDITORÍA 20 (R-1, CRÍTICO): este lease vivía en 120s mientras
  * `wa-outbox/route.ts` mide 155.5s reales y puede correr hasta los 300s de

@@ -15,7 +15,10 @@ vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 vi.mock('../presupuesto', () => ({ acotada: (q: unknown) => q }));
 vi.mock('./cofre', () => ({ descifrar: (v: string) => JSON.parse(v) }));
 
-const disparar = vi.hoisted(() => vi.fn(async () => ({ resultado: 'abierta' as const, incidenciaId: 'inc-1', avisado: true })));
+const disparar = vi.hoisted(() => vi.fn(async () => ({
+  resultado: 'abierta' as const, incidenciaId: 'inc-1',
+  avisoEstado: 'encolado' as const, avisoOutboxId: 'outbox-1',
+})));
 vi.mock('../asistencia_camara', () => ({ dispararAsistenciaPorEventoCamara: disparar }));
 
 // Unidades de DOS flotas con el MISMO device id — el candado de aislamiento.
@@ -31,8 +34,8 @@ const UNIDADES = vi.hoisted(() => [
 // aviso ya dado, y el candado en sí tiene su propia batería en
 // `sincronizar_eventos_aud24.test.ts`.
 const VIAJES = vi.hoisted(() => [
-  { tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-1', estatus: 'abierto', fecha_inicio: '2026-08-01', fecha_fin: null },
-  { tenant_id: 't-OTRO', unidad_id: 'u-ajena', operador_id: 'op-ajena', estatus: 'abierto', fecha_inicio: '2026-08-01', fecha_fin: null },
+  { id: 'v-1', folio: 'F-1', tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-1', estatus: 'abierto', fecha_inicio: '2026-08-01', fecha_fin: null },
+  { id: 'v-ajeno', folio: 'F-AJENO', tenant_id: 't-OTRO', unidad_id: 'u-ajena', operador_id: 'op-ajena', estatus: 'abierto', fecha_inicio: '2026-08-01', fecha_fin: null },
 ]);
 const OPERADORES = vi.hoisted(() => [
   { id: 'op-1', tenant_id: 't-1', aviso_privacidad_en: '2026-08-01T00:00:00Z' },
@@ -192,7 +195,11 @@ describe('sincronizarEventosDeFlota', () => {
     expect(disparar).toHaveBeenCalledWith(expect.objectContaining({
       tenantId: 't-1', unidadId: 'u-1', eventoIdExterno: 'evt-choque',
       etiquetas: ['Crash'], lat: 20.97, lng: -89.62, maxG: 2.4,
+      viajeId: 'v-1', operadorId: 'op-1', viajeFolio: 'F-1',
     }));
+    expect(estado.guardados.get('t-1|samsara|evt-choque')).toMatchObject({
+      viaje_id: 'v-1', operador_id: 'op-1', viaje_folio: 'F-1',
+    });
     // La fila del choque quedó marcada grave; la del frenado no.
     const filas = [...estado.guardados.values()];
     expect(filas.find((f) => f.evento_id_externo === 'evt-choque')?.grave).toBe(true);
@@ -224,6 +231,7 @@ describe('sincronizarEventosDeFlota', () => {
 
     UNIDADES.push({ id: 'u-reparada', tenant_id: 't-1', gps_proveedor: 'samsara', gps_device_id: 'dev-reparado' });
     VIAJES.push({
+      id: 'v-reparado', folio: 'F-REPARADO',
       tenant_id: 't-1', unidad_id: 'u-reparada', operador_id: 'op-reparado', estatus: 'abierto',
       fecha_inicio: '2026-08-01', fecha_fin: null,
     });
@@ -295,6 +303,19 @@ describe('sincronizarEventosDeFlota', () => {
     expect(primera).toMatchObject({ invalidos: 1, cuarentena: 1 });
     expect(segunda).toMatchObject({ guardados: 1, disparos: 1 });
     expect(estado.cuarentena.some((q) => q.motivo === 'payload_invalido')).toBe(true);
+  });
+
+  it('una referencia sin asset es irrecuperable: queda opaca y la ventana NO se declara completa', async () => {
+    const sinAsset = { ...CHOQUE, id: 'evt-sin-asset', asset: undefined };
+    const r = await sincronizarEventosDeFlota('t-1', 'samsara', CRED, samsaraCon([sinAsset]), AHORA);
+
+    expect(r).toMatchObject({ guardados: 0, referenciasIrrecuperables: 1, backlog: true });
+    expect(r.error).toMatch(/referencia.*asset/i);
+    const q = estado.cuarentena.find((fila) => fila.motivo === 'referencia_incompleta');
+    expect(q?.evento_id_externo).not.toBe('evt-sin-asset');
+    expect(q?.evento_id_externo).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(q).not.toHaveProperty('asset_id');
+    expect(q).not.toHaveProperty('unidad_id');
   });
 
   it.each([

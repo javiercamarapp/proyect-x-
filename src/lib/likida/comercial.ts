@@ -486,6 +486,14 @@ export interface EstadoRastreo {
     backlogPendiente: boolean;
     paginas: number;
     elementos: number;
+    eventosInvalidosUltima: number;
+    eventosInvalidosTotal: number;
+    eventosEnCuarentena: number;
+    eventosCuarentenaMuertos: number;
+    eventosOutboxPendientes: number;
+    eventosOutboxMuertos: number;
+    avisosPendientes: number;
+    avisosMuertos: number;
     error: string | null;
   }>;
 }
@@ -544,7 +552,11 @@ async function traerEstadoPollGps(tenantId: string): Promise<EstadoRastreo['poll
     const f = fila as Record<string, unknown>;
     const recurso = f.recurso;
     if ((recurso !== 'posiciones' && recurso !== 'eventos') || typeof f.proveedor !== 'string' ||
-        typeof f.backlogPendiente !== 'boolean' || !esNumero(f.paginas) || !esNumero(f.elementos)) {
+        typeof f.backlogPendiente !== 'boolean' || !esNumero(f.paginas) || !esNumero(f.elementos) ||
+        !esNumero(f.eventosInvalidosUltima) || !esNumero(f.eventosInvalidosTotal) ||
+        !esNumero(f.eventosEnCuarentena) || !esNumero(f.eventosCuarentenaMuertos) ||
+        !esNumero(f.eventosOutboxPendientes) || !esNumero(f.eventosOutboxMuertos) ||
+        !esNumero(f.avisosPendientes) || !esNumero(f.avisosMuertos)) {
       throw new Error('getEstadoRastreo.poll: fila inválida de la migración 0324');
     }
     return {
@@ -556,6 +568,14 @@ async function traerEstadoPollGps(tenantId: string): Promise<EstadoRastreo['poll
       backlogPendiente: f.backlogPendiente,
       paginas: f.paginas,
       elementos: f.elementos,
+      eventosInvalidosUltima: f.eventosInvalidosUltima,
+      eventosInvalidosTotal: f.eventosInvalidosTotal,
+      eventosEnCuarentena: f.eventosEnCuarentena,
+      eventosCuarentenaMuertos: f.eventosCuarentenaMuertos,
+      eventosOutboxPendientes: f.eventosOutboxPendientes,
+      eventosOutboxMuertos: f.eventosOutboxMuertos,
+      avisosPendientes: f.avisosPendientes,
+      avisosMuertos: f.avisosMuertos,
       error: esTextoONulo(f.error) ? f.error : null,
     };
   });

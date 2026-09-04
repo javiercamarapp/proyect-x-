@@ -107,11 +107,17 @@ end $$;
 -- a 361 s, y el token viejo no puede sellar el evento.
 insert into public.unidad (id, tenant_id, numero_economico)
 values ('b0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001', 'GPS-1');
+insert into public.operador (id, tenant_id, nombre, telefono, aviso_privacidad_en)
+values ('bc000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001', 'Operador GPS', '529999999998', '2026-01-01T00:00:00Z');
+insert into public.viaje (id, tenant_id, operador_id, unidad_id)
+values ('bd000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001',
+        'bc000000-0000-0000-0000-000000000001', 'b0000000-0000-0000-0000-000000000001');
 insert into public.evento_seguridad_flota
-  (tenant_id, proveedor, evento_id_externo, unidad_id, etiquetas, grave, ocurrido_en)
+  (tenant_id, proveedor, evento_id_externo, unidad_id, viaje_id, operador_id, etiquetas, grave, ocurrido_en)
 values
   ('a0000000-0000-0000-0000-000000000001', 'samsara', 'evt-exact',
-   'b0000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-03T11:59:00Z');
+   'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+   'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-03T11:59:00Z');
 
 create temporary table evento_a as
 select * from public.reclamar_eventos_seguridad(
@@ -140,14 +146,16 @@ do $$
 declare ok boolean;
 begin
   select public.finalizar_evento_seguridad(
-    'a0000000-0000-0000-0000-000000000001', 'samsara',
-    evento_id_externo, claim_token, true, null, null, '2026-09-03T12:06:02Z')
+    p_tenant => 'a0000000-0000-0000-0000-000000000001', p_proveedor => 'samsara',
+    p_evento_id_externo => evento_id_externo, p_claim_token => claim_token,
+    p_exito => true, p_aviso_estado => 'no_requerido', p_ahora => '2026-09-03T12:06:02Z')
     into ok from evento_a;
   if ok then raise exception 'token stale selló el choque'; end if;
 
   select public.finalizar_evento_seguridad(
-    'a0000000-0000-0000-0000-000000000001', 'samsara',
-    evento_id_externo, claim_token, true, null, null, '2026-09-03T12:06:02Z')
+    p_tenant => 'a0000000-0000-0000-0000-000000000001', p_proveedor => 'samsara',
+    p_evento_id_externo => evento_id_externo, p_claim_token => claim_token,
+    p_exito => true, p_aviso_estado => 'no_requerido', p_ahora => '2026-09-03T12:06:02Z')
     into ok from evento_b;
   if not ok then raise exception 'dueño del lease no selló el choque'; end if;
   if (select count(*) from public.reclamar_eventos_seguridad(
@@ -157,15 +165,72 @@ begin
   end if;
 end $$;
 
+-- La incidencia no prueba entrega: pending queda sin procesado_en hasta que
+-- el outbox obtiene receipt. Repetir la intención devuelve la misma fila.
+insert into public.evento_seguridad_flota
+  (tenant_id, proveedor, evento_id_externo, unidad_id, viaje_id, operador_id, etiquetas, grave, ocurrido_en)
+values
+  ('a0000000-0000-0000-0000-000000000001', 'samsara', 'evt-durable',
+   'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+   'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-03T12:30:00Z'),
+  ('a0000000-0000-0000-0000-000000000001', 'samsara', 'evt-dead',
+   'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+   'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-03T12:31:00Z');
+
+do $$
+declare c uuid; o1 uuid; o2 uuid; od uuid; ok boolean;
+begin
+  select id into o1 from public.encolar_wa_outbox_dedupe(
+    'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-durable',
+    '{"to":"529999999999","type":"interactive"}'::jsonb, 'pendiente');
+  select id into o2 from public.encolar_wa_outbox_dedupe(
+    'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-durable',
+    '{"to":"529999999999","type":"interactive"}'::jsonb, 'reintento ambiguo');
+  if o1 is null or o1 <> o2 then raise exception 'dedupe creó dos avisos'; end if;
+  select claim_token into c from public.reclamar_eventos_seguridad(
+    'a0000000-0000-0000-0000-000000000001', 'samsara', 1,
+    'durable', 360, '2026-09-03T13:00:00Z') where evento_id_externo='evt-durable';
+  ok := public.finalizar_evento_seguridad(
+    p_tenant=>'a0000000-0000-0000-0000-000000000001', p_proveedor=>'samsara',
+    p_evento_id_externo=>'evt-durable', p_claim_token=>c, p_exito=>true,
+    p_aviso_estado=>'pending', p_aviso_outbox_id=>o1, p_ahora=>'2026-09-03T13:00:01Z');
+  if not ok or (select procesado_en is not null from public.evento_seguridad_flota where evento_id_externo='evt-durable') then
+    raise exception 'pending selló entrega crítica';
+  end if;
+  update public.wa_outbox set estado='sent', provider_message_id='wamid.gps', enviada_en='2026-09-03T13:01:00Z' where id=o1;
+  if not exists (select 1 from public.evento_seguridad_flota where evento_id_externo='evt-durable'
+      and procesado_en='2026-09-03T13:01:00Z' and aviso_estado='sent' and aviso_receipt='wamid.gps') then
+    raise exception 'receipt no selló el evento';
+  end if;
+
+  select id into od from public.encolar_wa_outbox_dedupe(
+    'gps:samsara:a0000000-0000-0000-0000-000000000001:evt-dead',
+    '{"to":"529999999999","type":"interactive"}'::jsonb, 'pendiente');
+  select claim_token into c from public.reclamar_eventos_seguridad(
+    'a0000000-0000-0000-0000-000000000001', 'samsara', 1,
+    'dead', 360, '2026-09-03T13:02:00Z') where evento_id_externo='evt-dead';
+  perform public.finalizar_evento_seguridad(
+    p_tenant=>'a0000000-0000-0000-0000-000000000001', p_proveedor=>'samsara',
+    p_evento_id_externo=>'evt-dead', p_claim_token=>c, p_exito=>true,
+    p_aviso_estado=>'pending', p_aviso_outbox_id=>od, p_ahora=>'2026-09-03T13:02:01Z');
+  update public.wa_outbox set estado='dead', ultimo_error='agotado' where id=od;
+  if not exists (select 1 from public.estado_eventos_gps_operativo()
+      where tenant_id='a0000000-0000-0000-0000-000000000001' and proveedor='samsara' and avisos_muertos=1) then
+    raise exception 'aviso muerto no llegó a salud operativa';
+  end if;
+end $$;
+
 -- Poison-pill: tras fallar recibe backoff y el evento siguiente sí sale en el
 -- mismo reloj. Al quinto fallo queda en DLQ visible y deja de reclamarse.
 insert into public.evento_seguridad_flota
-  (tenant_id, proveedor, evento_id_externo, unidad_id, etiquetas, grave, ocurrido_en)
+  (tenant_id, proveedor, evento_id_externo, unidad_id, viaje_id, operador_id, etiquetas, grave, ocurrido_en)
 values
   ('a0000000-0000-0000-0000-000000000001', 'poison-test', 'evt-poison',
-   'b0000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-05T10:00:00Z'),
+   'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+   'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-05T10:00:00Z'),
   ('a0000000-0000-0000-0000-000000000001', 'poison-test', 'evt-siguiente',
-   'b0000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-05T10:01:00Z');
+   'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+   'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-05T10:01:00Z');
 
 do $$
 declare c uuid; id text; i integer; ok boolean; instante timestamptz;
@@ -176,8 +241,9 @@ begin
     'poison-1', 360, '2026-09-05T11:00:00Z');
   if id <> 'evt-poison' then raise exception 'no reclamó poison primero'; end if;
   ok := public.finalizar_evento_seguridad(
-    'a0000000-0000-0000-0000-000000000001', 'poison-test', id, c,
-    false, null, 'fallo permanente', '2026-09-05T11:00:01Z');
+    p_tenant=>'a0000000-0000-0000-0000-000000000001', p_proveedor=>'poison-test',
+    p_evento_id_externo=>id, p_claim_token=>c, p_exito=>false,
+    p_error=>'fallo permanente', p_ahora=>'2026-09-05T11:00:01Z');
   if not ok then raise exception 'no aplicó backoff al poison'; end if;
 
   select evento_id_externo, claim_token into id, c
@@ -186,8 +252,9 @@ begin
     'siguiente', 360, '2026-09-05T11:00:02Z');
   if id <> 'evt-siguiente' then raise exception 'poison bloqueó evento posterior'; end if;
   perform public.finalizar_evento_seguridad(
-    'a0000000-0000-0000-0000-000000000001', 'poison-test', id, c,
-    true, null, null, '2026-09-05T11:00:03Z');
+    p_tenant=>'a0000000-0000-0000-0000-000000000001', p_proveedor=>'poison-test',
+    p_evento_id_externo=>id, p_claim_token=>c, p_exito=>true,
+    p_aviso_estado=>'no_requerido', p_ahora=>'2026-09-05T11:00:03Z');
 
   for i in 2..5 loop
     instante := '2026-09-05T11:00:00Z'::timestamptz + i * interval '1 day';
@@ -197,8 +264,9 @@ begin
       'poison-' || i, 360, instante);
     if id <> 'evt-poison' then raise exception 'poison no reintentó intento %', i; end if;
     perform public.finalizar_evento_seguridad(
-      'a0000000-0000-0000-0000-000000000001', 'poison-test', id, c,
-      false, null, 'fallo permanente', instante + interval '1 second');
+      p_tenant=>'a0000000-0000-0000-0000-000000000001', p_proveedor=>'poison-test',
+      p_evento_id_externo=>id, p_claim_token=>c, p_exito=>false,
+      p_error=>'fallo permanente', p_ahora=>instante + interval '1 second');
   end loop;
   if not exists (
     select 1 from public.evento_seguridad_flota
@@ -214,9 +282,10 @@ end $$;
 
 -- El catálogo activo no gobierna el outbox ya durable.
 insert into public.evento_seguridad_flota
-  (tenant_id, proveedor, evento_id_externo, unidad_id, etiquetas, grave, ocurrido_en)
+  (tenant_id, proveedor, evento_id_externo, unidad_id, viaje_id, operador_id, etiquetas, grave, ocurrido_en)
 values ('a0000000-0000-0000-0000-000000000001', 'sin-credencial', 'evt-sin-token',
-        'b0000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-20T00:00:00Z');
+        'b0000000-0000-0000-0000-000000000001', 'bd000000-0000-0000-0000-000000000001',
+        'bc000000-0000-0000-0000-000000000001', array['Crash'], true, '2026-09-20T00:00:00Z');
 do $$ begin
   if not exists (
     select 1 from public.listar_outboxes_eventos_pendientes(100, '2026-09-20T01:00:00Z')
@@ -269,9 +338,10 @@ end $$;
 
 -- 250 pendientes, claims de 50: el evento #201 aparece en el quinto lote.
 insert into public.evento_seguridad_flota
-  (tenant_id, proveedor, evento_id_externo, unidad_id, etiquetas, grave, ocurrido_en)
+  (tenant_id, proveedor, evento_id_externo, unidad_id, viaje_id, operador_id, etiquetas, grave, ocurrido_en)
 select 'a0000000-0000-0000-0000-000000000001', 'samsara',
        'evt-' || lpad(g::text, 3, '0'), 'b0000000-0000-0000-0000-000000000001',
+       'bd000000-0000-0000-0000-000000000001', 'bc000000-0000-0000-0000-000000000001',
        case when g = 201 then array['Crash'] else array['HarshImpact'] end,
        true, '2026-09-03T13:00:00Z'::timestamptz + g * interval '1 second'
 from generate_series(1, 250) g;

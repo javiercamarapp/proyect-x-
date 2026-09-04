@@ -84,11 +84,19 @@ describe('getEstadoRastreo — los dos escalares salen de la base, no de las fil
       ultimoPoll: '2026-09-03T10:05:00Z', ultimoCompleto: '2026-09-03T10:00:00Z',
       ultimaMedida: '2026-09-03T09:58:00Z', backlogPendiente: true,
       paginas: 11, elementos: 5100, error: 'deadline',
+      eventosInvalidosUltima: 2, eventosInvalidosTotal: 9,
+      eventosEnCuarentena: 4, eventosCuarentenaMuertos: 1,
+      eventosOutboxPendientes: 3, eventosOutboxMuertos: 2,
+      avisosPendientes: 1, avisosMuertos: 1,
     }], error: null };
     const r = await getEstadoRastreo('t-1');
     expect(r.polls[0]).toMatchObject({
       ultimoPoll: '2026-09-03T10:05:00Z', ultimaMedida: '2026-09-03T09:58:00Z',
       backlogPendiente: true, paginas: 11, elementos: 5100,
+      eventosInvalidosUltima: 2, eventosInvalidosTotal: 9,
+      eventosEnCuarentena: 4, eventosCuarentenaMuertos: 1,
+      eventosOutboxPendientes: 3, eventosOutboxMuertos: 2,
+      avisosPendientes: 1, avisosMuertos: 1,
     });
     expect(r.ultimaPosicion).toBeNull();
   });

@@ -38,6 +38,7 @@ import { dispararAsistenciaPorEventoCamara } from '../asistencia_camara';
 import type { Http } from './tipos';
 import { conPool } from '../lotes';
 import { finalizarPoll, reclamarPolls } from './poll_durable';
+import { createHash } from 'node:crypto';
 
 /** 6× la cadencia del cron: cubre corridas saltadas sin estado por flota. */
 const VENTANA_MS = 30 * 60 * 1000;
@@ -77,6 +78,13 @@ export interface ResultadoSyncEventos {
   invalidos?: number;
   /** Referencias mínimas guardadas para reparación, sin video/coords/labels. */
   cuarentena?: number;
+  referenciasIrrecuperables?: number;
+  eventosEnCuarentena?: number;
+  eventosCuarentenaMuertos?: number;
+  eventosOutboxPendientes?: number;
+  eventosOutboxMuertos?: number;
+  avisosPendientes?: number;
+  avisosMuertos?: number;
   /** El token sirve pero no trae el scope de eventos: el panel debe decirlo. */
   sinPermiso?: boolean;
   /**
@@ -112,11 +120,18 @@ interface GravePendiente {
   url_evento: unknown;
   max_g: unknown;
   claim_token?: unknown;
+  viaje_id?: unknown;
+  operador_id?: unknown;
+  viaje_folio?: unknown;
+  intentos?: unknown;
 }
 
 interface EvaluacionPrivacidad {
   autorizado: boolean;
   motivo: 'sin_viaje_historico' | 'viaje_ambiguo' | 'sin_aviso_previo' | 'ok';
+  viajeId?: string;
+  operadorId?: string;
+  viajeFolio?: string | null;
 }
 
 interface EventoConUnidad {
@@ -163,12 +178,12 @@ async function evaluarPrivacidadHistorica(
   const dias = entradas.map((e) => diaEnZona(e.evento.ocurridoEn, zonaHoraria)).sort();
   const maxOcurrido = entradas.map((e) => e.evento.ocurridoEn).sort().at(-1) as string;
   const viajes: Array<{
-    unidad_id: unknown; operador_id: unknown; fecha_inicio: unknown; fecha_fin: unknown; aceptado_en: unknown;
+    id: unknown; folio: unknown; unidad_id: unknown; operador_id: unknown; fecha_inicio: unknown; fecha_fin: unknown; aceptado_en: unknown;
   }> = [];
   for (const tanda of enTandas(unidades, IDS_POR_CONSULTA)) {
     const { data, error } = await acotada(
       supabaseAdmin().from('viaje')
-        .select('unidad_id, operador_id, fecha_inicio, fecha_fin, aceptado_en')
+        .select('id, folio, unidad_id, operador_id, fecha_inicio, fecha_fin, aceptado_en')
         .eq('tenant_id', tenantId)
         .in('unidad_id', tanda)
         .or(`fecha_inicio.lte.${dias.at(-1)},and(fecha_inicio.is.null,aceptado_en.lte.${maxOcurrido})`)
@@ -206,19 +221,36 @@ async function evaluarPrivacidadHistorica(
       porEvento.set(entrada.evento.eventoId, { autorizado: false, motivo: 'sin_viaje_historico' });
       continue;
     }
-    const ids = [...new Set(candidatos.map((v) => String(v.operador_id)))];
-    if (ids.length !== 1) {
+    // La relación que se persiste es VIAJE→OPERADOR. Dos viajes que cubren el
+    // mismo instante siguen siendo ambiguos aunque apunten al mismo chofer.
+    if (candidatos.length !== 1) {
       porEvento.set(entrada.evento.eventoId, { autorizado: false, motivo: 'viaje_ambiguo' });
       continue;
     }
-    const aviso = avisos.get(ids[0]);
+    const candidato = candidatos[0];
+    const operadorId = String(candidato.operador_id);
+    const aviso = avisos.get(operadorId);
     const autorizado = aviso != null && Date.parse(aviso) <= Date.parse(entrada.evento.ocurridoEn);
     porEvento.set(entrada.evento.eventoId, {
       autorizado,
       motivo: autorizado ? 'ok' : 'sin_aviso_previo',
+      ...(autorizado ? {
+        viajeId: String(candidato.id), operadorId,
+        viajeFolio: candidato.folio == null ? null : String(candidato.folio),
+      } : {}),
     });
   }
   return { porEvento };
+}
+
+function tokenCuarentena(tenantId: string, proveedor: string, eventoId: string): string {
+  return `sha256:${createHash('sha256').update(`${tenantId}\n${proveedor}\n${eventoId}`).digest('hex')}`;
+}
+
+function horaOpaca(iso: string): string {
+  const d = new Date(iso);
+  d.setUTCMinutes(0, 0, 0);
+  return d.toISOString();
 }
 
 async function guardarCuarentena(
@@ -227,13 +259,11 @@ async function guardarCuarentena(
   entradas: ReadonlyArray<{ evento: EventoSeguridadLeido; motivo: string; unidadId?: string | null }>,
 ): Promise<{ guardadas: number; error?: string }> {
   if (entradas.length === 0) return { guardadas: 0 };
-  const filas = entradas.map(({ evento, motivo, unidadId }) => ({
+  const filas = entradas.map(({ evento, motivo }) => ({
     tenant_id: tenantId,
     proveedor,
-    evento_id_externo: evento.eventoId,
-    asset_id: evento.assetId,
-    unidad_id: unidadId ?? null,
-    ocurrido_en: evento.ocurridoEn,
+    evento_id_externo: tokenCuarentena(tenantId, proveedor, evento.eventoId),
+    ocurrido_en: horaOpaca(evento.ocurridoEn),
     motivo,
     // Deliberadamente NO se guardan lat/lng, etiquetas, liga al video ni G.
     // La referencia permite releer al proveedor cuando se repare el mapeo o
@@ -327,7 +357,7 @@ async function releerCuarentena(
     }
     const centro = Date.parse(String(q.ocurrido_en));
     const desde = new Date(centro - 5 * 60_000).toISOString();
-    const hasta = new Date(centro + 5 * 60_000).toISOString();
+    const hasta = new Date(centro + 65 * 60_000).toISOString();
     const r = await lector(valores, http, desde, {
       hastaIso: hasta, venceEn: opciones.venceEn, ahora: opciones.ahoraMs, dormir: opciones.dormir,
     });
@@ -336,7 +366,9 @@ async function releerCuarentena(
       await finalizarCuarentena(tenantId, proveedor, q, false, r.motivo);
       continue;
     }
-    const encontrado = r.eventos.find((e) => e.eventoId === String(q.evento_id_externo));
+    const referencia = String(q.evento_id_externo);
+    const encontrado = r.eventos.find((e) =>
+      e.eventoId === referencia || tokenCuarentena(tenantId, proveedor, e.eventoId) === referencia);
     if (!encontrado) {
       await finalizarCuarentena(tenantId, proveedor, q, false, 'el proveedor no devolvió la referencia');
       continue;
@@ -372,7 +404,7 @@ async function reclamarGraves(
   if (process.env.NODE_ENV !== 'test') return { error: 'el cliente Supabase no expone rpc' };
   const { data, error } = await acotada(
     admin.from('evento_seguridad_flota')
-      .select('evento_id_externo, unidad_id, etiquetas, lat, lng, ocurrido_en, url_evento, max_g')
+      .select('evento_id_externo, unidad_id, etiquetas, lat, lng, ocurrido_en, url_evento, max_g, viaje_id, operador_id, viaje_folio, intentos')
       .eq('tenant_id', tenantId)
       .eq('proveedor', proveedor)
       .eq('grave', true)
@@ -391,6 +423,9 @@ async function finalizarGrave(
   pendiente: GravePendiente,
   exito: boolean,
   incidenciaId: string | null,
+  avisoEstado: 'no_requerido' | 'pending' | 'sent' | 'dead' | null,
+  avisoOutboxId: string | null,
+  avisoReceipt: string | null,
   errorDisparo: string | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const admin = supabaseAdmin();
@@ -402,6 +437,9 @@ async function finalizarGrave(
       p_claim_token: pendiente.claim_token,
       p_exito: exito,
       p_incidencia_id: incidenciaId,
+      p_aviso_estado: avisoEstado,
+      p_aviso_outbox_id: avisoOutboxId,
+      p_aviso_receipt: avisoReceipt,
       p_error: errorDisparo,
     }), 'eventos.finalizar');
     if (error) return { ok: false, error: error.message };
@@ -411,7 +449,11 @@ async function finalizarGrave(
   if (process.env.NODE_ENV !== 'test') return { ok: false, error: 'evento sin claim_token' };
   const { error } = await acotada(
     admin.from('evento_seguridad_flota')
-      .update({ procesado_en: new Date().toISOString(), incidencia_id: incidenciaId })
+      .update({
+        procesado_en: avisoEstado === 'pending' ? null : new Date().toISOString(),
+        incidencia_id: incidenciaId, aviso_estado: avisoEstado,
+        aviso_outbox_id: avisoOutboxId, aviso_receipt: avisoReceipt,
+      })
       .eq('tenant_id', tenantId)
       .eq('proveedor', proveedor)
       .eq('evento_id_externo', String(pendiente.evento_id_externo)),
@@ -459,10 +501,17 @@ async function drenarGravesPersistidos(
         ocurridoEn: String(p.ocurrido_en),
         urlEvento: (p.url_evento as string | null) ?? null,
         maxG: p.max_g === null ? null : Number(p.max_g),
+        viajeId: p.viaje_id == null ? null : String(p.viaje_id),
+        operadorId: p.operador_id == null ? null : String(p.operador_id),
+        viajeFolio: p.viaje_folio == null ? null : String(p.viaje_folio),
+        reintento: Number(p.intentos ?? 1) > 1,
       });
       if (disparo.resultado === 'fallo') {
         logger.warn('eventos.disparo_fallido', { tenantId, evento: p.evento_id_externo });
-        const liberado = await finalizarGrave(tenantId, proveedor, p, false, null, 'disparo fallido');
+        const liberado = await finalizarGrave(
+          tenantId, proveedor, p, false, disparo.incidenciaId ?? null,
+          null, null, null, 'disparo fallido',
+        );
         if (!liberado.ok) {
           logger.warn('eventos.liberacion_fallo', { tenantId, evento: p.evento_id_externo, err: liberado.error });
         }
@@ -474,7 +523,11 @@ async function drenarGravesPersistidos(
         continue;
       }
       const sellado = await finalizarGrave(
-        tenantId, proveedor, p, true, disparo.incidenciaId ?? null, null,
+        tenantId, proveedor, p, true, disparo.incidenciaId ?? null,
+        disparo.avisoEstado === 'encolado' ? 'pending'
+          : disparo.avisoEstado === 'enviado' ? 'sent'
+            : disparo.avisoEstado === 'muerto' ? 'dead' : 'no_requerido',
+        disparo.avisoOutboxId ?? null, disparo.avisoReceipt ?? null, null,
       );
       if (!sellado.ok) {
         logger.warn('eventos.sello_fallo', { tenantId, evento: p.evento_id_externo, err: sellado.error });
@@ -512,6 +565,15 @@ async function drenarOutboxesGlobales(
     leidos: 0, guardados: 0, huerfanos: 0, disparos: 0, backlog: true,
     error: r.error instanceof Error ? r.error.message : String(r.error),
   }));
+}
+
+async function leerSaludOperativaEventos(): Promise<Array<Record<string, unknown>>> {
+  const admin = supabaseAdmin();
+  if (typeof (admin as unknown as { rpc?: unknown }).rpc !== 'function') return [];
+  const { data, error } = await acotada(admin.rpc('estado_eventos_gps_operativo'), 'eventos.salud_operativa');
+  if (error) throw new Error(`no se pudo leer la salud operativa de eventos: ${error.message}`);
+  if (!Array.isArray(data)) throw new Error('estado_eventos_gps_operativo devolvió otra forma');
+  return data as Array<Record<string, unknown>>;
 }
 
 /** Sincroniza los eventos de seguridad de UNA flota con UN proveedor. */
@@ -649,7 +711,13 @@ export async function sincronizarEventosDeFlota(
     const unidadId = e.assetId ? porDevice.get(e.assetId) ?? null : null;
     if (!unidadId) {
       base.huerfanos += 1;
-      paraCuarentena.push({ evento: e, motivo: 'unidad_sin_mapear' });
+      const referenciaIncompleta = e.assetId === null;
+      if (referenciaIncompleta) {
+        base.referenciasIrrecuperables = (base.referenciasIrrecuperables ?? 0) + 1;
+        base.backlog = true;
+        base.error ??= 'Samsara devolvió una referencia sin asset; la ventana no puede declararse completa.';
+      }
+      paraCuarentena.push({ evento: e, motivo: referenciaIncompleta ? 'referencia_incompleta' : 'unidad_sin_mapear' });
       continue;
     }
     const evaluacion = privacidad.porEvento.get(e.eventoId);
@@ -675,6 +743,9 @@ export async function sincronizarEventosDeFlota(
       ocurrido_en: e.ocurridoEn,
       url_evento: e.urlEvento,
       max_g: e.maxG,
+      viaje_id: evaluacion.viajeId,
+      operador_id: evaluacion.operadorId,
+      viaje_folio: evaluacion.viajeFolio ?? null,
     });
   }
 
@@ -721,11 +792,15 @@ export async function sincronizarEventosDeFlota(
     const unidadId = e.assetId ? porDevice.get(e.assetId) : null;
     const { error } = await acotada(
       supabaseAdmin().from('evento_seguridad_flota')
-        .update({ unidad_id: unidadId, asset_id: e.assetId })
+        .update({
+          unidad_id: unidadId, asset_id: e.assetId,
+          viaje_id: privacidad.porEvento.get(e.eventoId)?.viajeId ?? null,
+          operador_id: privacidad.porEvento.get(e.eventoId)?.operadorId ?? null,
+          viaje_folio: privacidad.porEvento.get(e.eventoId)?.viajeFolio ?? null,
+        })
         .eq('tenant_id', tenantId)
         .eq('proveedor', conectorId)
-        .eq('evento_id_externo', e.eventoId)
-        .is('unidad_id', null),
+        .eq('evento_id_externo', e.eventoId),
       'eventos.reparar_legacy_null',
     );
     const claims = recuperados.claims.get(e.eventoId) ?? [];
@@ -903,6 +978,26 @@ export async function sincronizarEventosTodas(
     outboxesPorPar.delete(`${r.tenantId}|${r.proveedor}`);
   }
   salida.push(...outboxesPorPar.values());
+  const salud = await leerSaludOperativaEventos();
+  const saludPorPar = new Map(salud.map((m) => [`${String(m.tenant_id)}|${String(m.proveedor)}`, m]));
+  const paresEnSalida = new Set(salida.map((r) => `${r.tenantId}|${r.proveedor}`));
+  for (const [llave, m] of saludPorPar) {
+    if (paresEnSalida.has(llave)) continue;
+    salida.push({
+      tenantId: String(m.tenant_id), proveedor: String(m.proveedor),
+      leidos: 0, guardados: 0, huerfanos: 0, disparos: 0,
+    });
+  }
+  for (const r of salida) {
+    const m = saludPorPar.get(`${r.tenantId}|${r.proveedor}`);
+    if (!m) continue;
+    r.eventosEnCuarentena = Number(m.eventos_en_cuarentena ?? 0);
+    r.eventosCuarentenaMuertos = Number(m.eventos_cuarentena_muertos ?? 0);
+    r.eventosOutboxPendientes = Number(m.eventos_outbox_pendientes ?? 0);
+    r.eventosOutboxMuertos = Number(m.eventos_outbox_muertos ?? 0);
+    r.avisosPendientes = Number(m.avisos_pendientes ?? 0);
+    r.avisosMuertos = Number(m.avisos_muertos ?? 0);
+  }
   const sinTurno = salida.filter((r) => r.sinTurno).length;
   if (sinTurno > 0) {
     // WARN con nombre propio: aquí lo que se queda sin correr es el barrido de

@@ -109,6 +109,13 @@ export async function GET(req: Request) {
     const recortadas = resultados.reduce((s, r) => s + (r.recortadas ?? 0), 0);
     const sinAvisoPrevio = resultados.reduce((s, r) => s + (r.sinAvisoPrevio ?? 0), 0);
     const eventosSinAvisoPrevio = eventos.reduce((s, r) => s + (r.sinAvisoPrevio ?? 0), 0);
+    const enCuarentena = eventos.reduce((s, r) => s + (r.eventosEnCuarentena ?? 0), 0);
+    const cuarentenaMuertos = eventos.reduce((s, r) => s + (r.eventosCuarentenaMuertos ?? 0), 0);
+    const outboxPendientes = eventos.reduce((s, r) => s + (r.eventosOutboxPendientes ?? 0), 0);
+    const outboxMuertos = eventos.reduce((s, r) => s + (r.eventosOutboxMuertos ?? 0), 0);
+    const avisosPendientes = eventos.reduce((s, r) => s + (r.avisosPendientes ?? 0), 0);
+    const avisosMuertos = eventos.reduce((s, r) => s + (r.avisosMuertos ?? 0), 0);
+    const eventosMuertos = cuarentenaMuertos + outboxMuertos + avisosMuertos;
 
     // Las huérfanas no son un error de la corrida, pero tampoco son ruido: son
     // camiones que el proveedor reporta y que ninguna unidad reclama. Van en el
@@ -145,6 +152,8 @@ export async function GET(req: Request) {
         sinAvisoPrevio: eventosSinAvisoPrevio,
         sinPermiso: eventos.filter((r) => r.sinPermiso).map((r) => ({ tenantId: r.tenantId, proveedor: r.proveedor })),
         conError: eventosConError.length,
+        enCuarentena, cuarentenaMuertos, outboxPendientes, outboxMuertos,
+        avisosPendientes, avisosMuertos,
         errores: eventosConError.map((r) => ({ tenantId: r.tenantId, proveedor: r.proveedor, error: r.error })),
       },
       // El detalle SIN la credencial: aquí solo viaja el id del proveedor.
@@ -158,7 +167,14 @@ export async function GET(req: Request) {
     // `parcial` también con recorte o con unidades sin aviso: en los dos casos
     // hay camiones que esta corrida NO sincronizó, y un «ok» lo taparía.
     const incompleta = recortadas > 0 || backlog > 0 || eventosBacklog > 0 ||
+      enCuarentena > 0 || outboxPendientes > 0 || avisosPendientes > 0 || eventosMuertos > 0 ||
       sinAvisoPrevio > 0 || eventosSinAvisoPrevio > 0;
+    if (eventosMuertos > 0) {
+      const afectados = eventos.filter((r) =>
+        (r.eventosCuarentenaMuertos ?? 0) + (r.eventosOutboxMuertos ?? 0) + (r.avisosMuertos ?? 0) > 0)
+        .map((r) => `${r.tenantId}/${r.proveedor}`).join(', ');
+      await alertarOperador('cron.gps.dlq', { afectados, eventosMuertos });
+    }
     if (conError.length > 0 || eventosConError.length > 0 || cortadaPorReloj || incompleta) {
       logger.warn('cron.gps.parcial', cuerpo);
       await registrarLatido('gps', 'parcial', {
@@ -168,6 +184,7 @@ export async function GET(req: Request) {
         recortadas,
         backlogPendiente: backlog + eventosBacklog,
         sinAvisoPrevio: sinAvisoPrevio + eventosSinAvisoPrevio,
+        eventosMuertos,
       });
     } else {
       logger.info('cron.gps.ok', cuerpo);

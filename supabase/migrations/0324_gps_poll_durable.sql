@@ -287,6 +287,16 @@ create table if not exists public.evento_seguridad_cuarentena (
     or (claim_token is not null and claim_worker is not null and claim_expires_at is not null)
   )
 );
+alter table public.evento_seguridad_cuarentena
+  drop constraint if exists evento_seguridad_cuarentena_motivo_check;
+alter table public.evento_seguridad_cuarentena
+  add constraint evento_seguridad_cuarentena_motivo_check check (motivo in (
+    'payload_invalido', 'unidad_sin_mapear', 'sin_viaje_historico',
+    'viaje_ambiguo', 'sin_aviso_previo', 'legacy_unidad_null',
+    'legacy_identidad_null', 'referencia_incompleta'
+  ));
+comment on column public.evento_seguridad_cuarentena.evento_id_externo is
+  'Token opaco sha256 para referencias pre-aviso; valores crudos sólo existen en filas legacy. Permite releer sin persistir una referencia individualizable.';
 create index if not exists evento_cuarentena_pendiente_idx
   on public.evento_seguridad_cuarentena
     (tenant_id, proveedor, siguiente_intento_en, ocurrido_en)
@@ -399,7 +409,41 @@ alter table public.evento_seguridad_flota
   add column if not exists intentos integer not null default 0,
   add column if not exists ultimo_error text,
   add column if not exists siguiente_intento_en timestamptz not null default '-infinity',
-  add column if not exists muerto_en timestamptz;
+  add column if not exists muerto_en timestamptz,
+  add column if not exists viaje_id uuid,
+  add column if not exists operador_id uuid,
+  add column if not exists viaje_folio text,
+  add column if not exists aviso_outbox_id uuid references public.wa_outbox(id) on delete set null,
+  add column if not exists aviso_estado text,
+  add column if not exists aviso_receipt text;
+
+alter table public.evento_seguridad_flota drop constraint if exists evento_seguridad_aviso_estado_check;
+alter table public.evento_seguridad_flota add constraint evento_seguridad_aviso_estado_check
+  check (aviso_estado is null or aviso_estado in ('no_requerido', 'pending', 'sending', 'sent', 'dead'));
+
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'evento_seguridad_viaje_tenant_fkey') then
+    alter table public.evento_seguridad_flota add constraint evento_seguridad_viaje_tenant_fkey
+      foreign key (viaje_id, tenant_id) references public.viaje(id, tenant_id) on delete set null (viaje_id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'evento_seguridad_operador_tenant_fkey') then
+    alter table public.evento_seguridad_flota add constraint evento_seguridad_operador_tenant_fkey
+      foreign key (operador_id, tenant_id) references public.operador(id, tenant_id) on delete set null (operador_id);
+  end if;
+end $$;
+
+-- Filas creadas por la primera versión de 0324 aún no tienen la identidad
+-- histórica autorizada. No se disparan con el viaje de "hoy": se releen por
+-- token opaco y sólo entonces se vuelven elegibles.
+insert into public.evento_seguridad_cuarentena
+  (tenant_id, proveedor, evento_id_externo, ocurrido_en, motivo)
+select e.tenant_id, e.proveedor,
+       'sha256:' || encode(digest(e.tenant_id::text || E'\n' || e.proveedor || E'\n' || e.evento_id_externo, 'sha256'), 'hex'),
+       date_trunc('hour', e.ocurrido_en), 'legacy_identidad_null'
+from public.evento_seguridad_flota e
+where e.grave and e.unidad_id is not null and e.procesado_en is null
+  and (e.viaje_id is null or e.operador_id is null)
+on conflict on constraint evento_seguridad_cuarentena_pkey do nothing;
 
 alter table public.evento_seguridad_flota drop constraint if exists evento_seguridad_claim_coherente;
 alter table public.evento_seguridad_flota add constraint evento_seguridad_claim_coherente check (
@@ -414,7 +458,21 @@ drop index if exists public.evento_seguridad_outbox_pendiente_idx;
 create index evento_seguridad_outbox_pendiente_idx
   on public.evento_seguridad_flota
     (tenant_id, proveedor, siguiente_intento_en, ocurrido_en, id)
-  where grave and unidad_id is not null and procesado_en is null and muerto_en is null;
+  where grave and unidad_id is not null and procesado_en is null
+    and muerto_en is null and aviso_outbox_id is null;
+
+create index if not exists evento_seguridad_aviso_pendiente_idx
+  on public.evento_seguridad_flota (aviso_outbox_id)
+  where aviso_outbox_id is not null and procesado_en is null;
+create index if not exists evento_seguridad_aviso_salud_idx
+  on public.evento_seguridad_flota (tenant_id, proveedor, aviso_outbox_id)
+  where aviso_outbox_id is not null and procesado_en is null;
+create index if not exists evento_seguridad_muerto_salud_idx
+  on public.evento_seguridad_flota (tenant_id, proveedor)
+  where muerto_en is not null;
+create index if not exists evento_cuarentena_muerta_salud_idx
+  on public.evento_seguridad_cuarentena (tenant_id, proveedor)
+  where muerto_en is not null;
 
 create or replace function public.reclamar_eventos_seguridad(
   p_tenant uuid,
@@ -433,7 +491,11 @@ returns table (
   ocurrido_en timestamptz,
   url_evento text,
   max_g numeric,
-  claim_token uuid
+  claim_token uuid,
+  viaje_id uuid,
+  operador_id uuid,
+  viaje_folio text,
+  intentos integer
 )
 language plpgsql
 security definer
@@ -454,6 +516,9 @@ begin
        and e.unidad_id is not null
        and e.procesado_en is null
        and e.muerto_en is null
+       and e.aviso_outbox_id is null
+       and e.viaje_id is not null
+       and e.operador_id is not null
        and e.siguiente_intento_en <= p_ahora
        and (e.claim_token is null or e.claim_expires_at <= p_ahora)
      order by e.ocurrido_en, e.id
@@ -468,7 +533,8 @@ begin
     from elegibles x
    where e.id = x.id
   returning e.evento_id_externo, e.unidad_id, e.etiquetas, e.lat, e.lng,
-            e.ocurrido_en, e.url_evento, e.max_g, e.claim_token;
+            e.ocurrido_en, e.url_evento, e.max_g, e.claim_token,
+            e.viaje_id, e.operador_id, e.viaje_folio, e.intentos;
 end;
 $$;
 
@@ -491,7 +557,9 @@ as $$
   select e.tenant_id, e.proveedor
   from public.evento_seguridad_flota e
   where e.grave and e.unidad_id is not null and e.procesado_en is null
-    and e.muerto_en is null and e.siguiente_intento_en <= p_ahora
+    and e.muerto_en is null and e.aviso_outbox_id is null
+    and e.viaje_id is not null and e.operador_id is not null
+    and e.siguiente_intento_en <= p_ahora
   group by e.tenant_id, e.proveedor
   order by min(e.siguiente_intento_en), min(e.ocurrido_en), e.tenant_id, e.proveedor
   limit greatest(1, least(p_limite, 500));
@@ -499,6 +567,38 @@ $$;
 revoke all on function public.listar_outboxes_eventos_pendientes(integer, timestamptz) from public, anon, authenticated;
 grant execute on function public.listar_outboxes_eventos_pendientes(integer, timestamptz) to service_role;
 
+-- Inserta la intención antes de cualquier POST a Meta. Un timeout/kill puede
+-- repetir esta RPC, pero la llave estable devuelve la misma fila.
+create or replace function public.encolar_wa_outbox_dedupe(
+  p_dedupe_key text,
+  p_payload jsonb,
+  p_error text default null
+)
+returns table (id uuid, estado text, provider_message_id text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if btrim(coalesce(p_dedupe_key, '')) = '' or length(p_dedupe_key) > 300
+     or p_dedupe_key not like 'gps:%' then
+    raise exception 'dedupe_key GPS inválida';
+  end if;
+  if p_payload is null or jsonb_typeof(p_payload) <> 'object'
+     or p_payload->>'to' is null or p_payload->>'type' <> 'interactive' then
+    raise exception 'payload WA GPS inválido';
+  end if;
+  return query
+  insert into public.wa_outbox as o (dedupe_key, payload, ultimo_error)
+  values (p_dedupe_key, p_payload, left(coalesce(p_error, 'alerta GPS pendiente'), 500))
+  on conflict (dedupe_key) do update set dedupe_key = excluded.dedupe_key
+  returning o.id, o.estado, o.provider_message_id;
+end;
+$$;
+revoke all on function public.encolar_wa_outbox_dedupe(text, jsonb, text) from public, anon, authenticated;
+grant execute on function public.encolar_wa_outbox_dedupe(text, jsonb, text) to service_role;
+
+drop function if exists public.finalizar_evento_seguridad(uuid, text, text, uuid, boolean, uuid, text, timestamptz);
 create or replace function public.finalizar_evento_seguridad(
   p_tenant uuid,
   p_proveedor text,
@@ -506,6 +606,9 @@ create or replace function public.finalizar_evento_seguridad(
   p_claim_token uuid,
   p_exito boolean,
   p_incidencia_id uuid default null,
+  p_aviso_estado text default null,
+  p_aviso_outbox_id uuid default null,
+  p_aviso_receipt text default null,
   p_error text default null,
   p_ahora timestamptz default clock_timestamp()
 )
@@ -517,9 +620,21 @@ as $$
 declare
   n integer;
 begin
+  if p_exito and coalesce(p_aviso_estado, '') not in ('no_requerido', 'pending', 'sent', 'dead') then
+    raise exception 'estado de aviso exitoso inválido';
+  end if;
+  if p_exito and p_aviso_estado in ('pending', 'sent', 'dead') and p_aviso_outbox_id is null then
+    raise exception 'aviso durable sin outbox';
+  end if;
   update public.evento_seguridad_flota
-     set procesado_en = case when p_exito then p_ahora else null end,
-         incidencia_id = case when p_exito then p_incidencia_id else incidencia_id end,
+     set procesado_en = case
+           when p_exito and p_aviso_estado in ('no_requerido', 'sent') then p_ahora
+           else null
+         end,
+         incidencia_id = coalesce(p_incidencia_id, incidencia_id),
+         aviso_estado = case when p_exito then p_aviso_estado else aviso_estado end,
+         aviso_outbox_id = case when p_exito then p_aviso_outbox_id else aviso_outbox_id end,
+         aviso_receipt = case when p_exito then p_aviso_receipt else aviso_receipt end,
          ultimo_error = case when p_exito then null else left(coalesce(p_error, 'disparo fallido'), 1000) end,
          siguiente_intento_en = case
            when p_exito or intentos >= 5 then '-infinity'::timestamptz
@@ -539,8 +654,40 @@ begin
 end;
 $$;
 
-revoke all on function public.finalizar_evento_seguridad(uuid, text, text, uuid, boolean, uuid, text, timestamptz) from public, anon, authenticated;
-grant execute on function public.finalizar_evento_seguridad(uuid, text, text, uuid, boolean, uuid, text, timestamptz) to service_role;
+revoke all on function public.finalizar_evento_seguridad(uuid, text, text, uuid, boolean, uuid, text, uuid, text, text, timestamptz) from public, anon, authenticated;
+grant execute on function public.finalizar_evento_seguridad(uuid, text, text, uuid, boolean, uuid, text, uuid, text, text, timestamptz) to service_role;
+
+-- El receipt de Meta es la evidencia de entrega. Hasta que wa_outbox cambia a
+-- sent, el evento queda sin procesado_en. Dead también permanece visible.
+create or replace function public.sincronizar_aviso_evento_seguridad()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.estado = 'sent' then
+    update public.evento_seguridad_flota
+       set aviso_estado = 'sent', aviso_receipt = new.provider_message_id,
+           procesado_en = coalesce(new.enviada_en, clock_timestamp()), ultimo_error = null
+     where aviso_outbox_id = new.id and procesado_en is null;
+  elsif new.estado = 'dead' then
+    update public.evento_seguridad_flota
+       set aviso_estado = 'dead', ultimo_error = left(coalesce(new.ultimo_error, 'aviso WA agotó reintentos'), 1000)
+     where aviso_outbox_id = new.id and procesado_en is null;
+  elsif new.estado in ('pending', 'sending') then
+    update public.evento_seguridad_flota set aviso_estado = new.estado
+     where aviso_outbox_id = new.id and procesado_en is null;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.sincronizar_aviso_evento_seguridad() from public, anon, authenticated;
+drop trigger if exists wa_outbox_sincroniza_evento_seguridad on public.wa_outbox;
+create trigger wa_outbox_sincroniza_evento_seguridad
+after update of estado, provider_message_id on public.wa_outbox
+for each row when (old.estado is distinct from new.estado or old.provider_message_id is distinct from new.provider_message_id)
+execute function public.sincronizar_aviso_evento_seguridad();
 
 -- ── Salud: poll, medición y backlog son tres relojes distintos ─────────────
 create or replace function public.estado_poll_gps_tenant(p_tenant uuid)
@@ -565,13 +712,40 @@ as $$
       select count(*) from public.evento_seguridad_cuarentena q
       where q.tenant_id = conector_poll_estado.tenant_id
         and q.proveedor = conector_poll_estado.proveedor
-        and q.resuelto_en is null
+        and q.resuelto_en is null and q.muerto_en is null
+    ),
+    'eventosCuarentenaMuertos', (
+      select count(*) from public.evento_seguridad_cuarentena q
+      where q.tenant_id = conector_poll_estado.tenant_id
+        and q.proveedor = conector_poll_estado.proveedor
+        and q.muerto_en is not null
+    ),
+    'eventosOutboxPendientes', (
+      select count(*) from public.evento_seguridad_flota e
+      where e.tenant_id = conector_poll_estado.tenant_id
+        and e.proveedor = conector_poll_estado.proveedor
+        and e.grave and e.procesado_en is null and e.muerto_en is null
+        and e.aviso_outbox_id is null
     ),
     'eventosOutboxMuertos', (
       select count(*) from public.evento_seguridad_flota e
       where e.tenant_id = conector_poll_estado.tenant_id
         and e.proveedor = conector_poll_estado.proveedor
         and e.muerto_en is not null
+    ),
+    'avisosPendientes', (
+      select count(*) from public.evento_seguridad_flota e
+      join public.wa_outbox w on w.id = e.aviso_outbox_id
+      where e.tenant_id = conector_poll_estado.tenant_id
+        and e.proveedor = conector_poll_estado.proveedor
+        and e.procesado_en is null and w.estado in ('pending', 'sending')
+    ),
+    'avisosMuertos', (
+      select count(*) from public.evento_seguridad_flota e
+      join public.wa_outbox w on w.id = e.aviso_outbox_id
+      where e.tenant_id = conector_poll_estado.tenant_id
+        and e.proveedor = conector_poll_estado.proveedor
+        and e.procesado_en is null and w.estado = 'dead'
     ),
     'error', ultimo_error
   ) order by proveedor, recurso), '[]'::jsonb)
@@ -581,6 +755,50 @@ $$;
 
 revoke all on function public.estado_poll_gps_tenant(uuid) from public, anon, authenticated;
 grant execute on function public.estado_poll_gps_tenant(uuid) to service_role;
+
+create or replace function public.estado_eventos_gps_operativo()
+returns table (
+  tenant_id uuid,
+  proveedor text,
+  eventos_en_cuarentena bigint,
+  eventos_cuarentena_muertos bigint,
+  eventos_outbox_pendientes bigint,
+  eventos_outbox_muertos bigint,
+  avisos_pendientes bigint,
+  avisos_muertos bigint
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  with pares as (
+    select distinct s.tenant_id, s.proveedor
+    from public.conector_poll_estado s
+    where s.recurso = 'eventos'
+    union
+    select distinct e.tenant_id, e.proveedor from public.evento_seguridad_flota e
+    union
+    select distinct q.tenant_id, q.proveedor from public.evento_seguridad_cuarentena q
+  )
+  select p.tenant_id, p.proveedor,
+    (select count(*) from public.evento_seguridad_cuarentena q
+      where q.tenant_id=p.tenant_id and q.proveedor=p.proveedor and q.resuelto_en is null and q.muerto_en is null),
+    (select count(*) from public.evento_seguridad_cuarentena q
+      where q.tenant_id=p.tenant_id and q.proveedor=p.proveedor and q.muerto_en is not null),
+    (select count(*) from public.evento_seguridad_flota e
+      where e.tenant_id=p.tenant_id and e.proveedor=p.proveedor and e.grave
+        and e.procesado_en is null and e.muerto_en is null and e.aviso_outbox_id is null),
+    (select count(*) from public.evento_seguridad_flota e
+      where e.tenant_id=p.tenant_id and e.proveedor=p.proveedor and e.muerto_en is not null),
+    (select count(*) from public.evento_seguridad_flota e join public.wa_outbox w on w.id=e.aviso_outbox_id
+      where e.tenant_id=p.tenant_id and e.proveedor=p.proveedor and e.procesado_en is null and w.estado in ('pending','sending')),
+    (select count(*) from public.evento_seguridad_flota e join public.wa_outbox w on w.id=e.aviso_outbox_id
+      where e.tenant_id=p.tenant_id and e.proveedor=p.proveedor and e.procesado_en is null and w.estado='dead')
+  from pares p order by p.tenant_id, p.proveedor;
+$$;
+revoke all on function public.estado_eventos_gps_operativo() from public, anon, authenticated;
+grant execute on function public.estado_eventos_gps_operativo() to service_role;
 
 -- ── Coordenadas por REST: operación sí; contador no ────────────────────────
 create or replace function public.ve_operacion()

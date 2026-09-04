@@ -26,6 +26,10 @@ export interface Rastreo {
     proveedor: string; recurso: 'posiciones' | 'eventos'; ultimoPoll: string | null;
     ultimoCompleto: string | null; ultimaMedida: string | null;
     backlogPendiente: boolean; paginas: number; elementos: number; error: string | null;
+    eventosInvalidosUltima: number; eventosInvalidosTotal: number;
+    eventosEnCuarentena: number; eventosCuarentenaMuertos: number;
+    eventosOutboxPendientes: number; eventosOutboxMuertos: number;
+    avisosPendientes: number; avisosMuertos: number;
   }>;
   /** Una por unidad activa con posición, ya proyectada al viewBox. */
   pines: PinUnidad[];
@@ -131,10 +135,13 @@ export function VistaMapa({ ubicados, sinUbicar, totalVivos, tope, rastreo }: {
             ) : (
               <>
                 {rastreo.polls.map((p) => (
-                  <p key={`${p.proveedor}:${p.recurso}`} className="text-[11px] mt-1" style={{ color: p.backlogPendiente ? 'var(--warn)' : 'var(--faint)' }}>
+                  <p key={`${p.proveedor}:${p.recurso}`} className="text-[11px] mt-1" style={{ color: p.backlogPendiente || p.eventosCuarentenaMuertos > 0 || p.eventosOutboxMuertos > 0 || p.avisosMuertos > 0 ? 'var(--warn)' : 'var(--faint)' }}>
                     {p.proveedor} · {p.recurso}: poll {p.ultimoPoll ? fechaHoraMx(p.ultimoPoll) : 'nunca'};
                     {' '}medida {p.ultimaMedida ? fechaHoraMx(p.ultimaMedida) : 'ninguna'};
                     {' '}{p.backlogPendiente ? `backlog pendiente${p.error ? ` (${p.error.slice(0, 100)})` : ''}` : `${numero(p.elementos)} elementos / ${numero(p.paginas)} páginas`}.
+                    {p.recurso === 'eventos' && (p.eventosEnCuarentena + p.eventosOutboxPendientes + p.avisosPendientes + p.eventosCuarentenaMuertos + p.eventosOutboxMuertos + p.avisosMuertos > 0)
+                      ? ` Atención: ${numero(p.eventosEnCuarentena)} en cuarentena, ${numero(p.eventosOutboxPendientes)} eventos pendientes, ${numero(p.avisosPendientes)} avisos pendientes; ${numero(p.eventosCuarentenaMuertos + p.eventosOutboxMuertos + p.avisosMuertos)} agotaron reintentos.`
+                      : ''}
                   </p>
                 ))}
                 <p className="text-[11px] mb-3" style={{ color: 'var(--faint)' }}>

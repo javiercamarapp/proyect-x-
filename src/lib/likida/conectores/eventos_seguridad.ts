@@ -138,6 +138,10 @@ export async function leerEventosSeguridadSamsara(
       // cambios de estado de coaching (el default `updatedAtTime` re-manda un
       // evento cada vez que alguien lo revisa en el inbox de Samsara).
       url.searchParams.set('queryByTimeField', 'createdAtTime');
+      // Sin esta expansión Samsara puede entregar un evento válido sin la
+      // referencia del vehículo. Ese evento no se puede atribuir ni reparar
+      // de forma segura, por lo que la ventana tampoco se puede confirmar.
+      url.searchParams.set('includeAsset', 'true');
       // Acotar la ventana: sin endTime el stream se queda en modo "sigue
       // preguntando"; este poller es de lotes, no un stream vivo.
       url.searchParams.set('endTime', hastaIso);

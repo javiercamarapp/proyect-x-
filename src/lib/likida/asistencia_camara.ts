@@ -35,8 +35,7 @@ import { acotada } from './presupuesto';
 import { crearIncidencia } from './operacion';
 import { anotarEventoIncidencia, TIPOS_ASISTENCIA, RANGO_TIPO, type TipoAsistencia } from './asistencia_wa';
 import { telefonoJefeDe } from './contactos';
-import { sendButtons } from '@/lib/meta/client';
-import { hoyMx } from '@/lib/formato';
+import { encolarBotonesWhatsApp } from '@/lib/meta/client';
 
 export interface EventoCamaraGrave {
   tenantId: string;
@@ -51,65 +50,18 @@ export interface EventoCamaraGrave {
   ocurridoEn: string;
   urlEvento: string | null;
   maxG: number | null;
+  viajeId: string | null;
+  operadorId: string | null;
+  viajeFolio: string | null;
+  reintento: boolean;
 }
 
 export interface ResultadoDisparo {
   resultado: 'abierta' | 'anotada_en_existente' | 'fallo';
   incidenciaId?: string;
-  avisado?: boolean;
-}
-
-/**
- * El viaje VIGENTE de la unidad AL MOMENTO del evento — es la ruta al operador.
- *
- * AUDITORÍA FABLE CICLO 2 (c2-6): antes se tomaba el viaje abierto más
- * reciente AL MOMENTO DEL POLL, y la ventana traslapada procesa eventos hasta
- * 30 minutos tarde — si en ese lapso el viaje del choque se cerró y se abrió
- * otro con la misma unidad y otro chofer, la incidencia crítica se colgaba
- * del operador y folio EQUIVOCADOS (y el índice 0201 le bloqueaba al chofer
- * equivocado su propio expediente). Ahora:
- *   · se buscan los viajes cuyo RANGO DE FECHAS (día de México) cubre el
- *     `ocurridoEn`, entre los no liquidados (`abierto`/`en_cuadre` — el que
- *     se cerró hace minutos sigue visible);
- *   · si TODOS los candidatos apuntan al mismo operador, ese es;
- *   · si hay operadores DISTINTOS entre los candidatos, es AMBIGUO y se cae
- *     al expediente-por-unidad (operador null): un 🚨 sin chofer nombrado es
- *     mejor que un 🚨 colgado del chofer equivocado.
- */
-async function viajeVigenteDeUnidad(
-  tenantId: string, unidadId: string, ocurridoEn: string,
-): Promise<{ viajeId: string; operadorId: string | null; folio: string | null } | null> {
-  // Las fechas del viaje son `date` capturadas en México: comparar contra el
-  // día UTC correría un evento de madrugada al día equivocado.
-  const dia = hoyMx(new Date(ocurridoEn));
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('viaje')
-    .select('id, operador_id, folio, estatus, fecha_inicio, fecha_fin')
-    .eq('tenant_id', tenantId)
-    .eq('unidad_id', unidadId)
-    .in('estatus', ['abierto', 'en_cuadre'])
-    .or(`fecha_inicio.is.null,fecha_inicio.lte.${dia}`)
-    .or(`fecha_fin.is.null,fecha_fin.gte.${dia}`)
-    .order('created_at', { ascending: false })
-    .limit(10), 'asistencia_camara.viaje');
-  if (error) throw new Error(`asistencia_camara.viaje: ${error.message}`);
-  const filas = data ?? [];
-  if (filas.length === 0) return null;
-
-  const operadores = new Set(filas.map((f) => String(f.operador_id ?? '')));
-  if (operadores.size > 1) {
-    // Dos choferes posibles para el mismo instante: no se adivina.
-    logger.warn('asistencia_camara.viaje_ambiguo', { tenant: tenantId, unidad: unidadId, candidatos: filas.length });
-    return null;
-  }
-  // Un solo operador posible: el viaje que se reporta es el abierto si lo
-  // hay (es donde el jefe va a mirar), o el más reciente que cubre el día.
-  const f = filas.find((x) => x.estatus === 'abierto') ?? filas[0];
-  return {
-    viajeId: f.id as string,
-    operadorId: (f.operador_id as string | null) ?? null,
-    folio: (f.folio as string | null) ?? null,
-  };
+  avisoEstado?: 'no_requerido' | 'encolado' | 'enviado' | 'muerto';
+  avisoOutboxId?: string;
+  avisoReceipt?: string;
 }
 
 /**
@@ -175,8 +127,7 @@ function descripcionDelEvento(e: EventoCamaraGrave): string {
  */
 export async function dispararAsistenciaPorEventoCamara(e: EventoCamaraGrave): Promise<ResultadoDisparo> {
   try {
-    const viaje = await viajeVigenteDeUnidad(e.tenantId, e.unidadId, e.ocurridoEn);
-    const operadorId = viaje?.operadorId ?? null;
+    const operadorId = e.operadorId;
 
     const abierta = await expedienteAbierto(e.tenantId, operadorId, e.unidadId);
     if (abierta) {
@@ -219,19 +170,25 @@ export async function dispararAsistenciaPorEventoCamara(e: EventoCamaraGrave): P
         await anotarEventoIncidencia(e.tenantId, abierta.id, 'escalada', {
           de: abierta.tipo, a: rangoCamara > rangoAbierto ? 'siniestro' : abierta.tipo, fuente: 'camara', evento: e.eventoIdExterno,
         });
-        const avisado = await avisarAlJefePorCamara(e, abierta.id, viaje?.folio ?? null);
-        await anotarEventoIncidencia(e.tenantId, abierta.id, avisado ? 'aviso_jefe_enviado' : 'aviso_jefe_fallido', { fuente: 'camara' });
-        logger.info('asistencia_camara.escalada', { incidencia: abierta.id, de: abierta.tipo, evento: e.eventoIdExterno, avisado });
-        return { resultado: 'anotada_en_existente', incidenciaId: abierta.id, avisado };
+        const aviso = await avisarAlJefePorCamara(e, abierta.id, e.viajeFolio);
+        await anotarEventoIncidencia(e.tenantId, abierta.id, aviso ? 'aviso_jefe_encolado' : 'aviso_jefe_fallido', { fuente: 'camara' });
+        if (!aviso) return { resultado: 'fallo', incidenciaId: abierta.id };
+        logger.info('asistencia_camara.escalada', { incidencia: abierta.id, de: abierta.tipo, evento: e.eventoIdExterno, aviso: aviso.avisoEstado });
+        return { resultado: 'anotada_en_existente', incidenciaId: abierta.id, ...aviso };
+      }
+      if (e.reintento) {
+        const aviso = await avisarAlJefePorCamara(e, abierta.id, e.viajeFolio);
+        if (!aviso) return { resultado: 'fallo', incidenciaId: abierta.id };
+        return { resultado: 'anotada_en_existente', incidenciaId: abierta.id, ...aviso };
       }
       logger.info('asistencia_camara.anotada', { incidencia: abierta.id, evento: e.eventoIdExterno });
-      return { resultado: 'anotada_en_existente', incidenciaId: abierta.id };
+      return { resultado: 'anotada_en_existente', incidenciaId: abierta.id, avisoEstado: 'no_requerido' };
     }
 
     let incidenciaId: string;
     try {
       incidenciaId = await crearIncidencia(e.tenantId, {
-        viajeId: viaje?.viajeId ?? null,
+        viajeId: e.viajeId,
         unidadId: e.unidadId,
         operadorId,
         tipo: 'siniestro',
@@ -255,7 +212,12 @@ export async function dispararAsistenciaPorEventoCamara(e: EventoCamaraGrave): P
             proveedor: e.proveedor, evento: e.eventoIdExterno, etiquetas: e.etiquetas,
             lat: e.lat, lng: e.lng, maxG: e.maxG, urlEvento: e.urlEvento,
           });
-          return { resultado: 'anotada_en_existente', incidenciaId: ganadora.id };
+          if (e.reintento) {
+            const aviso = await avisarAlJefePorCamara(e, ganadora.id, e.viajeFolio);
+            if (!aviso) return { resultado: 'fallo', incidenciaId: ganadora.id };
+            return { resultado: 'anotada_en_existente', incidenciaId: ganadora.id, ...aviso };
+          }
+          return { resultado: 'anotada_en_existente', incidenciaId: ganadora.id, avisoEstado: 'no_requerido' };
         }
       }
       throw err;
@@ -266,10 +228,11 @@ export async function dispararAsistenciaPorEventoCamara(e: EventoCamaraGrave): P
       lat: e.lat, lng: e.lng, maxG: e.maxG, urlEvento: e.urlEvento, ocurridoEn: e.ocurridoEn,
     });
 
-    const avisado = await avisarAlJefePorCamara(e, incidenciaId, viaje?.folio ?? null);
-    await anotarEventoIncidencia(e.tenantId, incidenciaId, avisado ? 'aviso_jefe_enviado' : 'aviso_jefe_fallido', { fuente: 'camara' });
-    logger.info('asistencia_camara.abierta', { incidencia: incidenciaId, evento: e.eventoIdExterno, avisado });
-    return { resultado: 'abierta', incidenciaId, avisado };
+    const aviso = await avisarAlJefePorCamara(e, incidenciaId, e.viajeFolio);
+    await anotarEventoIncidencia(e.tenantId, incidenciaId, aviso ? 'aviso_jefe_encolado' : 'aviso_jefe_fallido', { fuente: 'camara' });
+    if (!aviso) return { resultado: 'fallo', incidenciaId };
+    logger.info('asistencia_camara.abierta', { incidencia: incidenciaId, evento: e.eventoIdExterno, aviso: aviso.avisoEstado });
+    return { resultado: 'abierta', incidenciaId, ...aviso };
   } catch (err) {
     logger.error('asistencia_camara.fallo', {
       tenant: e.tenantId, unidad: e.unidadId, evento: e.eventoIdExterno,
@@ -282,17 +245,17 @@ export async function dispararAsistenciaPorEventoCamara(e: EventoCamaraGrave): P
 /** El 🚨 al jefe, con la fuente dicha con todas sus letras. */
 async function avisarAlJefePorCamara(
   e: EventoCamaraGrave, incidenciaId: string, folio: string | null,
-): Promise<boolean> {
+): Promise<Pick<ResultadoDisparo, 'avisoEstado' | 'avisoOutboxId' | 'avisoReceipt'> | null> {
   let telefono: string | null = null;
   try {
     telefono = await telefonoJefeDe(e.tenantId);
   } catch (err) {
     logger.error('asistencia_camara.jefe_ilegible', { tenant: e.tenantId, err: err instanceof Error ? err.message : String(err) });
-    return false;
+    return null;
   }
   if (!telefono) {
     logger.warn('asistencia_camara.sin_jefe', { tenant: e.tenantId, incidencia: incidenciaId });
-    return false;
+    return null;
   }
   const unidad = await rotuloUnidad(e.tenantId, e.unidadId);
   const cuerpo =
@@ -301,8 +264,12 @@ async function avisarAlJefePorCamara(
     `Tu chofer NO ha reportado nada por aquí todavía — puede que no pueda. ` +
     `MÁRCALE AHORA${e.urlEvento ? `, y el video está en tu panel del proveedor: ${e.urlEvento}` : ''}.` +
     `\n\nAprieta el botón para que sepamos que ya lo estás atendiendo.`;
-  const enviado = await sendButtons(telefono, cuerpo, [
+  const salida = await encolarBotonesWhatsApp(telefono, cuerpo, [
     { id: `asi_ok:${incidenciaId}`, titulo: 'Ya lo atiendo' },
-  ]);
-  return Boolean(enviado);
+  ], `gps:${e.proveedor}:${e.tenantId}:${e.eventoIdExterno}`);
+  if (!salida) return null;
+  if (salida.estado === 'dead') return { avisoEstado: 'muerto', avisoOutboxId: salida.id };
+  return salida.estado === 'sent'
+    ? { avisoEstado: 'enviado', avisoOutboxId: salida.id, avisoReceipt: salida.providerMessageId ?? undefined }
+    : { avisoEstado: 'encolado', avisoOutboxId: salida.id };
 }

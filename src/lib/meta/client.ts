@@ -5,7 +5,10 @@
 
 import crypto from 'crypto';
 import { logger } from '@/lib/logger';
-import { encolarSalidaWhatsApp, RETRASO_AMBIGUO_SEGUNDOS } from '@/lib/likida/wa_outbox';
+import {
+  encolarSalidaWhatsApp, encolarSalidaWhatsAppDedupe, RETRASO_AMBIGUO_SEGUNDOS,
+  type SalidaOutboxDedupe,
+} from '@/lib/likida/wa_outbox';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -385,6 +388,30 @@ export async function sendButtons(to: string, cuerpo: string, botones: BotonAcus
     if (payload) await encolarSalidaWhatsApp(payload, e instanceof Error ? e.message : String(e), RETRASO_AMBIGUO_SEGUNDOS);
     return null;
   }
+}
+
+/** Construye el mismo sobre que `sendButtons`, pero sólo registra una
+ * intención durable/idempotente. El worker de wa_outbox es el único que toca
+ * Meta, por lo que un timeout ambiguo nunca provoca un segundo productor. */
+export async function encolarBotonesWhatsApp(
+  to: string,
+  cuerpo: string,
+  botones: BotonAcuse[],
+  dedupeKey: string,
+): Promise<SalidaOutboxDedupe | null> {
+  const invalido = motivoBotonesInvalidos(cuerpo, botones);
+  if (invalido || !dedupeKey.trim() || dedupeKey.length > 300) {
+    logger.error('wa.encolarButtons.invalido', invalido ?? { dedupeKey: 'inválida' });
+    return null;
+  }
+  const payload = {
+    messaging_product: 'whatsapp', to: destinatarioWhatsApp(to), type: 'interactive',
+    interactive: {
+      type: 'button', body: { text: cuerpo },
+      action: { buttons: botones.map((b) => ({ type: 'reply' as const, reply: { id: b.id, title: b.titulo } })) },
+    },
+  };
+  return encolarSalidaWhatsAppDedupe(dedupeKey, payload, 'alerta GPS pendiente de entrega');
 }
 
 /**

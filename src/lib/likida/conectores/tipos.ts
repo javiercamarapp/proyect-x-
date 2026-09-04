@@ -360,7 +360,9 @@ export function httpReal(): Http {
       redirect: 'manual',
       signal: AbortSignal.timeout(TIMEOUT_PRUEBA_MS),
     });
-    return { estado: r.status, cuerpo: await r.text() };
+    const respuestaHeaders: Record<string, string> = {};
+    r.headers.forEach((valor, llave) => { respuestaHeaders[llave.toLowerCase()] = valor; });
+    return { estado: r.status, cuerpo: await r.text(), encabezados: respuestaHeaders };
   };
 }
 

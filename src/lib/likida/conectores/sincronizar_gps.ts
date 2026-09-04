@@ -24,7 +24,7 @@ import { logger } from '@/lib/logger';
 import { acotada } from '../presupuesto';
 import { descifrar } from './cofre';
 import { lectorDe, LECTORES_POSICION } from './posiciones';
-import type { Http } from './tipos';
+import { httpReal as crearHttpReal, type Http } from './tipos';
 import { conPool } from '../lotes';
 import { unidadesSinAvisoPrevio } from '../privacidad';
 import { finalizarPoll, reclamarPolls } from './poll_durable';
@@ -111,17 +111,7 @@ function enTandas<T>(items: readonly T[], tamano: number): T[][] {
 }
 
 /** El `Http` real. Se inyecta para poder probar sin red. */
-export const httpReal: Http = async (p) => {
-  const r = await fetch(p.url, {
-    method: p.metodo,
-    headers: p.encabezados,
-    body: p.cuerpo,
-    signal: AbortSignal.timeout(15_000),
-  });
-  const encabezados: Record<string, string> = {};
-  r.headers.forEach((valor, llave) => { encabezados[llave.toLowerCase()] = valor; });
-  return { estado: r.status, cuerpo: await r.text(), encabezados };
-};
+export const httpReal: Http = crearHttpReal();
 
 /**
  * Sincroniza las posiciones de UNA flota con UN proveedor.

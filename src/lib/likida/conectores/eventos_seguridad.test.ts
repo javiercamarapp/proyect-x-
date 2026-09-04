@@ -111,6 +111,10 @@ describe('leerEventosSeguridadSamsara', () => {
     // Pide por fecha de CREACIÓN (no updatedAtTime): un cambio de estado de
     // coaching en el inbox de Samsara no debe re-entregar el evento.
     expect(llamadas[0]).toContain('queryByTimeField=createdAtTime');
+    // Sin esta expansión Samsara puede omitir `asset.id`: el evento queda sin
+    // una referencia reparable al camión y ningún circuito de asistencia puede
+    // atribuirlo de forma segura.
+    expect(llamadas.every((u) => new URL(u).searchParams.get('includeAsset') === 'true')).toBe(true);
     expect(llamadas[0]).toContain('startTime=');
   });
 

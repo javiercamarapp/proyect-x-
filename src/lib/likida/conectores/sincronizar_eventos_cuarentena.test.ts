@@ -6,7 +6,8 @@ vi.mock('../presupuesto', () => ({ acotada: (q: unknown) => q }));
 vi.mock('./cofre', () => ({ descifrar: (v: string) => JSON.parse(v) }));
 
 const disparar = vi.hoisted(() => vi.fn(async () => ({
-  resultado: 'abierta' as const, incidenciaId: 'inc-legacy', avisado: true,
+  resultado: 'abierta' as const, incidenciaId: 'inc-legacy',
+  avisoEstado: 'encolado' as const, avisoOutboxId: 'outbox-legacy',
 })));
 vi.mock('../asistencia_camara', () => ({ dispararAsistenciaPorEventoCamara: disparar }));
 
