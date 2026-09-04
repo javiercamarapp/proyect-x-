@@ -83,13 +83,10 @@ export async function GET(req: Request) {
     // sin turno sin que nadie se enterara. `cortadosPorReloj` viaja en el
     // cuerpo, y una corrida que dejó trabajo pendiente se registra como
     // `parcial` — ni «ok» ni «fallo», que son las dos maneras de mentir aquí.
-    // `listaTruncada` cuenta como PARCIAL igual que el corte por reloj, y por
-    // el mismo motivo: la ventana no se barrió entera. La diferencia es que el
-    // reloj se recupera solo en la corrida siguiente y el tope NO —la lista
-    // sale ordenada por `aceptado_en` ascendente, así que una ventana que
-    // rebasa el tope devuelve siempre los mismos viajes viejos y los recientes
-    // no se derivan nunca—. Un `ok` aquí sería un cron verde sobre un registro
-    // laboral que se está quedando vacío.
+    // `listaTruncada` cuenta como PARCIAL igual que el corte por reloj: esta
+    // invocación no terminó la ventana. La cola 0319 conserva los trabajos y
+    // sólo ACKea los realmente intentados, así que ambos caminos convergen en
+    // corridas posteriores sin ocultar aquí el atraso.
     // AUDITORÍA 22, LEG-C1: un operador sin aviso previo NO es un fallo del
     // cron —el motor hizo lo correcto al negarse—, pero SÍ deja su registro de
     // jornada vacío, y eso el latido tiene que decirlo o el hueco es invisible.
