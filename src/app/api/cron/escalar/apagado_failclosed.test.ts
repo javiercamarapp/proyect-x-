@@ -63,6 +63,15 @@ vi.mock('@/lib/likida/agentes/cobranza', () => ({
 vi.mock('@/lib/likida/reglas/vigilante', () => ({
   vigilarReglas: async () => ({ reglas: 0, disparadas: 0, avisos: 0, fallos: 0 }),
 }));
+// El barrido CRM comparte cron desde 0323; este arnés aísla la lectura real
+// de interruptores. Su contrato y sus errores se prueban en route.test.ts.
+vi.mock('@/lib/admin/calcom', () => ({
+  ejecutarMantenimientoCalcom: async () => ({
+    configured: true, completa: true, provisionado: false, revisadas: 0,
+    cortadasPorReloj: 0,
+    ledger: { configured: true, revisados: 0, recuperados: 0, restantes: 0 },
+  }),
+}));
 const alertarOperador = vi.fn(async () => {});
 vi.mock('@/lib/observability/alerta', () => ({
   alertarOperador: (...a: unknown[]) => alertarOperador(...(a as [])),
