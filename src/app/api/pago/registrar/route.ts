@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { rateLimit, clientIp } from '@/lib/ratelimit';
+import { rateLimit, clientIp, bodyExcede } from '@/lib/ratelimit';
 import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 import { DatoInvalido } from '@/lib/likida/errores';
@@ -18,6 +18,7 @@ import { avisarPropuestaAlContralor } from '@/lib/likida/portal_pago_aviso';
 //
 // Candados, EN ESTE ORDEN (el molde es `/api/marketing/prospecto`, #124):
 //
+//  0. Tamaño declarado excesivo: 413 sin consultar el limitador distribuido.
 //  1. Límite de tasa por IP (10 / 10 min), antes de leer el stream.
 //  2. Tope de cuerpo (4 KB) durante la lectura. Cinco campos caben de sobra.
 //  3. Honeypot (`sitioWeb`): si viene lleno, 200 SIN escribir. Decirle al bot
@@ -58,6 +59,8 @@ interface Cuerpo {
 const s = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 export async function POST(req: Request) {
+  // Rechazo barato de tamaño declarado; el stream sigue acotado tras la cuota.
+  if (bodyExcede(req, 4_000)) return NextResponse.json({ error: 'Envío demasiado grande.' }, { status: 413 });
   if (!(await rateLimit(`portal-pago:${clientIp(req)}`, 10, 10 * 60_000))) {
     return NextResponse.json({ error: 'Demasiados intentos. Espera unos minutos y vuelve a intentarlo.' }, { status: 429 });
   }

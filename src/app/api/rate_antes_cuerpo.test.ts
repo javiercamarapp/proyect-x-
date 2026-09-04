@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/ratelimit', () => ({ rateLimit: vi.fn(), clientIp: () => 'ip-prueba' }));
+vi.mock('@/lib/ratelimit', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/ratelimit')>(),
+  rateLimit: vi.fn(), clientIp: () => 'ip-prueba',
+}));
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: vi.fn() }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/likida/vendedores', () => ({ crearProspecto: vi.fn(), validarProspecto: vi.fn() }));
