@@ -6,7 +6,7 @@
  * aterrice donde su rol manda, porque un estado guardado a medias haría
  * pasar en falso todo lo que dependa de él.
  */
-import { test as preparar, expect } from '@playwright/test';
+import { test as preparar, expect } from './apoyo/fixture';
 import { CORREOS, ESTADOS, entrar } from './apoyo/sesion';
 
 preparar('dueña (flota_admin de Flota Demo) → /dashboard', async ({ page }) => {

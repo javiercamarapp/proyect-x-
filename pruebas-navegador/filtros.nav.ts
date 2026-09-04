@@ -8,7 +8,7 @@
  * negativo conocidos.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
 
 test.use({ storageState: ESTADOS.duena });

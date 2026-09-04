@@ -18,9 +18,10 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { entornoLocalE2E, enlaceLocalE2E, protegerPaginaLocalE2E } from '../../scripts/ci/e2e/entorno-local.mjs';
 
 /** API de Mailpit, la trampa de correo del Supabase local ([local_smtp]). */
-export const MAILPIT = process.env.MAILPIT_URL || 'http://127.0.0.1:54324';
+export const MAILPIT = entornoLocalE2E().mailpit;
 
 /** Identidades sembradas por scripts/ci/e2e/sembrar-e2e.mjs — nunca reales. */
 export const CORREOS = {
@@ -63,6 +64,7 @@ export async function mensajesDe(
 ): Promise<MensajeMailpit[]> {
   const r = await req.get(`${MAILPIT}/api/v1/search`, {
     params: { query: `to:"${correo}"`, limit: '20' },
+    maxRedirects: 0,
   });
   if (!r.ok()) throw new Error(`Mailpit respondió ${r.status()} — ¿está arriba el Supabase local?`);
   const cuerpo = (await r.json()) as { messages?: MensajeMailpit[] };
@@ -88,14 +90,14 @@ export async function enlaceDelCorreo(
     })
     .not.toBe('');
 
-  const r = await req.get(`${MAILPIT}/api/v1/message/${id}`);
+  const r = await req.get(`${MAILPIT}/api/v1/message/${encodeURIComponent(id)}`, { maxRedirects: 0 });
   if (!r.ok()) throw new Error(`Mailpit no entregó el mensaje ${id}: HTTP ${r.status()}`);
   const mensaje = (await r.json()) as { Text?: string; HTML?: string };
   // El cuerpo de texto trae la URL limpia; el HTML la trae con &amp;.
   const texto = `${mensaje.Text ?? ''}\n${(mensaje.HTML ?? '').replace(/&amp;/g, '&')}`;
   const enlace = texto.match(/https?:\/\/[^\s"'<>)\]]*\/auth\/v1\/verify[^\s"'<>)\]]*/)?.[0];
   if (!enlace) throw new Error(`el correo para ${correo} no trae enlace /auth/v1/verify`);
-  return enlace;
+  return enlaceLocalE2E(enlace);
 }
 
 /**
@@ -106,6 +108,7 @@ export async function enlaceDelCorreo(
  * y el canje del callback lo necesita — igual que el dispositivo del usuario.
  */
 export async function entrar(page: Page, correo: string): Promise<void> {
+  await protegerPaginaLocalE2E(page);
   const desde = Date.now();
   await pedirEnlace(page, correo);
   const enlace = await enlaceDelCorreo(page.request, correo, desde);

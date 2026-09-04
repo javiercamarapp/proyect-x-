@@ -50,16 +50,11 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { exigirUrlLocal, fetchLocalE2E } from './entorno-local.mjs';
 
-const url = process.env.SUPABASE_URL || 'http://127.0.0.1:54321';
+const url = exigirUrlLocal(process.env.SUPABASE_URL ?? 'http://127.0.0.1:54321', 'SUPABASE_URL');
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const host = new URL(url).hostname;
-if (host !== '127.0.0.1' && host !== 'localhost') {
-  console.error(`REHUSADO: «${host}» no es un Supabase local. Esta siembra crea usuarios de prueba y`);
-  console.error('sobrescribe el PDF de una liquidación — no tiene ningún uso legítimo fuera de 127.0.0.1.');
-  process.exit(1);
-}
 if (!serviceKey) {
   console.error('Falta SUPABASE_SERVICE_ROLE_KEY (la imprime `supabase status`).');
   process.exit(1);
@@ -75,7 +70,7 @@ const USUARIOS = [
   { email: 'intrusa.e2e@likida.test', nombre: 'Intrusa E2E', rol: 'flota_admin', tenant: TENANT_B },
 ];
 
-const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
+const admin = createClient(url, serviceKey, { auth: { persistSession: false }, global: { fetch: fetchLocalE2E } });
 
 /** supabase-js reporta errores POR VALOR: aquí todo fallo detiene la siembra
  *  con su mensaje — una siembra a medias produce pruebas que mienten. */

@@ -1,4 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
+import { entornoLocalE2E } from './scripts/ci/e2e/entorno-local.mjs';
+
+const entorno = entornoLocalE2E();
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -61,9 +64,10 @@ export default defineConfig({
   ],
   outputDir: 'pruebas-navegador/.artefactos',
   use: {
+    serviceWorkers: 'block',
     // `localhost`, no `127.0.0.1` — ver la cabecera de este archivo y de
     // `supabase/config.toml` [auth].
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
+    baseURL: entorno.app,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     locale: 'es-MX',

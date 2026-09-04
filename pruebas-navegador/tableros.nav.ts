@@ -10,7 +10,7 @@
  * `pageerror` sí, porque es una excepción sin atrapar en el navegador.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
 
 /** Junta las excepciones de página desde ANTES de navegar; se afirma al final. */

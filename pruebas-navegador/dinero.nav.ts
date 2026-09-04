@@ -26,13 +26,14 @@
  * autentica con él). En CI además la pila entera es efímera.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect, request as apiRequest } from '@playwright/test';
+import { test, expect, request as apiRequest } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
+import { entornoLocalE2E, getLocalE2E } from '../scripts/ci/e2e/entorno-local.mjs';
 
 /** Folio único por corrida: dos corridas locales seguidas no chocan. */
 const FOLIO = `E2E-${Date.now().toString(36).toUpperCase()}`;
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:54321';
+const SUPABASE_URL = entornoLocalE2E().supabase;
 
 test.describe('alta del viaje en Despacho', () => {
   test.use({ storageState: ESTADOS.duena });
@@ -40,12 +41,15 @@ test.describe('alta del viaje en Despacho', () => {
   test.afterAll(async () => {
     // Limpieza fail-closed: si el viaje quedó y no se pudo borrar, se dice.
     // (`request` de prueba no existe en afterAll; se abre un contexto propio.)
+    // Revalida antes de crear el contexto incluso si cambió el entorno.
+    entornoLocalE2E();
     const llave = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!llave) throw new Error('Falta SUPABASE_SERVICE_ROLE_KEY para la limpieza del viaje E2E.');
     const ctx = await apiRequest.newContext();
     try {
       const r = await ctx.delete(`${SUPABASE_URL}/rest/v1/viaje`, {
         params: { folio: `eq.${FOLIO}` },
+        maxRedirects: 0,
         headers: { apikey: llave, Authorization: `Bearer ${llave}` },
       });
       if (!r.ok()) throw new Error(`La limpieza del viaje ${FOLIO} respondió ${r.status()}.`);
@@ -105,7 +109,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     expect(pdfHref).toMatch(/^\/api\/export\/pdf\//);
 
     // La descarga real: sesión → rol → tenant → URL firmada → bytes de PDF.
-    const r = await page.request.get(pdfHref);
+    const r = await getLocalE2E(page.request, pdfHref);
     expect(r.status()).toBe(200);
     const cuerpo = await r.body();
     expect(cuerpo.subarray(0, 5).toString()).toBe('%PDF-');
@@ -119,7 +123,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     // no debe poder distinguir "no existe" de "existe y no es tuyo".
     const contextoB = await browser.newContext({ storageState: ESTADOS.intrusa });
     try {
-      const rIntrusa = await contextoB.request.get(pdfHref);
+      const rIntrusa = await getLocalE2E(contextoB.request, pdfHref);
       expect(rIntrusa.status()).toBe(404);
     } finally {
       await contextoB.close();
@@ -137,7 +141,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     // pero declarado aquí porque hace falta DENTRO del test, no en todo el describe).
     const contextoAnon = await browser.newContext({ storageState: { cookies: [], origins: [] } });
     try {
-      const rAnon = await contextoAnon.request.get(pdfHref);
+      const rAnon = await getLocalE2E(contextoAnon.request, pdfHref);
       expect(rAnon.status()).toBe(401);
     } finally {
       await contextoAnon.close();

@@ -29,7 +29,7 @@
  * Estas pruebas piden 4 de los 7 correos del presupuesto (ver apoyo/sesion).
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './apoyo/fixture';
 import { CORREOS, entrar, pedirEnlace, mensajesDe, enlaceDelCorreo } from './apoyo/sesion';
 
 test('sin sesión, /dashboard rebota a /login y conserva el destino', async ({ page }) => {

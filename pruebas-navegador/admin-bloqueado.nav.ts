@@ -10,7 +10,7 @@
  * `requireSuperadmin()` en admin/layout.tsx, que cubre todo /admin/*.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
 
 /** Las rutas que se atacan: la raíz y dos hondas, elegidas porque enseñan lo
