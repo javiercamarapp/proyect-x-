@@ -2,6 +2,17 @@ import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 import { exigirUrlLocal } from './entorno-local.mjs';
 
+function ipLoopback(hostname) {
+  // El destino del socket es una constante, incluso si la URL dice localhost.
+  // No dependemos de DNS, /etc/hosts ni de la resolución del entorno de CI.
+  switch (hostname) {
+    case 'localhost':
+    case '127.0.0.1': return '127.0.0.1';
+    case '[::1]': return '::1';
+    default: throw new Error('E2E_LOCAL_REQUERIDO: destino no local');
+  }
+}
+
 /** Proxy de pruebas: cada salto y popup usa esta frontera antes del socket.
  * Nunca resuelve ni conecta hosts externos. CONNECT admite sólo loopback:
  * APIRequestContext lo usa incluso para transportar HTTP local.
@@ -10,9 +21,13 @@ export async function crearProxyLocalE2E() {
   const tuneles = new Set();
   const servidor = createServer((entrada, salida) => {
     let url;
-    try { url = exigirUrlLocal(entrada.url ?? '', 'browser proxy', { ruta: true }); }
+    try { url = new URL(exigirUrlLocal(entrada.url ?? '', 'browser proxy', { ruta: true })); }
     catch { salida.writeHead(403); salida.end('E2E_LOCAL_REQUERIDO'); return; }
-    const upstream = request(url, { method: entrada.method, headers: entrada.headers }, (respuesta) => {
+    const upstream = request({
+      hostname: ipLoopback(url.hostname), port: Number(url.port || 80),
+      path: url.pathname + url.search, method: entrada.method, headers: entrada.headers,
+      agent: false,
+    }, (respuesta) => {
       salida.writeHead(respuesta.statusCode ?? 502, respuesta.headers);
       respuesta.pipe(salida);
     });
@@ -26,7 +41,7 @@ export async function crearProxyLocalE2E() {
       if (!/^(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]+$/.test(entrada.url ?? '')) throw new Error('destino inválido');
       destino = new URL(exigirUrlLocal(`http://${entrada.url}`, 'CONNECT local'));
     } catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
-    const upstream = connect(Number(destino.port || 80), destino.hostname.replace(/^\[|\]$/g, ''), () => {
+    const upstream = connect(Number(destino.port || 80), ipLoopback(destino.hostname), () => {
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) upstream.write(head);
       upstream.pipe(socket); socket.pipe(upstream);
