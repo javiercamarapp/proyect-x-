@@ -1,9 +1,9 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { run } from './supabase-preflight.mjs';
+import { run, validateSupabaseCa } from './supabase-preflight.mjs';
 
 const ref = 'abcdefghijklmnopqrst';
 const url = `postgresql://postgres.${ref}@aws-0-us-east-2.pooler.supabase.com:5432/postgres`;
@@ -17,7 +17,7 @@ describe('diagnóstico seguro del preflight PostgreSQL', () => {
     try {
       await run('connection', env, { read, spawn });
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(spawn).toHaveBeenCalledWith('psql', [expect.stringContaining('sslmode=verify-full&sslrootcert=system'), '-X', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-At', '-c', 'SELECT 1'], expect.objectContaining({ timeout: 30_000, env: expect.objectContaining({ PGOPTIONS: '-c default_transaction_read_only=on -c statement_timeout=15000' }) }));
+      expect(spawn).toHaveBeenCalledWith('psql', [expect.stringContaining('sslmode=verify-full&sslrootcert='), '-X', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-At', '-c', 'SELECT 1'], expect.objectContaining({ timeout: 30_000, env: expect.objectContaining({ PGOPTIONS: '-c default_transaction_read_only=on -c statement_timeout=15000' }) }));
       expect(JSON.stringify(log.mock.calls)).toContain('aws-0-us-east-2.pooler.supabase.com');
       expect(JSON.stringify(log.mock.calls)).not.toMatch(/postgresql:|postgres\.|synthetic-secret/);
     } finally { log.mockRestore(); }
@@ -33,6 +33,53 @@ describe('diagnóstico seguro del preflight PostgreSQL', () => {
     await expect(run('connection', env, { read: () => 'z'.repeat(20), spawn })).rejects.toThrow('Link de otro proyecto');
     await expect(run('connection', { ...env, SUPABASE_DB_URL: 'postgres://user:secret@external.example/db' }, { read, spawn })).rejects.toThrow('Destino PostgreSQL');
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('usa la CA pública fijada para ambos destinos y no permite reemplazarla por entorno', async () => {
+    for (const target of [url, `postgresql://postgres@db.${ref}.supabase.co:5432/postgres`]) {
+      const spawn = vi.fn((_command: string, _args: string[]) => ({ status: 0, stdout: '1\n' }));
+      await run('connection', { ...env, SUPABASE_DB_URL: target, PGSSLROOTCERT: '/untrusted/root.pem' }, { read, spawn });
+      const destination = new URL(spawn.mock.calls[0][1][0]);
+      expect(destination.searchParams.get('sslmode')).toBe('verify-full');
+      expect(destination.searchParams.get('sslrootcert')).toBe(resolve('scripts/ci/certs/supabase-root-2021.crt'));
+    }
+  });
+
+  it.each(['preflight', 'connection'])('%s aborta antes de psql si la CA falta o cambió', async (mode) => {
+    const spawn = vi.fn();
+    await expect(run(mode, env, { read, spawn, readCertificate: () => 'untrusted certificate synthetic-secret-canary' })).rejects.toThrow('PREFLIGHT_CA_INTEGRITY');
+    await expect(run(mode, env, { read, spawn, readCertificate: () => { throw new Error('private-file-path'); } })).rejects.toThrow('PREFLIGHT_CA_FILE');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('la CA fijada es pública y vigente; falla antes/después de su vigencia', () => {
+    const pem = readFileSync('scripts/ci/certs/supabase-root-2021.crt');
+    expect(pem.toString()).not.toContain('PRIVATE KEY');
+    expect(() => validateSupabaseCa(pem, Date.parse('2026-09-05T12:00:00Z'))).not.toThrow();
+    for (const now of [Date.parse('2021-04-28T10:56:52Z'), Date.parse('2031-04-26T10:56:54Z'), NaN]) {
+      expect(() => validateSupabaseCa(pem, now)).toThrow('PREFLIGHT_CA_VALIDITY');
+    }
+  });
+
+  it.each(['ausente', 'alterada'])('CLI real aborta con CA %s en una copia propia del helper', (state) => {
+    // macOS resuelve /var a /private/var al cargar el módulo: argv debe tener
+    // esa misma ruta real para que se ejecute la entrada CLI de la copia.
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'preflight-ca-'))); // eslint-disable-line security/detect-non-literal-fs-filename -- Directorio efímero propio.
+    try {
+      /* eslint-disable security/detect-non-literal-fs-filename -- Copias aisladas en mkdtemp propio para no alterar la CA versionada. */
+      mkdirSync(join(directory, 'supabase/.temp'), { recursive: true });
+      mkdirSync(join(directory, 'certs'));
+      writeFileSync(join(directory, 'supabase/.temp/project-ref'), ref);
+      writeFileSync(join(directory, 'supabase/.temp/pooler-url'), url);
+      writeFileSync(join(directory, 'helper.mjs'), readFileSync('scripts/ci/supabase-preflight.mjs'));
+      if (state === 'alterada') writeFileSync(join(directory, 'certs/supabase-root-2021.crt'), 'synthetic-secret-invalid-cert');
+      /* eslint-enable security/detect-non-literal-fs-filename */
+      const result = spawnSync(process.execPath, [join(directory, 'helper.mjs'), 'connection'], { cwd: directory, env: { ...env, PATH: directory }, encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(state === 'ausente' ? 'PREFLIGHT_CA_FILE' : 'PREFLIGHT_CA_INTEGRITY');
+      expect(result.stderr).not.toMatch(/synthetic-secret|postgresql:|PRIVATE KEY/);
+      expect(result.stdout).toBe('');
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
   it('job diagnóstico ejecuta connection después del listado y nunca preflight/DDL', () => {
@@ -79,7 +126,7 @@ describe('diagnóstico seguro del preflight PostgreSQL', () => {
   it('solicita SQLSTATE e idioma estable, conserva TLS y contraseña sólo en entorno', async () => {
     const spawn = vi.fn(() => ({ status: 0 }));
     await run('preflight', env, { read, spawn });
-    expect(spawn).toHaveBeenCalledWith('psql', expect.arrayContaining(['VERBOSITY=verbose', expect.stringContaining('sslmode=verify-full&sslrootcert=system')]), expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C', PGPASSWORD: env.SUPABASE_DB_PASSWORD }) }));
+    expect(spawn).toHaveBeenCalledWith('psql', expect.arrayContaining(['VERBOSITY=verbose', expect.stringContaining('sslmode=verify-full&sslrootcert=')]), expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C', PGPASSWORD: env.SUPABASE_DB_PASSWORD }) }));
   });
 
   it.each(['preflight', 'connection'])('CLI %s con proceso hijo real imprime sólo diagnóstico permitido y sale 1', (mode) => {

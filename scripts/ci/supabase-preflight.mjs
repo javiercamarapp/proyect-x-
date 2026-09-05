@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { createHash, X509Certificate } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const CA_PATH = fileURLToPath(new URL('./certs/supabase-root-2021.crt', import.meta.url));
+const CA_SHA256 = '700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7';
 
 // Sólo textos propios llegan a logs: nunca interpolar stderr, stdout, Error,
 // nombres SQL ni URLs. La verbosidad de psql permite reconocer SQLSTATE.
@@ -26,9 +30,23 @@ const DIAGNOSTICS = {
   PREFLIGHT_SQL_OTHER: 'PostgreSQL devolvió un error SQL no clasificado; revisar con acceso administrativo.',
   PREFLIGHT_UNKNOWN: 'psql falló sin diagnóstico reconocido; revisar con acceso administrativo. No continuar migraciones.',
   PREFLIGHT_CONNECTION_RESULT: 'psql terminó sin confirmar SELECT 1; no declarar la conexión verificada.',
+  PREFLIGHT_CA_FILE: 'No se pudo leer la CA pública versionada; restaurar el archivo del release revisado.',
+  PREFLIGHT_CA_INTEGRITY: 'La CA pública no coincide con el hash fijado; detener el release y verificar su procedencia.',
+  PREFLIGHT_CA_VALIDITY: 'La CA pública no es válida para la fecha actual; revisar reloj o rotación oficial sin relajar TLS.',
 };
 
 class PreflightError extends Error {}
+
+export function validateSupabaseCa(pem, now = Date.now()) {
+  if (createHash('sha256').update(pem).digest('hex') !== CA_SHA256) {
+    throw new PreflightError(`PREFLIGHT_CA_INTEGRITY: ${DIAGNOSTICS.PREFLIGHT_CA_INTEGRITY}`);
+  }
+  const certificate = new X509Certificate(pem);
+  if (!certificate.ca || !Number.isFinite(now)
+    || now < Date.parse(certificate.validFrom) || now > Date.parse(certificate.validTo)) {
+    throw new PreflightError(`PREFLIGHT_CA_VALIDITY: ${DIAGNOSTICS.PREFLIGHT_CA_VALIDITY}`);
+  }
+}
 
 function preflightFailure(result) {
   let code;
@@ -83,7 +101,8 @@ export function validateDatabase(raw, ref) {
   // reemplacen host, rol o base. PGPASSWORD va sólo al entorno del hijo psql.
   url.password = '';
   url.port = '5432';
-  url.search = '?sslmode=verify-full&sslrootcert=system';
+  url.search = '?sslmode=verify-full';
+  url.searchParams.set('sslrootcert', CA_PATH);
   return url.toString();
 }
 
@@ -116,6 +135,10 @@ export async function run(mode, env = process.env, deps = {}) {
   const read = deps.read ?? readFileSync;
   if (read('supabase/.temp/project-ref', 'utf8').trim() !== ref) throw new Error('Link de otro proyecto');
   const url = validateDatabase(env.SUPABASE_DB_URL || read('supabase/.temp/pooler-url', 'utf8'), ref);
+  let certificate;
+  try { certificate = (deps.readCertificate ?? readFileSync)(CA_PATH); }
+  catch { throw new PreflightError(`PREFLIGHT_CA_FILE: ${DIAGNOSTICS.PREFLIGHT_CA_FILE}`); }
+  validateSupabaseCa(certificate);
   const connection = mode === 'connection';
   if (connection) console.log(JSON.stringify({ connection_host: new URL(url).hostname, tls: 'verify-full', read_only: true }));
   const operation = connection ? ['-At', '-c', 'SELECT 1'] : ['-f', 'scripts/ci/0335_preflight_retencion_indices.sql'];
