@@ -47,6 +47,14 @@ export function validateCron(before, after) {
   if (before !== after) throw new Error('El destino de Cron cambió antes de promover; investigar efectos ya posibles');
 }
 
+export function validateBaseline(value) {
+  if (!/^dpl_[A-Za-z0-9]+$/.test(value?.current ?? '')
+    || !(value.cron === null || /^dpl_[A-Za-z0-9]+$/.test(value.cron ?? ''))) {
+    throw new Error('Identidad de baseline inválida');
+  }
+  return { current: value.current, cron: value.cron };
+}
+
 export function parseCookie(headers, origin) {
   const url = new URL(origin);
   if (url.protocol !== 'https:' || !/^[a-z0-9-]+\.vercel\.app$/.test(url.hostname)) throw new Error('Origin de cookie inválido');
@@ -113,7 +121,7 @@ export async function main(mode, reference, sha, extra, env = process.env) {
   if (mode === 'baseline') {
     const project = await api(`/v9/projects/${PROJECT}`, env);
     const current = await api(`/v13/deployments/${DOMAIN}`, env);
-    console.log(JSON.stringify({ current: current.id, cron: project.crons?.deploymentId ?? null }));
+    console.log(JSON.stringify(validateBaseline({ current: current.id, cron: project.crons?.deploymentId ?? null })));
     return;
   }
   if (!reference || !/^(dpl_[A-Za-z0-9]+|https:\/\/[a-z0-9-]+\.vercel\.app)$/.test(reference)) throw new Error('Referencia de deployment inválida');
@@ -121,7 +129,7 @@ export async function main(mode, reference, sha, extra, env = process.env) {
   const target = mode === 'smoke-preview' ? 'preview' : 'production';
   const candidate = validateDeployment(await api(`/v13/deployments/${key}`, env), sha, target, reference.startsWith('dpl_') ? reference : undefined);
   if (mode === 'candidate') {
-    const before = JSON.parse(readFileSync(extra, 'utf8')); // eslint-disable-line security/detect-non-literal-fs-filename -- ruta RUNNER_TEMP del workflow, no entrada HTTP.
+    const before = validateBaseline(JSON.parse(readFileSync(extra, 'utf8'))); // eslint-disable-line security/detect-non-literal-fs-filename -- ruta RUNNER_TEMP del workflow, no entrada HTTP.
     const project = await api(`/v9/projects/${PROJECT}`, env);
     validateCron(before.cron, project.crons?.deploymentId ?? null);
     const current = await api(`/v13/deployments/${DOMAIN}`, env);

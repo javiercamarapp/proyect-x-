@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { validateDatabase, freshBackup, run } from './supabase-preflight.mjs';
-import { validateDeployment, validateCron, parseCookie, withProtection, validateBrowserCookie, validateLanding, validatePreviewEnv, validateSupabaseEnv, main, STAGING_REF, PRODUCTION_REF, PROJECT, DOMAINS } from './production-candidate.mjs';
+import { validateDeployment, validateBaseline, validateCron, parseCookie, withProtection, validateBrowserCookie, validateLanding, validatePreviewEnv, validateSupabaseEnv, main, STAGING_REF, PRODUCTION_REF, PROJECT, DOMAINS } from './production-candidate.mjs';
 
 const workflow = readFileSync('.github/workflows/deploy-preview-promote.yml', 'utf8');
 function job(name: string) {
@@ -9,6 +9,12 @@ function job(name: string) {
 }
 
 describe('promoción del artefacto Production probado', () => {
+  it('rechaza identidades de baseline que podrían inyectar líneas en los outputs de Actions', () => {
+    expect(validateBaseline({ current: 'dpl_old', cron: null })).toEqual({ current: 'dpl_old', cron: null });
+    for (const value of [null, {}, { current: 'dpl_old\nid=dpl_other', cron: null }, { current: 'dpl_old', cron: 'arbitrary' }]) {
+      expect(() => validateBaseline(value)).toThrow('baseline');
+    }
+  });
   it('construye Production y evita asignar dominios al crear el candidato', () => {
     const candidate = job('production_candidate');
     expect(candidate).toContain('inputs.promote == true');
