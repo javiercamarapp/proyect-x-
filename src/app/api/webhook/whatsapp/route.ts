@@ -437,9 +437,11 @@ export async function POST(req: NextRequest) {
               detenerRenovacion();
             }
           } catch (e) {
-            // Ni el claim se pudo leer: la fila sigue pendiente y el cron la
-            // recupera — se anota y no se tumba el pool.
+            // La fila y sus sucesoras siguen en la bandeja para el cron.
+            // Detener este chofer impide que «listo» adelante un comprobante;
+            // los demás choferes conservan sus trabajadores del pool.
             logger.error('wa.claim_fallo', { id: f.id, err: e instanceof Error ? e.message : String(e) });
+            break;
           }
         }
       });

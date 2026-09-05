@@ -72,7 +72,10 @@ vi.mock('next/server', async (orig) => {
 // El inbox durable GENERAL (16-ago-2026): todo permitido se persiste antes
 // del 200 y se procesa reclamando su fila — el doble minimo que deja pasar
 // el flujo feliz sin base real.
-const { bandejaInbox } = vi.hoisted(() => ({ bandejaInbox: new Map<string, unknown>() }));
+const { bandejaInbox, fallosClaim } = vi.hoisted(() => ({
+  bandejaInbox: new Map<string, unknown>(),
+  fallosClaim: new Set<string>(),
+}));
 vi.mock('@/lib/likida/wa_pendientes', () => ({
   // DAT-34: la deduplicación previa al rate limit. Vacío = ninguno de estos
   // wamids estaba ya en la bandeja, que es el caso de una entrega normal.
@@ -85,8 +88,10 @@ vi.mock('@/lib/likida/wa_pendientes', () => ({
     });
     return { guardados: filas.length, fallidos: 0, filas };
   },
-  reclamarPendiente: async (id: string) =>
-    (bandejaInbox.has(id) ? { id, evento: bandejaInbox.get(id), intentos: 1 } : null),
+  reclamarPendiente: async (id: string) => {
+    if (fallosClaim.has(id)) throw new Error('lectura del claim agotó el tiempo');
+    return bandejaInbox.has(id) ? { id, evento: bandejaInbox.get(id), intentos: 1 } : null;
+  },
   marcarPendienteProcesado: async () => undefined,
   anotarFalloPendiente: async () => undefined,
 }));
@@ -136,6 +141,7 @@ async function postear(body: string) {
 beforeEach(() => {
   enVuelo = 0; pico = 0; atendidos.length = 0; enviados.length = 0;
   processInbound.mockClear();
+  fallosClaim.clear();
   logger.info.mockClear(); logger.warn.mockClear(); logger.error.mockClear();
 });
 
@@ -163,9 +169,9 @@ describe('la ráfaga de un POST se procesa con techo de concurrencia', () => {
     expect(pico, 'el techo del pool sigue puesto').toBeLessThanOrEqual(5);
   });
 
-  it('un mensaje que revienta no cancela a los demás', async () => {
+  it('un mensaje que revienta no cancela a los demás choferes', async () => {
     processInbound.mockImplementationOnce(async () => { throw new Error('boom'); });
-    await postear(rafaga(8, '5219990001004'));
+    await postear(rafagaVarios(1, 8, '5219990001004'));
     expect(processInbound).toHaveBeenCalledTimes(8);
     expect(atendidos).toHaveLength(7);   // el que reventó no llegó al final
   });
@@ -274,5 +280,29 @@ describe('los mensajes de UN chofer se procesan en orden', () => {
     const soloB = atendidos.filter((x) => x.startsWith('wamid.B.'));
     expect(soloA).toEqual(['wamid.A.1', 'wamid.A.2']);
     expect(soloB).toEqual(['wamid.B.1', 'wamid.B.2']);
+  });
+});
+
+
+describe('fallo de lectura del claim conserva el orden durable', () => {
+  it('no adelanta listo al audio pendiente y permite avanzar a otro chofer', async () => {
+    const audio = 'wamid.claim-audio';
+    const cierre = 'wamid.claim-listo';
+    const otro = 'wamid.claim-otro';
+    fallosClaim.add(audio);
+    const body = JSON.stringify({ entry: [{ changes: [{ value: { messages: [
+      { id: audio, from: '5219990009901', type: 'audio', audio: { id: 'audio-claim' } },
+      { id: cierre, from: '5219990009901', type: 'text', text: { body: 'listo' } },
+      { id: otro, from: '5219990009902', type: 'text', text: { body: 'hola' } },
+    ] } }] }] });
+
+    const respuesta = await postear(body);
+
+    expect(respuesta.status).toBe(200);
+    expect(atendidos).toEqual([otro]);
+    expect(processInbound).toHaveBeenCalledTimes(1);
+    expect(bandejaInbox.has(audio)).toBe(true);
+    expect(bandejaInbox.has(cierre)).toBe(true);
+    expect(logger.error).toHaveBeenCalledWith('wa.claim_fallo', expect.objectContaining({ id: audio }));
   });
 });
