@@ -406,6 +406,8 @@ jobs:
     environment: ${{ inputs.diagnose_migrations }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
@@ -418,6 +420,16 @@ jobs:
           set -euo pipefail
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF"
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" migration list
+      - name: Diagnóstico psql SELECT 1 (sólo lectura, TLS verificado)
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ inputs.diagnose_migrations == 'staging' && secrets.SUPABASE_PROJECT_REF_STAGING || secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+          SUPABASE_DB_URL: ${{ inputs.diagnose_migrations == 'staging' && secrets.SUPABASE_DB_URL_STAGING || secrets.SUPABASE_DB_URL_PRODUCTION }}
+          EXPECTED_PROJECT_REF: ${{ inputs.diagnose_migrations == 'staging' && 'dmhhygwzgudwgcbixuwp' || 'gngoqsvrxdguxvsizpbw' }}
+        run: |
+          set -euo pipefail
+          [ "$SUPABASE_PROJECT_REF" = "$EXPECTED_PROJECT_REF" ] || { echo "::error::El ref no corresponde al entorno de diagnóstico."; exit 1; }
+          node scripts/ci/supabase-preflight.mjs connection
 
   repair_migrations:
     name: Reparar historial de migraciones (solo bookkeeping) — ${{ inputs.repair_migrations }}

@@ -63,7 +63,9 @@ describe('destino y credenciales del preflight SQL', () => {
   const ref = 'abcdefghijklmnopqrst';
   const good = `postgresql://postgres.${ref}@aws-0-us-east-2.pooler.supabase.com:5432/postgres`;
   it('deriva session pooler y elimina password de la URL/argv', async () => {
-    expect(validateDatabase(good, ref)).toBe(`${good}?sslmode=verify-full&sslrootcert=system`);
+    const validated = new URL(validateDatabase(good, ref));
+    expect(validated.searchParams.get('sslmode')).toBe('verify-full');
+    expect(validated.searchParams.get('sslrootcert')).toMatch(/\/scripts\/ci\/certs\/supabase-root-2021\.crt$/);
     const spawn = vi.fn((_command: string, _args: string[], _options: { env: NodeJS.ProcessEnv }) => ({ status: 0 }));
     const password = 'synthetic-secret@:/';
     await run('preflight', { NODE_ENV: 'test', SUPABASE_PROJECT_REF: ref, SUPABASE_DB_PASSWORD: password }, {
