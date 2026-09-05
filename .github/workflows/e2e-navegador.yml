@@ -73,12 +73,11 @@ jobs:
         with:
           version: 2.115.0
 
-      # `supabase start` sobre runner virgen: baja las imágenes, levanta
-      # Postgres/GoTrue/PostgREST/Storage/Mailpit y aplica las migraciones y
-      # el seed (supabase/config.toml → [db.seed]). Si el seed no aplicó, el
-      # sembrador de abajo lo detecta y falla con nombre — no en silencio.
-      - name: Supabase local (pila completa, migraciones + seed)
-        run: supabase start
+      # En runner virgen, arranca hasta0331 sin seed, ejecuta el preflight
+      # concurrente fuera de la transacción y aplica las migraciones restantes.
+      # Después siembra el demo; conserva configuración y archivos originales.
+      - name: Supabase local (migraciones, preflight concurrente y seed)
+        run: node scripts/ci/e2e/iniciar-pila.mjs
 
       # Las llaves de la pila local, al entorno del job. Fail closed: si el
       # formato de status cambia y algo llega vacío, el paso truena aquí con

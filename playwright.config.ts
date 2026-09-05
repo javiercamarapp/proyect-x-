@@ -24,7 +24,8 @@ const entorno = entornoLocalE2E();
  * `*.{test,spec}.ts` del repo, y estos archivos solo corren bajo Playwright.
  *
  * Cómo correr en local (necesita Docker):
- *   npx supabase start && npx supabase db reset
+ *   # Sólo en una pila local desechable: respeta el preflight concurrente 0332.
+ *   CI=true node scripts/ci/e2e/iniciar-pila.mjs
  *   eval "$(npx supabase status -o env | grep -E 'ANON_KEY|SERVICE_ROLE_KEY|API_URL')"
  *   PGPASSWORD=postgres psql -h 127.0.0.1 -p 54322 -U postgres -d postgres \
  *     -v ON_ERROR_STOP=1 -f scripts/ci/e2e/grants-locales.sql

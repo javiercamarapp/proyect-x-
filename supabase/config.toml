@@ -118,8 +118,9 @@ max_frequency = "1s"
 otp_expiry = 3600
 
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+# El navegador prueba inscripción/verificación MFA reales del superadmin.
+enroll_enabled = true
+verify_enabled = true
 
 [edge_runtime]
 enabled = false
