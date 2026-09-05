@@ -420,5 +420,6 @@ describe('el drenado', () => {
     const r = await GET(peticion('Bearer secreto-de-prueba'));
     expect(r.status).toBe(200);
     expect(alertarOperador).toHaveBeenCalledWith('cron.wa_pendientes', expect.objectContaining({ codigo: 'cartas_muertas' }));
+    expect(registrarLatido).toHaveBeenCalledWith('wa-pendientes', 'parcial', expect.objectContaining({ cartasMuertas: 3 }));
   });
 });

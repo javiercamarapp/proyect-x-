@@ -249,9 +249,9 @@ export async function drenarBandeja(
     // el tablero en verde. Lo pospuesto es trabajo que quedó: `parcial`,
     // como gps/jornada/facturar/runner en su corte.
     const estado = fallidos > 0 ? 'fallo'
-      : pospuestos > 0 || (backlogDespues && continuacion !== 'encolada') ? 'parcial'
+      : muertas > 0 || pospuestos > 0 || (backlogDespues && continuacion !== 'encolada') ? 'parcial'
         : 'ok';
-    await registrarLatido('wa-pendientes', estado, { procesados, fallidos, pospuestos, vuelta, backlogDespues, continuacion });
+    await registrarLatido('wa-pendientes', estado, { procesados, fallidos, pospuestos, cartasMuertas: muertas, vuelta, backlogDespues, continuacion });
     return { procesados, fallidos, pospuestos, reclamados, backlogDespues, cartasMuertas: muertas, continuacion, encolado };
   } catch (e) {
     huboFalloDeCron = true;
