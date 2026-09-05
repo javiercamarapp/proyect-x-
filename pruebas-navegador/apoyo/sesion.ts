@@ -9,7 +9,7 @@
  * producción. Inyectar cookies a mano probaría otra cosa.
  *
  * PRESUPUESTO DE CORREOS: el login de la app admite 10 envíos / 5 min por IP
- * (login/page.tsx). La suite entera gasta 7 —3 del proyecto `preparar` y 4 de
+ * (login/page.tsx). La suite entera gasta 10 —6 del proyecto `preparar` y 4 de
  * login.nav.ts— así que quien agregue pruebas que manden correo debe contar
  * contra ese techo o el exceso se verá como el error genérico del login.
  *
@@ -28,12 +28,18 @@ export const CORREOS = {
   superadmin: 'superadmin.e2e@likida.test',
   duena: 'duena.e2e@likida.test',
   intrusa: 'intrusa.e2e@likida.test',
+  encargado: 'encargado.e2e@likida.test',
+  contador: 'contador.e2e@likida.test',
+  vendedor: 'vendedor.e2e@likida.test',
 } as const;
 
 export const ESTADOS = {
   superadmin: 'pruebas-navegador/.estado/superadmin.json',
   duena: 'pruebas-navegador/.estado/duena.json',
   intrusa: 'pruebas-navegador/.estado/intrusa.json',
+  encargado: 'pruebas-navegador/.estado/encargado.json',
+  contador: 'pruebas-navegador/.estado/contador.json',
+  vendedor: 'pruebas-navegador/.estado/vendedor.json',
 } as const;
 
 /**
@@ -113,5 +119,5 @@ export async function entrar(page: Page, correo: string): Promise<void> {
   await pedirEnlace(page, correo);
   const enlace = await enlaceDelCorreo(page.request, correo, desde);
   await page.goto(enlace);
-  await page.waitForURL(/\/(dashboard|admin)([/?]|$)/);
+  await page.waitForURL(/\/(dashboard|admin|vendedor)([/?]|$)/);
 }

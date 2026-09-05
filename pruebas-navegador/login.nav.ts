@@ -16,12 +16,12 @@
  *     un correo real pedido DESPUÉS por el mismo SMTP; cuando ése ya llegó,
  *     el del inexistente tuvo su oportunidad y no está.
  *
- * Estas pruebas piden 4 de los 7 correos del presupuesto (ver apoyo/sesion).
+ * Estas pruebas piden 4 de los 10 correos del presupuesto (ver apoyo/sesion).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { test, expect } from './apoyo/fixture';
 import { CORREOS, entrar, pedirEnlace, mensajesDe, enlaceDelCorreo } from './apoyo/sesion';
-import { completarMfaSuperadmin } from './apoyo/mfa';
+import { completarMfaSuperadmin, rechazarCodigoMfaInvalido } from './apoyo/mfa';
 
 test('sin sesión, /dashboard rebota a /login y conserva el destino', async ({ page }) => {
   await page.goto('/dashboard/viajes');
@@ -42,6 +42,7 @@ test('el superadmin debe verificar el segundo factor antes de abrir su consola',
   await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=retar/);
   await page.goto('/admin');
   await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=retar/);
+  await rechazarCodigoMfaInvalido(page);
   await completarMfaSuperadmin(page);
   await page.goto('/admin');
   await expect(page).toHaveURL(/\/admin$/);

@@ -40,3 +40,21 @@ export async function completarMfaSuperadmin(page: Page) {
   estado.ultimoPaso = paso;
   await writeFile(archivo, JSON.stringify(estado), { mode: 0o600 });
 }
+
+/** Código sintácticamente válido pero fuera de cualquier ventana aceptada. */
+export async function rechazarCodigoMfaInvalido(page: Page) {
+  const entorno = entornoLocalE2E();
+  const estado = JSON.parse(await readFile(archivo, 'utf8')) as { secreto: string; app: string; supabase: string };
+  if (estado.app !== entorno.app || estado.supabase !== entorno.supabase) throw new Error('Factor de otro entorno');
+  const paso = Math.floor(Date.now() / 30_000);
+  const vigentes = new Set(Array.from({ length: 7 }, (_, i) => codigoTotp(estado.secreto, (paso + i - 3) * 30_000)));
+  let invalido = '000000';
+  while (vigentes.has(invalido)) invalido = String(Number(invalido) + 1).padStart(6, '0');
+  const forma = page.locator('form').filter({ has: page.getByRole('button', { name: 'Verificar sesión', exact: true }) });
+  await forma.locator('input[name="codigo"]').fill(invalido);
+  await forma.getByRole('button', { name: 'Verificar sesión', exact: true }).click();
+  await expect(page).toHaveURL(/error=mfa_codigo/);
+  await expect(page.getByText('El código no es válido — revisa tu app de autenticación y vuelve a intentar.')).toBeVisible();
+  await page.goto('/admin');
+  await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=retar/);
+}

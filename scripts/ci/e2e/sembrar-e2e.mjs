@@ -38,6 +38,8 @@
  *   · intrusa.e2e@likida.test    → flota_admin de Flota E2E B (22222222-…),
  *     la flota B existe SOLO para probar aislamiento: que sus credenciales
  *     no alcancen ni /admin ni los datos de la flota A.
+ *   · encargado.e2e y contador.e2e → roles de oficina de Flota Demo.
+ *   · vendedor.e2e → vendedor sin tenant, con cartera sintética propia y ajena.
  *
  * GUARD (mismo criterio que scripts/seed.sh): esto corre ÚNICAMENTE contra
  * un Supabase local. Cualquier host que no sea 127.0.0.1/localhost rehúsa,
@@ -67,6 +69,9 @@ const VIAJE_LIQUIDADO = '44444444-0000-0000-0000-000000000002'; // VJ-2026-0844,
 const USUARIOS = [
   { email: 'superadmin.e2e@likida.test', nombre: 'Superadmin E2E', rol: 'superadmin', tenant: null },
   { email: 'duena.e2e@likida.test', nombre: 'Dueña E2E', rol: 'flota_admin', tenant: TENANT_A },
+  { email: 'encargado.e2e@likida.test', nombre: 'Encargado E2E', rol: 'encargado', tenant: TENANT_A },
+  { email: 'contador.e2e@likida.test', nombre: 'Contador E2E', rol: 'contador', tenant: TENANT_A },
+  { email: 'vendedor.e2e@likida.test', nombre: 'Vendedor E2E', rol: 'vendedor', tenant: null },
   { email: 'intrusa.e2e@likida.test', nombre: 'Intrusa E2E', rol: 'flota_admin', tenant: TENANT_B },
 ];
 
@@ -92,6 +97,7 @@ function exigir(error, paso) {
 
 // ── 2. Usuarios de Auth + su fila de app_user (contrato de provisionar.ts) ──
 let duenaUserId = null;
+let vendedorUserId = null;
 for (const u of USUARIOS) {
   let userId = null;
   const creado = await admin.auth.admin.createUser({ email: u.email, email_confirm: true });
@@ -113,6 +119,7 @@ for (const u of USUARIOS) {
   exigir(error, `upsert app_user(${u.email})`);
 
   if (u.email === 'duena.e2e@likida.test') duenaUserId = userId;
+  if (u.email === 'vendedor.e2e@likida.test') vendedorUserId = userId;
 }
 
 // ── 3. El PDF de VJ-2026-0844, en la ruta canónica del bucket privado ──────
@@ -161,4 +168,13 @@ for (const u of USUARIOS) {
   exigir(error, 'declarar perfil fiscal de Flota Demo');
 }
 
-console.log('sembrar-e2e: 3 usuarios (@likida.test), Flota E2E B, el PDF de VJ-2026-0844 y el perfil fiscal de Flota Demo listos.');
+// Cartera sintética: una propia y otra sin asignar nunca visible al vendedor.
+{
+  const { error } = await admin.from('prospecto').upsert([
+    { id: 'eeeeeeee-0001-4000-8000-000000000001', empresa: 'Cartera propia E2E', vendedor_id: vendedorUserId, estado: 'nuevo', notas: null },
+    { id: 'eeeeeeee-0001-4000-8000-000000000002', empresa: 'Cartera ajena E2E', vendedor_id: null, estado: 'nuevo', notas: null },
+  ], { onConflict: 'id' });
+  exigir(error, 'sembrar cartera sintética de vendedor');
+}
+
+console.log('sembrar-e2e: 6 usuarios (@likida.test), Flota E2E B, el PDF de VJ-2026-0844 y el perfil fiscal de Flota Demo listos.');

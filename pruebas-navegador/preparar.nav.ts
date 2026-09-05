@@ -1,7 +1,7 @@
 /**
  * Proyecto `preparar`: hace el login REAL (magic link vía Mailpit) una vez
  * por identidad y guarda las cookies en .estado/ para que el resto de la
- * suite no pague 3 correos por archivo. El login como flujo con sus
+ * suite no pague 6 correos por archivo. El login como flujo con sus
  * afirmaciones vive en login.nav.ts — aquí solo se exige que cada identidad
  * aterrice donde su rol manda, porque un estado guardado a medias haría
  * pasar en falso todo lo que dependa de él.
@@ -30,3 +30,15 @@ preparar('intrusa (flota_admin de Flota E2E B) → /dashboard', async ({ page })
   await expect(page).toHaveURL(/\/dashboard/);
   await page.context().storageState({ path: ESTADOS.intrusa });
 });
+
+for (const [rol, destino] of [
+  ['encargado', '/dashboard'],
+  ['contador', '/dashboard/contador'],
+  ['vendedor', '/vendedor'],
+] as const) {
+  preparar(`${rol} entra por correo real y aterriza en ${destino}`, async ({ page }) => {
+    await entrar(page, CORREOS[rol]);
+    await expect(page).toHaveURL(new RegExp(`${destino}$`));
+    await page.context().storageState({ path: ESTADOS[rol] });
+  });
+}
