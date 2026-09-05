@@ -30,7 +30,7 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   // ── FE-1 (auditoría 24, CRÍTICO): LAS SUBIDAS POR SERVER ACTION MORÍAN EN 1 MB ──
   // Next capa el cuerpo de una server action a 1 MB por default. Las pantallas
-  // del panel anuncian topes de 2, 4 y 8 MB (`MAX_XML_BYTES`, `MAX_FOTO_BYTES`,
+  // del panel tenían topes de 2, 4 y 8 MB (`MAX_XML_BYTES`, `MAX_FOTO_BYTES`,
   // `MAX_DESGLOSE_BYTES`, `MAX_IMPORT_BYTES` en `src/app/dashboard/**`) y los
   // validan DENTRO de la action — que nunca corría: el runtime rebotaba antes
   // con una excepción que el error boundary pintaba como «No se pudo cargar el
@@ -38,8 +38,9 @@ const nextConfig: NextConfig = {
   // de una factura de proveedor y el CSV de 2,000 viajes del TMS —las tres
   // puertas de entrada masiva— no funcionaban con archivos reales.
   //
-  // 10 MB = el mayor `MAX_*_BYTES` (8 MB) + margen para la envoltura multipart
-  // (la doc de Next pide dejar holgura). La prueba
+  // Este límite de Next no eleva los4.5MB de Vercel Functions. Las subidas
+  // actuales usan como máximo4MiB y las tres vías antes en8MiB ahora validan
+  // también en el navegador, antes de enviar. La prueba
   // `scripts/ci/next_config_subidas_aud24.test.ts` lee este archivo y los
   // `MAX_*_BYTES` y falla si alguien sube un tope de pantalla por encima de
   // este límite, o lo baja aquí por debajo de lo que las pantallas prometen.

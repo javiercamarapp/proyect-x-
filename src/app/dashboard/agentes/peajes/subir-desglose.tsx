@@ -5,6 +5,7 @@ import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { FileSpreadsheet } from 'lucide-react';
+import { validarArchivoElegido } from '@/lib/http/subidas_formulario';
 
 export type ResumenImportado = {
   totalLineas: number;
@@ -37,6 +38,7 @@ export function SubirDesgloseProveedor({ importar }: { importar: AccionImportar 
     <div>
       <form action={accion} className="flex items-center gap-2 flex-wrap">
         <input type="file" name="archivo" accept=".xlsx,.xls,.csv,.tsv,.ods,.pdf" required
+          onChange={(e) => validarArchivoElegido(e.currentTarget)}
           aria-label="Desglose del proveedor de peaje (Excel, CSV o PDF)"
           className="text-[12.5px] file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-[12.5px] file:font-medium file:cursor-pointer"
           style={{ color: 'var(--muted)' }} />
@@ -46,6 +48,7 @@ export function SubirDesgloseProveedor({ importar }: { importar: AccionImportar 
           style={{ background: 'var(--surface)', color: 'var(--ink)' }} />
         <BotonImportar />
       </form>
+      <p className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Máximo 4 MB por archivo.</p>
       {estado?.error && <p className="text-[12px] mt-2" style={{ color: 'var(--bad)' }}>{estado.error}</p>}
       {r && (
         <div className="text-[12px] mt-2 space-y-0.5" style={{ color: 'var(--muted)' }}>

@@ -5,6 +5,7 @@ import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { Upload, Check, X, Copy, Mail } from 'lucide-react';
+import { validarArchivoElegido } from '@/lib/http/subidas_formulario';
 
 export type AccionProveedores = (
   prev: { error?: string; aviso?: string } | null,
@@ -71,11 +72,13 @@ export function SubirFotoFactura({ subirFoto }: { subirFoto: AccionProveedores }
     <div>
       <form action={accion} className="flex items-center gap-2 flex-wrap">
         <input type="file" name="archivo" accept="image/jpeg,image/png,image/webp" required
+          onChange={(e) => validarArchivoElegido(e.currentTarget)}
           aria-label="Foto de la factura de proveedor"
           className="text-[12.5px] file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-[12.5px] file:font-medium file:cursor-pointer"
           style={{ color: 'var(--muted)' }} />
         <BotonSubir rotulo="Leer foto con IA" pendienteRotulo="Leyendo la foto…" />
       </form>
+      <p className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>Máximo 4 MB por foto.</p>
       {estado?.error && <p className="text-[12px] mt-2" style={{ color: 'var(--bad)' }}>{estado.error}</p>}
       {estado?.aviso && (
         <p className="text-[12px] mt-2" style={{ color: estado.aviso.includes('OJO') ? 'var(--warn)' : 'var(--muted)' }}>

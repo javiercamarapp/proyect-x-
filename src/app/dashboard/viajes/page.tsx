@@ -11,9 +11,9 @@ import { logger } from '@/lib/logger';
 import { sufijoTenant } from '../sufijo';
 import { VistaViajes, type FiltroViajes, type FilaRegistroViaje } from './vista';
 import type { ResultadoImportarUI } from './importar';
+import { MAX_ARCHIVO_SUBIDA_BYTES, MENSAJE_ARCHIVO_GRANDE } from '@/lib/http/subidas_formulario';
 
-/** Un export de TMS real pesa KB; 8 MB ya es el archivo equivocado. */
-const MAX_IMPORT_BYTES = 8 * 1024 * 1024;
+const MAX_IMPORT_BYTES = MAX_ARCHIVO_SUBIDA_BYTES;
 
 export const dynamic = 'force-dynamic';
 
@@ -98,7 +98,7 @@ export default async function PaginaViajes({
 
     const archivo = fd.get('archivo');
     if (!(archivo instanceof File) || archivo.size === 0) return { error: 'Elige el CSV o Excel con los viajes.' };
-    if (archivo.size > MAX_IMPORT_BYTES) return { error: 'Ese archivo pesa demasiado para ser un export de viajes.' };
+    if (archivo.size > MAX_IMPORT_BYTES) return { error: MENSAJE_ARCHIVO_GRANDE };
 
     let matriz: unknown[][];
     try {

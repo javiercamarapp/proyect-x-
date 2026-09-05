@@ -5,6 +5,7 @@ import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { FileUp } from 'lucide-react';
+import { validarArchivoElegido } from '@/lib/http/subidas_formulario';
 
 export interface ResultadoImportarUI {
   error?: string;
@@ -49,12 +50,14 @@ export function ImportarViajes({ importar }: { importar: AccionImportar }) {
     <div className="min-w-0">
       <form action={accion} className="flex items-center gap-2 flex-wrap">
         <input type="file" name="archivo" accept=".csv,.xlsx,.xls" required
+          onChange={(e) => validarArchivoElegido(e.currentTarget)}
           aria-label="CSV o Excel con los viajes"
           className="text-[12.5px] file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-[12.5px] file:font-medium file:cursor-pointer"
           style={{ color: 'var(--muted)' }} />
         <BotonImportar />
       </form>
       <p className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>
+        Máximo 4 MB por archivo.{' '}
         Columnas: folio (obligatoria), origen, destino, fecha, anticipo, operador, unidad, cliente, ingreso, km.
         La unidad y el cliente se amarran contra el catálogo; ingreso vacío no es cero.
         Sin avisos de WhatsApp; los folios que ya existen se saltan solos.

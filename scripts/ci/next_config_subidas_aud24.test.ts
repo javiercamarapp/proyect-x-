@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { MAX_ARCHIVO_SUBIDA_BYTES } from '../../src/lib/http/subidas_formulario';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 24 · FE-1 (CRÍTICO) — el tope de subida que la pantalla promete
@@ -37,6 +38,9 @@ function topesDePantalla(): Array<{ archivo: string; nombre: string; bytes: numb
     while ((m = re.exec(src))) {
       topes.push({ archivo, nombre: m[1], bytes: Number(m[2].replace(/_/g, '')) * 1024 * 1024 });
     }
+    for (const compartido of src.matchAll(/const\s+(MAX_[A-Z_]*BYTES)\s*=\s*MAX_ARCHIVO_SUBIDA_BYTES\b/g)) {
+      topes.push({ archivo, nombre: compartido[1], bytes: MAX_ARCHIVO_SUBIDA_BYTES });
+    }
   }
   return topes;
 }
@@ -48,6 +52,13 @@ function limiteDeNext(): number {
 }
 
 describe('FE-1 · serverActions.bodySizeLimit cubre los MAX_*_BYTES del panel', () => {
+  it('las subidas que atraviesan Functions caben en4.5MB con margen para multipart', () => {
+    // Next no puede elevar este límite de la plataforma:
+    // https://vercel.com/docs/vercel-blob/server-upload
+    for (const tope of topesDePantalla()) {
+      expect(tope.bytes + 64 * 1024, `${tope.archivo}: ${tope.nombre}`).toBeLessThanOrEqual(4_500_000);
+    }
+  });
   it('hay al menos un tope de pantalla que medir (si no, la prueba no vigila nada)', () => {
     expect(topesDePantalla().length).toBeGreaterThanOrEqual(3);
   });
