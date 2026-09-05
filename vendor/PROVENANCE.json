@@ -1,0 +1,14 @@
+{
+  "artifacts": [
+    {
+      "package": "xlsx",
+      "version": "0.20.3",
+      "file": "vendor/xlsx-0.20.3.tgz",
+      "source": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+      "documentation": "https://docs.sheetjs.com/docs/getting-started/installation/nodejs/",
+      "verifiedOn": "2026-09-04",
+      "sha512": "a0b0eade3c3b01c2ea2961f60210a9553665f267fa5f661178ff8d7a1d12254cd5fc1759623b61f78b46e6da22301d4f3eb62dc4e09f6a850292fb6e1fedc024",
+      "verification": "El tarball local y la descarga HTTPS del CDN oficial coincidieron byte a byte; el SHA-512 también coincide con package-lock.json. No es una firma del fabricante ni una certificación de ausencia de vulnerabilidades."
+    }
+  ]
+}
