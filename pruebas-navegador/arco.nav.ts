@@ -74,17 +74,26 @@ test.describe('ARCO: alcance explícito de la cancelación sintética', () => {
       await expect(otraFila).toContainText('Tu rol no puede responder solicitudes ARCO');
       expect(await solicitud()).toEqual(antes);
     } finally { await encargado.close(); }
-    // Capturar bytes en cuanto llegan: la revalidación puede reemplazar la
-    // navegación antes de que termine click().
-    const respuesta = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/dashboard/arco')
-      .then(async r => ({ status: r.status(), cuerpoUtf8: (await r.body()).toString('utf8') }));
+    // Conservar la respuesta REAL antes de que la navegación descarte su
+    // recurso CDP. El passthrough no cambia cuerpo, estado ni encabezados:
+    // obtiene una sola respuesta del servidor local y entrega esa misma.
+    const objetivo = new URL('/dashboard/arco', entornoLocalE2E().app).href;
+    let cuerpoCapturado: string | undefined;
+    await page.route(objetivo, async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      const real = await route.fetch({ maxRedirects: 0, maxRetries: 0 });
+      cuerpoCapturado = (await real.body()).toString('utf8');
+      await route.fulfill({ response: real });
+    });
+    const respuesta = page.waitForResponse(r => r.request().method() === 'POST' && r.url() === objetivo);
     await fila.getByRole('button', { name: 'Ejecutar cancelación', exact: true }).click();
     const post = await respuesta;
-    expect(post.status).toBe(200);
+    expect(post.status()).toBe(200);
+    expect(cuerpoCapturado).toBeDefined();
     // Este motivo sólo sale del retorno temprano anterior a importar/enviar WhatsApp.
     // El RSC observado representa el acento con mojibake; se conserva el
     // fragmento y se identifica la rama por sus dos partes ASCII estables.
-    const cuerpoUtf8 = post.cuerpoUtf8;
+    const cuerpoUtf8 = cuerpoCapturado!;
     const motivoSinEnvio = cuerpoUtf8.match(/sin tel.{1,2}fono del titular\)/)?.[0];
     expect(motivoSinEnvio).toBeDefined();
     // La vista inmediatamente posterior al POST también debe leer bien; la
@@ -93,7 +102,7 @@ test.describe('ARCO: alcance explícito de la cancelación sintética', () => {
     await expect(page.locator('body')).not.toContainText(/telÃ©fono|sustituyÃ/);
     const avisosDespuesPost = (await page.locator('[aria-live="polite"]').allTextContents()).filter(t => t.trim());
     await page.screenshot({ path: info.outputPath('arco-inmediatamente-post.png'), fullPage: true });
-    const transporte = { motivoSinEnvio, decodificacion: 'body UTF-8', avisosDespuesPost };
+    const transporte = { motivoSinEnvio, decodificacion: 'respuesta real capturada antes de navegación; UTF-8', avisosDespuesPost };
     const despues = await solicitud();
     expect(despues.estado).toBe('resuelta');
     expect(despues.operador_id).toBe(OPERADOR);
