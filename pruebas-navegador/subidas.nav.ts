@@ -29,7 +29,7 @@ for (const formulario of formularios) {
     });
     await archivo.setInputFiles({ name: formulario.nombre, mimeType: formulario.mime, buffer: Buffer.alloc(5 * 1024 * 1024) });
     await expect(archivo).toHaveJSProperty('validationMessage', 'Máximo 4 MB por archivo. Divide el archivo en partes más pequeñas o reduce la foto.');
-    await archivo.locator('xpath=..').getByRole('button').click();
+    await archivo.locator('xpath=..').locator('button[type="submit"]').click();
     await expect(archivo).toHaveAttribute('data-rechazado', 'true');
     expect(envios).toBe(0);
 

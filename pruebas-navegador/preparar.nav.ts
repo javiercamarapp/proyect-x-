@@ -8,6 +8,7 @@
  */
 import { test as preparar, expect } from './apoyo/fixture';
 import { CORREOS, ESTADOS, entrar } from './apoyo/sesion';
+import { completarMfaSuperadmin } from './apoyo/mfa';
 
 preparar('dueña (flota_admin de Flota Demo) → /dashboard', async ({ page }) => {
   await entrar(page, CORREOS.duena);
@@ -15,13 +16,11 @@ preparar('dueña (flota_admin de Flota Demo) → /dashboard', async ({ page }) =
   await page.context().storageState({ path: ESTADOS.duena });
 });
 
-preparar('superadmin → territorio /admin (hoy aterriza en el selector de flota — ver login.nav.ts)', async ({ page }) => {
+preparar('superadmin completa segundo factor y entra a /admin', async ({ page }) => {
   await entrar(page, CORREOS.superadmin);
-  // Basta con "algo bajo /admin": las cookies son válidas de cualquier forma
-  // — admin-bloqueado.nav.ts y tableros.nav.ts navegan a /admin directo con
-  // este mismo estado y sí ven la consola. El detalle de A DÓNDE aterriza el
-  // login recién hecho (spoiler: /admin/elegir-flota, no /admin) se afirma
-  // en login.nav.ts, no aquí.
+  await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=(inscribir|retar)/);
+  await completarMfaSuperadmin(page);
+  await page.goto('/admin');
   await expect(page).toHaveURL(/\/admin/);
   await page.context().storageState({ path: ESTADOS.superadmin });
 });
