@@ -12,6 +12,11 @@ on:
         required: true
         default: master
         type: string
+      configure_preview:
+        description: Separar sólo las tres variables Supabase de Preview hacia el staging existente
+        required: true
+        default: false
+        type: boolean
       promote:
         description: Migrar y activar candidato Production validado
         required: true
@@ -102,7 +107,28 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node scripts/ci/audit-runtime.mjs
+      - name: Auditoría runtime high/critical (con reintentos acotados)
+        run: |
+          for intento in 1 2 3; do
+            : > "$RUNNER_TEMP/npm-audit-runtime.json"
+            : > "$RUNNER_TEMP/npm-audit-runtime.err"
+            set +e
+            timeout 75s npm audit --omit=dev --audit-level=high --json \
+              > "$RUNNER_TEMP/npm-audit-runtime.json" \
+              2> "$RUNNER_TEMP/npm-audit-runtime.err"
+            npm_exit=$?
+            node scripts/ci/audit-runtime.mjs "$RUNNER_TEMP/npm-audit-runtime.json"
+            clasificacion=$?
+            set -e
+
+            if [ "$clasificacion" -eq 0 ]; then exit 0; fi
+            if [ "$clasificacion" -eq 1 ]; then exit 1; fi
+            echo "::warning::npm audit inconcluso (intento $intento/3, exit npm=$npm_exit); se reintentará."
+            if [ "$intento" -lt 3 ]; then sleep $((intento * 10)); fi
+          done
+          cat "$RUNNER_TEMP/npm-audit-runtime.err"
+          echo "::error::No se obtuvo una auditoría runtime concluyente tras 3 intentos; no se declara verde."
+          exit 1
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm run lint:ratchet
@@ -155,9 +181,33 @@ jobs:
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push --dry-run
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push
 
+  preview_configuration:
+    name: Configuración opcional de Preview aislada
+    needs: [preflight, quality, supabase-dry-run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Este environment ya contiene los dos accesos administrativos necesarios.
+    # El helper sólo escribe los tres targets Preview; no crea claves/proyectos
+    # ni exporta secretos a outputs, archivos o artifacts.
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Aislar Supabase Preview con las credenciales existentes
+        if: inputs.configure_preview == true
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          CONFIGURE_PREVIEW: ISOLATE_EXISTING_STAGING
+        run: node scripts/ci/configure-preview.mjs
+
   preview:
     name: Crear Preview inmutable
-    needs: [preflight, quality, supabase-dry-run]
+    needs: [preflight, quality, supabase-dry-run, preview_configuration]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: preview

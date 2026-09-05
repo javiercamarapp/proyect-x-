@@ -261,3 +261,24 @@ bash scripts/test-resiliencia.sh
 Si está instalado, ejecutar también `shellcheck` sobre los tres scripts. La
 validación contra Supabase, AWS, Vercel, GitHub environments y el restore real
 es deliberadamente externa y debe quedar registrada como evidencia de release.
+
+
+### Separar Preview de Production (staging existente)
+
+El proyecto existente `dmhhygwzgudwgcbixuwp` es el staging de `gngoqsvrxdguxvsizpbw`.
+La primera ejecución de este release requiere `configure_preview=true`: el job
+`preview_configuration` usa los accesos administrativos que ya existen en el
+environment Production para leer las claves del staging y escribir únicamente
+las tres variables Supabase del target Preview. Las claves permanecen en memoria
+y viajan por HTTPS: nunca outputs, archivos o artifacts. No crea proyectos ni claves.
+
+Los registros que comparten Preview/Production se separan sin cambiar el valor
+productivo. Se comprueban los tres valores de Production antes y después, y las
+claves/URL de Preview contra el staging autorizado. Cualquier override por rama,
+respuesta ambigua o error detiene el despliegue. Si falla a mitad, Preview puede
+quedar incompleto; repetir la configuración converge sobre los registros existentes.
+No se despliega mientras la comprobación de las tres variables no pase.
+
+Contratos consultados: [Supabase API keys](https://supabase.com/docs/reference/api/v1-get-project-api-keys),
+[Vercel editar variables](https://vercel.com/docs/rest-api/projects/edit-an-environment-variable) y
+[Vercel crear variables](https://vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables).
