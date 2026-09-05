@@ -329,6 +329,18 @@ describe('revisarLiquidacion', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it.each(['LR019', 'LR022'])('conserva el rechazo %s de duplicados sin reintentar', async (code) => {
+    filaUnica = { viaje_id: U(9) };
+    recalcularParaAjuste.mockResolvedValue({ recalculo: RECALCULO, cuadre: CUADRE_RECALCULADO });
+    const message = code === 'LR019' ? 'copia excluida: rechaza y revisa' : 'grupo duplicado cuya identidad depende del monto: rechaza y revisa';
+    rpc.mockResolvedValueOnce({ data: null, error: { code, message } });
+    const error = await revisarLiquidacion({ tenantId: 't', liquidacionId: U(1), accion: 'ajustar', motivo: 'x', ajustes: [{ gastoId: U(3), montoNuevo: 100 }], actor }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DatoInvalido);
+    expect((error as Error).message).toBe(message);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(regenerarPdfTrasAjuste).not.toHaveBeenCalled();
+  });
+
   it('un PDF que no se pudo regenerar no tumba el ajuste YA firme en la base — se dice, no se revierte', async () => {
     filaUnica = { viaje_id: U(9) };
     recalcularParaAjuste.mockResolvedValueOnce({ recalculo: RECALCULO, cuadre: CUADRE_RECALCULADO });

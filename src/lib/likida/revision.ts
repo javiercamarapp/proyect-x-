@@ -366,7 +366,7 @@ export interface ResultadoRevision {
 }
 
 /** Los SQLSTATE propios de la RPC cuyo mensaje está escrito para la persona. */
-const CODIGOS_PARA_PANTALLA = new Set(['LR001', 'LR010', 'LR011', 'LR012', 'LR013', 'LR014', 'LR015', 'LR016', 'LR017', 'LR018', 'LR019', 'LR020']);
+const CODIGOS_PARA_PANTALLA = new Set(['LR001', 'LR010', 'LR011', 'LR012', 'LR013', 'LR014', 'LR015', 'LR016', 'LR017', 'LR018', 'LR019', 'LR020', 'LR022']);
 
 /**
  * Lo que se le dice al chofer cuando su liquidación se regresa. Tono llano,

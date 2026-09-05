@@ -184,6 +184,7 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0342_poliza_revision_y_desglose.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0344_analytics_sin_rechazadas.sql
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0345_combustible_rep_por_definir.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f supabase/tests/0347_revision_duplicados_identidad.sql
           PGUSER=postgres bash supabase/tests/0341_gps_alerta_minima_concurrencia.sh localhost 5432 postgres
 
       # ── Capa 0: contratos de leases/fencing en Postgres real ───────────
