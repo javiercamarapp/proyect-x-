@@ -73,6 +73,7 @@ describe('TC-N3 · `total` es el conteo real de la flota, no el límite de la co
   it('liquidaciones_flota: 50 cargadas, 14,000 en la flota → total 14000, mostrando 20', async () => {
     const r = await correr('liquidaciones_flota');
     const res = r.result as { total: number | null; mostrando: number };
+    expect(res).toMatchObject({ filtro: 'sin_rechazadas', totalIncluyeRechazadas: true });
     expect(res.total).toBe(14_000);
     expect(res.mostrando).toBe(20);
   });

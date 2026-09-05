@@ -211,7 +211,8 @@ export async function getSeriesKpiCards(
  * y sumar el dinero observado de `diferencias` (jsonb) en JavaScript — se lee
  * en CADA carga de /dashboard y /dashboard/contador, y caduca ~mes 8.3 con
  * 15,000 viajes/mes (docs/escala-15k.md §6). `kpis_liquidacion_tenant` hace
- * el MISMO conteo/suma en SQL: UN viaje de red, sin techo de páginas. La
+ * el conteo/suma en SQL: UN viaje de red, sin techo de páginas. Desde 0344
+ * excluye rechazadas; las pendientes siguen siendo resultados operativos. La
  * prueba de equivalencia (`analytics_kpis_acreditables.test.ts`) compara la
  * reducción JS vieja contra la forma nueva sobre el mismo dataset sintético.
  */
@@ -323,7 +324,8 @@ export interface DineroObservadoTipo { tipo: string; monto: number; n: number }
 /**
  * El dinero observado, DESGLOSADO por tipo de diferencia (sobre política,
  * duplicado, …). `getKpis` suma el total; esta lo abre para la dona del
- * agente — misma fuente (`liquidacion.diferencias`), mismo valor absoluto.
+ * agente — misma fuente (`liquidacion.diferencias`), mismo valor absoluto,
+ * excluyendo revisiones rechazadas igual que los KPI (0344).
  */
 export async function getDineroObservadoPorTipo(tenantId: string): Promise<DineroObservadoTipo[]> {
   // AGREGADO EN SQL (mig. 0150): traía TODA `liquidacion` del tenant para
@@ -1033,19 +1035,21 @@ export async function getViajes(tenantId: string, limite = 100): Promise<ViajeRo
 export type FiltroRegistro = 'todos' | 'abiertos' | 'en_cuadre' | 'liquidados' | 'escalados';
 
 export interface LiquidacionDeViaje {
-  id: string; viajeId: string; estatus: string; comprobado: number; diferencia: number;
+  id: string; viajeId: string; estatus: string; comprobado: number | null; diferencia: number | null;
 }
 
 /** Las liquidaciones de ESTOS viajes (por `viaje_id`, no por folio: el folio
  *  es texto libre del TMS y puede repetirse). Para la página del registro:
  *  comprobado, diferencia y el link al detalle. Un viaje sin fila aquí no
- *  tiene liquidación todavía y la tabla lo dice con un guion. */
+ *  tiene liquidación todavía y la tabla lo dice con un guion. Una rechazada
+ *  conserva el enlace al historial, pero sus importes invalidados son null
+ *  (no cero): el detalle auditable sigue mostrando el cálculo y la revisión. */
 export async function getLiquidacionesDeViajes(tenantId: string, viajeIds: string[]): Promise<LiquidacionDeViaje[]> {
   if (viajeIds.length === 0) return [];
   const res = await acotada(
     supabaseAdmin()
     .from('liquidacion')
-    .select('id, viaje_id, estatus, total_comprobado, diferencia')
+    .select('id, viaje_id, estatus, revision, total_comprobado, diferencia')
     .eq('tenant_id', tenantId)
     .in('viaje_id', viajeIds),
     'getLiquidacionesDeViajes',
@@ -1054,9 +1058,9 @@ export async function getLiquidacionesDeViajes(tenantId: string, viajeIds: strin
   return filas.map((l) => ({
     id: l.id as string,
     viajeId: l.viaje_id as string,
-    estatus: (l.estatus as string) || 'cuadrada',
-    comprobado: Number(l.total_comprobado ?? 0),
-    diferencia: Number(l.diferencia ?? 0),
+    estatus: l.revision === 'rechazada' ? 'rechazada' : (l.estatus as string) || 'cuadrada',
+    comprobado: l.revision === 'rechazada' ? null : Number(l.total_comprobado ?? 0),
+    diferencia: l.revision === 'rechazada' ? null : Number(l.diferencia ?? 0),
   }));
 }
 
@@ -1962,12 +1966,15 @@ export async function getLineasPorConciliar(tenantId: string): Promise<ColaPorCo
 
 export interface LiqRow { id: string; folio: string; creadoEn: string; comprobado: number; diferencia: number; estatus: string }
 
+/** Últimos cierres vigentes: excluye rechazadas antes del límite. El historial
+ *  rechazado sigue accesible por registro/detalle y exportación explícita. */
 export async function getLiquidaciones(tenantId: string): Promise<LiqRow[]> {
   const { data, error } = await acotada(
     supabaseAdmin()
     .from('liquidacion')
     .select('id, estatus, total_comprobado, diferencia, created_at, viaje:viaje_id(folio)')
     .eq('tenant_id', tenantId)
+    .neq('revision', 'rechazada')
     .order('created_at', { ascending: false })
     .limit(50),
     'getLiquidaciones',

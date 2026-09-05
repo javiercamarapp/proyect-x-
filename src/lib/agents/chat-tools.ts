@@ -180,7 +180,7 @@ registerTool('liquidaciones_flota', {
     type: 'function',
     function: {
       name: 'liquidaciones_flota',
-      description: 'Las liquidaciones más recientes (máx. 20): folio del viaje, monto comprobado MXN, diferencia MXN y estatus (cuadrada|con_diferencias|revisar). `total` es el conteo REAL de liquidaciones de la flota (null si no se pudo contar); `mostrando`, cuántas van en la lista.',
+      description: 'Las liquidaciones vigentes más recientes, excluyendo rechazadas (máx. 20): folio del viaje, monto comprobado MXN, diferencia MXN y estatus (cuadrada|con_diferencias|revisar). `total` es el conteo REAL histórico de liquidaciones de la flota, incluidas las rechazadas (null si no se pudo contar); `mostrando`, cuántas van en la lista.',
       parameters: SIN_PARAMS,
     },
   },
@@ -188,6 +188,7 @@ registerTool('liquidaciones_flota', {
     const [ls, total] = await Promise.all([getLiquidaciones(ctx.tenantId), contarDeLaFlota('liquidacion', ctx.tenantId)]);
     return {
       ...conTotal(total), mostrando: Math.min(ls.length, 20), moneda: 'MXN',
+      filtro: 'sin_rechazadas', totalIncluyeRechazadas: true,
       liquidaciones: ls.slice(0, 20).map((l) => ({
         folio: l.folio, comprobado: l.comprobado, diferencia: l.diferencia, estatus: l.estatus, creadaEn: l.creadoEn,
       })),
