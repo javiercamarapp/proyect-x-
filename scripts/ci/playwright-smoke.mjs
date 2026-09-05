@@ -6,6 +6,8 @@
  */
 import chromiumBinary from '@sparticuz/chromium';
 import { chromium } from 'playwright-core';
+import { readFileSync } from 'node:fs';
+import { validateBrowserCookie, validateLanding } from './production-candidate.mjs';
 
 const base = (process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
 const routes = ['/', '/terminos', '/privacidad'];
@@ -17,7 +19,18 @@ const browser = await chromium.launch({
 });
 
 try {
-  const page = await browser.newPage();
+  if (process.env.PLAYWRIGHT_PROTECTION_COOKIE) {
+    const cookie = validateBrowserCookie(JSON.parse(readFileSync(process.env.PLAYWRIGHT_PROTECTION_COOKIE, 'utf8')), base); // eslint-disable-line security/detect-non-literal-fs-filename -- archivo0600 propio del wrapper de CI; nunca un path recibido por la app.
+    const context = await browser.newContext();
+    await context.addCookies([cookie]);
+    await context.route('**/*', async (route) => {
+      const request = route.request();
+      if (!['GET', 'HEAD'].includes(request.method())
+        || (request.isNavigationRequest() && new URL(request.url()).origin !== new URL(base).origin)) await route.abort();
+      else await route.continue();
+    });
+  }
+  const page = browser.contexts().length ? await browser.contexts()[0].newPage() : await browser.newPage();
   const consoleErrors = [];
   const pageErrors = [];
   page.on('console', (message) => {
@@ -29,6 +42,7 @@ try {
     const response = await page.goto(`${base}${route}`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     if (!response || !response.ok()) throw new Error(`${route}: HTTP ${response?.status() ?? 'sin respuesta'}`);
     const text = await page.locator('body').innerText();
+    validateLanding(page.url(), base, text);
     if (text.trim().length < 20) throw new Error(`${route}: body vacío o sin contenido útil`);
     if (await page.locator('[data-nextjs-dialog], .next-error-h1, #webpack-dev-server-client-overlay').count()) {
       throw new Error(`${route}: overlay de error detectado`);

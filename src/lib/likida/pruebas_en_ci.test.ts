@@ -171,13 +171,14 @@ describe('retención 0332/0335: rollout concurrente y fail-closed', () => {
     expect(postgres).toContain('PGUSER=postgres bash supabase/tests/0335_db_retencion_r3_concurrencia.sh');
   });
 
-  it('staging y producción exigen URL directa y corren el preflight antes de db push', () => {
+  it('staging y producción validan URL explícita o pooler enlazado antes de db push', () => {
     expect(deploy).toContain('secrets.SUPABASE_DB_URL_STAGING');
     expect(deploy).toContain('secrets.SUPABASE_DB_URL_PRODUCTION');
     const staging = deploy.slice(deploy.indexOf('\n  supabase-dry-run:'), deploy.indexOf('\n  preview:'));
-    const produccion = deploy.slice(deploy.indexOf('\n  production_migrations:'), deploy.indexOf('\n  promote:'));
+    const produccion = deploy.slice(deploy.indexOf('\n  production_migrations:'), deploy.indexOf('\n  production_candidate:'));
     for (const [nombre, job] of [['staging', staging], ['production_migrations', produccion]] as const) {
-      const preflightEnJob = job.indexOf('0335_preflight_retencion_indices.sql');
+      const preflightEnJob = job.indexOf('supabase-preflight.mjs preflight');
+      expect(job.indexOf(' link --project-ref')).toBeLessThan(preflightEnJob);
       const primerPushEnJob = job.indexOf(' db push');
       expect(preflightEnJob, `${nombre}: falta el preflight`).toBeGreaterThan(-1);
       expect(primerPushEnJob, `${nombre}: falta db push`).toBeGreaterThan(-1);
