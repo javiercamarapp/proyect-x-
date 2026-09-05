@@ -15,9 +15,9 @@ La carpeta [02-transportes-innovativos](https://drive.google.com/drive/folders/1
 
 ## Decisión actual
 
-**Código de aplicación validado en `e797f364`; prueba de navegador actualizada en `e3176ba1`. El arranque operativo todavía no está acreditado.** La base integrada aplicó 324 migraciones hasta 0347 desde cero; pasaron los 17 contratos SQL de CI, las 40 pruebas pgTAP y la batería de aislamiento de 242 bloques (238 aprobados, cero fallos y cuatro reportes). Las revisiones independientes de 0346 y 0347 dieron GO de código y SQL. El desempate de actividad reciente ya está corregido: cobertura global de 12,010 pruebas aprobadas, cero fallos y tres omisiones explicadas; la cohorte de tiempo separada pasó sus 96 pruebas sin omisiones. TypeScript, lint, resiliencia offline y build de producción local pasaron. La prueba focal de PDF en navegador pasó con firma e importes conservados; la suite completa pasó sus 72 casos en 1.6 minutos. Después se confirmó un bloqueo adicional del recierre rechazado: el recuperador podía presentar como cerrado un intento que SQL rechazó; su corrección y nueva validación están en curso antes de integrar/desplegar.
+**Código del último lote: `27be178b`. El arranque operativo todavía no está acreditado.** La base integrada aplicó 324 migraciones hasta0347 desde cero; pasaron17 contratos SQL,40pgTAP y242 bloques de aislamiento (238 aprobados, cero fallos y cuatro reportes). La cobertura local final pasó12,067 pruebas, sin fallos y con tres omisiones explicadas; la cohorte de tiempo pasó96 sin omisiones. TypeScript y lint (156 advertencias heredadas, ninguna nueva) pasaron. El build local y las72 pruebas de navegador posteriores al recierre corresponden a `7c332786`; los builds/checks del lote posterior se comprobarán en GitHub. El recierre, la privacidad del mensaje de log, el proxy local y los tres defectos administrativos de CodeQL quedaron corregidos con revisión independiente.
 
-El usuario **ya autorizó expresamente push, merge en GitHub y despliegue en Vercel**. No hace falta volver a pedir esa autorización. La publicación corresponde al coordinador y sigue los gates del workflow sobre el SHA validado. Al cierre de esta actualización todavía no se han ejecutado push, merge remoto ni deployment. Tener autorización no equivale a tener una ejecución aprobada ni a haber completado el arranque del cliente.
+El usuario **ya autorizó expresamente push, merge en GitHub y despliegue en Vercel**. No hace falta volver a pedir esa autorización. La publicación corresponde al coordinador y sigue los gates del workflow sobre el SHA validado. Ya se hizo push y se abrió el [PR 332](https://github.com/javiercamarapp/proyect-x-/pull/332). Calidad, PostgreSQL y navegador remotos pasaron en `8439e2d9`. Merge y deployment continúan pendientes de cerrar la revisión del lote posterior de CodeQL. Tener autorización no equivale a tener una ejecución aprobada ni a haber completado el arranque del cliente.
 
 El ensayo continuo de 24 horas no se completó, el backup externo de Storage sigue sin destino/credenciales configurados y faltan datos y acuerdos del cliente. La integración directa con SAP continúa en fase 2; el piloto documentado utiliza CSV e importación humana. Este documento complementa `ESTADO-2026-09-04.md` y conserva abajo los resultados históricos con su alcance original.
 
@@ -122,7 +122,7 @@ Detener la ampliación si hay datos de otra flota, permisos financieros indebido
 
 ## Entrega técnica y pendientes externos
 
-Las correcciones acumuladas están integradas en commits locales. El build de aplicación probado corresponde a **`e797f364`** y la prueba de navegador corregida a **`e3176ba1`**, sin cambios productivos entre ambos. Se conservan los resultados de `c4c4b76b`/0340 como historia; la evidencia actual se publica en `docs/operacion/EVIDENCIA-CANDIDATO-2026-09-05.json`. La autorización de push, merge y Vercel ya existe; ninguna de esas acciones se ha realizado al redactar esta actualización.
+Las correcciones acumuladas están integradas en commits locales. El build de aplicación probado corresponde a **`e797f364`** y la prueba de navegador corregida a **`e3176ba1`**, sin cambios productivos entre ambos. Se conservan los resultados de `c4c4b76b`/0340 como historia; la evidencia actual se publica en `docs/operacion/EVIDENCIA-CANDIDATO-2026-09-05.json`. La autorización de push, merge y Vercel ya existe; el push y el PR 332 ya existen; merge y activación de Vercel siguen pendientes.
 
 La entrega operativa sigue requiriendo datos y responsable del cliente, muestras y mapeos de SAP, acuerdos firmados, recuperación comprobada de archivos y continuidad para repetir el ensayo. La escritura directa a SAP continúa fuera del piloto CSV. Las lecturas de batería citadas en informes previos son históricas, no un estado de energía actualizado.
 
@@ -137,7 +137,8 @@ No marcar una casilla sin el resultado y su vínculo o ruta de evidencia.
 - [x] Suite global/cobertura: `e797f364`, 12,010 aprobadas/0 fallidas/3 omitidas. Dos mediciones se recuperan en la cohorte sin instrumentación: 96 PASS/0 omitidas. Un arnés de tickets reales no ejecutado. Cobertura: sentencias83.2%, ramas73.26%, funciones86.64%, líneas85.89%; umbrales intactos. `/private/tmp/innovativos-root-final2-coverage.json`.
 - [x] Build final `e797f364`, salida0, `/private/tmp/innovativos-release347/build.log`. Next16.3.3, Node26.7 local, Supabase privado; Node22 de CI y Node24 de Vercel se comprueban en sus ejecuciones. Advertencia heredada de importación dinámica CFDI.
 - [x] Navegador del candidato previo al fix de recierre: build `e797f364`, tests `52accdc4`, SQL0347; 72/72 PASS, 1.6min, Chromium/Pixel7. `/private/tmp/innovativos-release347/browser-72-green/browser.log`. Primer intento71PASS/1FAIL de capturaCDP conservado; passthrough de respuesta real corregido. Nueva validación requerida si el fix de recierre afecta estas rutas.
-- [ ] Push y merge GitHub: rama/commits o PR __; checks __; hora UTC __.
+- [x] Push y [PR 332](https://github.com/javiercamarapp/proyect-x-/pull/332); historial y autoría preservados. CI, Postgres y E2E de `8439e2d9` aprobados.
+- [ ] Merge GitHub y aprobación de checks sobre el último SHA, incluido el lote CodeQL posterior.
 - [ ] Staging/Preview: ejecución workflow __; SHA/ref/ID __; migraciones y smoke __.
 - [ ] Production: backup SQL ID/estado/fecha __; migraciones __; deployment staged ID/SHA __; smoke __; promoción/alias/Cron verificados __.
 - [ ] Storage externo: destino configurado __; manifiesto y marca de finalización __; restore aislado y hashes __.
@@ -172,3 +173,6 @@ El **arranque operativo del cliente no está acreditado** mientras sigan abierto
 | 20. Agentes/prompts | Prompt efectivo del SDK, herramientas permitidas y motor exacto comprobados | Evaluación con documentos autorizados del cliente y supervisión operativa |
 
 Los informes previos conservan la metodología y evidencias de las rondas anteriores. Esta matriz no asigna una puntuación numérica ficticia a elementos no observados.
+
+
+Actualización del lote CodeQL: cobertura final `27be178b`, 12,067 PASS/0FAIL/3SKIP; líneas85.91%, ramas73.31%, sentencias83.22%, funciones86.64%. TypeScriptPASS y lint156/194sin nuevos. Los resultados anteriores de build/navegador mantienen su SHA y no se atribuyen automáticamente a esta versión. Ver `REVISION-CODEQL-PR332.md` para correcciones y clasificaciones individuales.

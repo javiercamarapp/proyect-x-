@@ -137,3 +137,12 @@ Vercel identidad recuperada porCLI59.1.4: ownerlikidaai-8016/teamlikida;projectp
 Coveragefinal12010PASS0FAIL3SKIP; cohortetiempo96PASS0SKIP; build e797f364PASS, type/lint157heredados0nuevos/resilienciaPASS. Snapshot3932regularesidénticos,5skilllinksClaudeexcluidos. Browserfinal72/72PASS1.6min; primerfull71PASS1FAIL porCDPresponse descartada conservado, 52accdc4 capturarespuestaREALloopbackantesnavigation sinmodificarla. FocalPDFfirma/importes+ambosbytes+cleanupPASS; MFAsecretprivadooriginalrestaurado al snapshot600, sinresetpolítica. Evidencia browser-72-green y jsondocs/operacion.
 
 BLOQUEO nuevo confirmado porUX: recierreidéntico23514conservarechazada/en_cuadre, pero confirmarCierreEnBase mira fila histórica y narra cerrado/avisajefe/desanclaconversación. ConstructorUX corrige lecturaúnicacoherente; operaciónrevisará. No publicarproducción hastaRED/GREEN ycalidad nueva. GitHub/Vercel noejecutadosaún.
+
+
+### Publicación del PR332 y corrección de CI/recierre
+
+Primer push8007d086 y PR332 borrador creados con autorización vigente. Recierre corregido071b0a07 y revisado independiente; cobertura12021PASS/0FAIL/3SKIP, build7c332786 y navegador completo posterior72PASS. CI inicial reprodujo faltaPGPASSWORD en concurrencia y ausencia preflight0332 en bootstrapSupabase: 7c332786/8439e2d9 corrigen causas,324migraciones+seed+MFAreal en pila independiente. En GitHub8439e2d9 ya pasaron calidad,Postgres y E2E tanto pushcomoPR.
+
+CodeQL terminó análisis pero gate16alertas falló. Correcciones adicionales de seed7de056bc, mensajePIIloggerec88509c RED→GREEN, escapes/controles0fa66a90, baselineoutputs0d00f90d y lectura directa2805abad. Proxyloopback literal y defectos administrativos169/167/179 en revisión. Alertas180/226/227 clasificadas individualmente como false-positive medianteAPItras revisión independiente; razonamiento en docs/operacion/REVISION-CODEQL-PR332.md, sinexclusiones de reglas niarchivos. GitGuardianfixturefalso seed_guard.test.ts28 siguependiente de clasificación; usuario consultado por sesión delpanel. No merge ni despliegue todavía.
+
+LoteCodeQL final27be178b:12067PASS0FAIL3SKIP;typesPASS;lint156/194sin nuevos. 167/169/17967focales+6canarios independientesGO, proxy33PASS. Node24enquality/preview/production_candidate pora248c680, guard27PASS, compatibleestáticamentepero ejecuciónrealpendiente. Ruleset21254264revalidado: verificar+Postgres, sinbypass; master6ae2ba9c sinmovimiento. Preparado nuevo push con evidencia; merge ydeployment aún pendientes.
