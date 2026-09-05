@@ -1687,7 +1687,7 @@ export async function ejecutarCancelacionArco(
     const { enviarRespuestaArco } = await import('@/lib/meta/client');
     const aviso = await enviarRespuestaArco(
       telefono,
-      'Tu solicitud de cancelación de datos quedó ejecutada: tu nombre y tu teléfono ya no están ligados a tu información en el sistema. Los comprobantes fiscales se conservan el tiempo que la ley obliga (CFF art. 30), sin vincularse a tu persona.',
+      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud y la documentación fiscal. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
     );
     return aviso.ok ? { ok: true, avisada: true } : { ok: true, avisada: false, errorAviso: aviso.error };
   } catch (e) {
