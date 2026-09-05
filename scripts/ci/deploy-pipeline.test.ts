@@ -9,6 +9,11 @@ function job(name: string) {
 }
 
 describe('promoción del artefacto Production probado', () => {
+  it('prueba y construye los artefactos con el mismo major Node del runtime Vercel', () => {
+    for (const name of ['quality', 'preview', 'production_candidate']) {
+      expect(job(name)).toContain('node-version: 24');
+    }
+  });
   it('rechaza identidades de baseline que podrían inyectar líneas en los outputs de Actions', () => {
     expect(validateBaseline({ current: 'dpl_old', cron: null })).toEqual({ current: 'dpl_old', cron: null });
     for (const value of [null, {}, { current: 'dpl_old\nid=dpl_other', cron: null }, { current: 'dpl_old', cron: 'arbitrary' }]) {

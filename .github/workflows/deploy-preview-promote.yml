@@ -104,7 +104,8 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          # El artefacto prebuilt se ejecuta con Node24 en el proyecto Vercel.
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Auditoría runtime high/critical (con reintentos acotados)
@@ -219,7 +220,7 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Verificar credenciales Vercel del environment Preview
@@ -328,7 +329,7 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Build con configuración Production
