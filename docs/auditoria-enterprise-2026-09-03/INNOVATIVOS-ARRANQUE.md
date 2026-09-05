@@ -176,3 +176,5 @@ Los informes previos conservan la metodología y evidencias de las rondas anteri
 
 
 Actualización del lote CodeQL: cobertura final `27be178b`, 12,067 PASS/0FAIL/3SKIP; líneas85.91%, ramas73.31%, sentencias83.22%, funciones86.64%. TypeScriptPASS y lint156/194sin nuevos. Los resultados anteriores de build/navegador mantienen su SHA y no se atribuyen automáticamente a esta versión. Ver `REVISION-CODEQL-PR332.md` para correcciones y clasificaciones individuales.
+
+Validación posterior de IPv6: el build `26ef75d3` pasó y su CodeQL remoto también. El navegador encontró un502 enlocalhostIPv6-only; corregido en el proxy, sin cambiar el servidor. Nueva cobertura12,071PASS/0FAIL/3SKIP y navegador72/72PASS1.8min;37pruebas focales y revisión independiente. El build conserva26ef75d3 porque sólo cambia la infraestructura de prueba. Checks remotos del fix pendientes antes de merge.

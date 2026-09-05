@@ -2,14 +2,30 @@ import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 import { exigirUrlLocal } from './entorno-local.mjs';
 
-function ipLoopback(hostname) {
-  // El destino del socket es una constante, incluso si la URL dice localhost.
-  // No dependemos de DNS, /etc/hosts ni de la resolución del entorno de CI.
+function hostLoopback(hostname) {
+  // El nombre entregado al socket procede exclusivamente de este catálogo.
+  // localhost usa lookupLoopback: nunca DNS ni /etc/hosts.
   switch (hostname) {
-    case 'localhost':
+    case 'localhost': return 'localhost';
     case '127.0.0.1': return '127.0.0.1';
     case '[::1]': return '::1';
     default: throw new Error('E2E_LOCAL_REQUERIDO: destino no local');
+  }
+}
+
+function lookupLoopback(hostname, opciones, callback) {
+  if (hostname !== 'localhost') {
+    callback(new Error('E2E_LOCAL_REQUERIDO: resolver limitado a localhost'));
+    return;
+  }
+  // autoSelectFamily prueba la otra familia si el servicio local sólo escucha
+  // en una de ellas. Ambas direcciones son constantes, sin resolución externa.
+  if (opciones.all) {
+    callback(null, [{ address: '127.0.0.1', family: 4 }, { address: '::1', family: 6 }]);
+  } else if (opciones.family === 6) {
+    callback(null, '::1', 6);
+  } else {
+    callback(null, '127.0.0.1', 4);
   }
 }
 
@@ -24,7 +40,8 @@ export async function crearProxyLocalE2E() {
     try { url = new URL(exigirUrlLocal(entrada.url ?? '', 'browser proxy', { ruta: true })); }
     catch { salida.writeHead(403); salida.end('E2E_LOCAL_REQUERIDO'); return; }
     const upstream = request({
-      hostname: ipLoopback(url.hostname), port: Number(url.port || 80),
+      hostname: hostLoopback(url.hostname), port: Number(url.port || 80),
+      lookup: lookupLoopback, autoSelectFamily: true,
       path: url.pathname + url.search, method: entrada.method, headers: entrada.headers,
       agent: false,
     }, (respuesta) => {
@@ -41,7 +58,10 @@ export async function crearProxyLocalE2E() {
       if (!/^(?:localhost|127\.0\.0\.1|\[::1\]):[0-9]+$/.test(entrada.url ?? '')) throw new Error('destino inválido');
       destino = new URL(exigirUrlLocal(`http://${entrada.url}`, 'CONNECT local'));
     } catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
-    const upstream = connect(Number(destino.port || 80), ipLoopback(destino.hostname), () => {
+    const upstream = connect({
+      port: Number(destino.port || 80), host: hostLoopback(destino.hostname),
+      lookup: lookupLoopback, autoSelectFamily: true,
+    }, () => {
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) upstream.write(head);
       upstream.pipe(socket); socket.pipe(upstream);

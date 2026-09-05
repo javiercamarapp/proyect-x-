@@ -18,7 +18,7 @@ async function destino(host: string) {
   });
   await new Promise<void>((resolve, reject) => {
     servidor.once('error', reject);
-    servidor.listen(0, host, resolve);
+    servidor.listen({ port: 0, host, ipv6Only: host === '::1' }, resolve);
   });
   limpiezas.push(() => cerrar(servidor));
   const direccion = servidor.address();
@@ -84,8 +84,12 @@ function connectPorProxy(proxyUrl: URL, autoridad: string, contenido = '') {
 }
 
 describe('proxy E2E: sockets limitados a IP loopback literal', () => {
-  it.each(['127.0.0.1', 'localhost', '[::1]'])('HTTP %s conserva ruta/query sin resolver DNS', async (host) => {
-    const backend = await destino(host === '[::1]' ? '::1' : '127.0.0.1');
+  const destinos = [
+    ['127.0.0.1', '127.0.0.1'], ['[::1]', '::1'],
+    ['localhost', '127.0.0.1'], ['localhost', '::1'],
+  ];
+  it.each(destinos)('HTTP %s contra servidor exclusivo %s conserva ruta/query sin DNS', async (host, bind) => {
+    const backend = await destino(bind);
     const local = await proxy();
     const resolver = impedirDNS();
     const autoridad = `${host}:${backend.puerto}`;
@@ -95,8 +99,8 @@ describe('proxy E2E: sockets limitados a IP loopback literal', () => {
     expect(resolver).not.toHaveBeenCalled();
   });
 
-  it.each(['127.0.0.1', 'localhost', '[::1]'])('CONNECT %s transporta head sin resolver DNS', async (host) => {
-    const backend = await destino(host === '[::1]' ? '::1' : '127.0.0.1');
+  it.each(destinos)('CONNECT %s contra servidor exclusivo %s transporta head sin DNS', async (host, bind) => {
+    const backend = await destino(bind);
     const local = await proxy();
     const resolver = impedirDNS();
     const autoridad = `${host}:${backend.puerto}`;
@@ -105,6 +109,18 @@ describe('proxy E2E: sockets limitados a IP loopback literal', () => {
     expect(respuesta).toContain('200 Connection Established');
     expect(respuesta).toContain('canario local');
     expect(backend.recibidas).toEqual([{ url: '/tunel', host: autoridad }]);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it.each([['127.0.0.1', '::1'], ['[::1]', '127.0.0.1']])
+  ('la IP explícita %s no salta al servidor de la otra familia %s', async (host, bind) => {
+    const backend = await destino(bind);
+    const local = await proxy();
+    const resolver = impedirDNS();
+    const autoridad = `${host}:${backend.puerto}`;
+    expect((await httpPorProxy(local, `http://${autoridad}/canario`, autoridad)).estado).toBe(502);
+    expect(await connectPorProxy(local, autoridad)).not.toContain('200 Connection Established');
+    expect(backend.recibidas).toEqual([]);
     expect(resolver).not.toHaveBeenCalled();
   });
 
