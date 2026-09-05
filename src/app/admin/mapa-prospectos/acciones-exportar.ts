@@ -27,7 +27,7 @@ const MAX_TEXTO_FILTRO = 200;
 export async function accionRegistrarExportacion(n: number, filtros: Record<string, unknown>): Promise<void> {
   const { userId } = await requireSuperadmin();
   const nSano = Number.isFinite(n) && n >= 0 ? Math.round(n) : 0;
-  const filtrosSanos: Record<string, unknown> = {};
+  const filtrosSanos: Record<string, unknown> = Object.create(null);
   for (const [k, v] of Object.entries(filtros ?? {})) {
     filtrosSanos[k] = typeof v === 'string' ? v.slice(0, MAX_TEXTO_FILTRO) : v;
   }
