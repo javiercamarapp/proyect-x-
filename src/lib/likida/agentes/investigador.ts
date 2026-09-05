@@ -80,12 +80,52 @@ LAS REGLAS, EN ORDEN:
 
 interface Pagina { url: string; texto: string }
 
-/** Quita etiquetas y se queda con el texto visible — suficiente para páginas
- *  institucionales; no pretende ser un parser de HTML completo. */
+/** Busca el final de una etiqueta sin tomar un > entre comillas por cierre.
+ * Cada carácter se visita una vez; no depende de backtracking de una regex. */
+function finEtiqueta(html: string, desde: number): number {
+  let comilla: string | null = null;
+  for (let i = desde; i < html.length; i++) {
+    const c = html[i];
+    if (comilla) { if (c === comilla) comilla = null; }
+    else if (c === '"' || c === "'") comilla = c;
+    else if (c === '>') return i;
+  }
+  return -1;
+}
+
+/** Omite bloques script/style antes de extraer texto. Es un recorrido acotado,
+ * no un parser DOM ni un sanitizador para volver a insertar HTML. */
+function sinBloquesNoVisibles(html: string): string {
+  const apertura = /<!--|<(script|style)(?=[\t\n\f\r />])/gi;
+  const partes: string[] = [];
+  let desde = 0;
+  for (let m = apertura.exec(html); m; m = apertura.exec(html)) {
+    if (m[0] === '<!--') {
+      const fin = html.indexOf('-->', apertura.lastIndex);
+      if (fin < 0) { partes.push(html.slice(desde, m.index)); return partes.join(' '); }
+      apertura.lastIndex = fin + 3;
+      continue;
+    }
+    partes.push(html.slice(desde, m.index));
+    const finInicio = finEtiqueta(html, apertura.lastIndex);
+    if (finInicio < 0) return partes.join(' ');
+    const cierre = m[1].toLowerCase() === 'script'
+      ? /<\/script(?=[\t\n\f\r />])/gi : /<\/style(?=[\t\n\f\r />])/gi;
+    cierre.lastIndex = finInicio + 1;
+    const encontrado = cierre.exec(html);
+    const fin = encontrado ? finEtiqueta(html, cierre.lastIndex) : -1;
+    if (fin < 0) return partes.join(' ');
+    desde = fin + 1;
+    apertura.lastIndex = desde;
+  }
+  partes.push(html.slice(desde));
+  return partes.join(' ');
+}
+
+/** Extrae texto para el dossier; nunca ejecuta ni devuelve HTML para render.
+ * Omite bloques script/style y reconoce cierres con espacios ASCII. */
 export function textoVisible(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+  return sinBloquesNoVisibles(html)
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;|&amp;|&quot;|&#\d+;|&[a-z]+;/gi, ' ')
