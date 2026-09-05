@@ -26,7 +26,7 @@ import { MEDIOS_LISR_27_III, FORMA_PAGO_SIN_PAGAR } from './cuadre/engine';
 // Se lee el `.sql` como texto a propósito: es la única forma de comprobar,
 // sin una base de datos, que las dos implementaciones dicen lo mismo.
 //
-// AUDITORÍA 25, FIS-C1/FIS-C2 (CRÍTICO): la 0305 sustituyó a la 0190 —el
+// AUDITORÍA 25, FIS-C1/FIS-C2 (CRÍTICO): la RPC vigente sustituyó a la 0190 —el
 // `.sql` que se lee cambió de archivo— para juzgar la forma de pago EFECTIVA
 // (`pagado_forma` del REP cuando `forma_pago = '99'` y hay `pagado_en`), no
 // la cruda. El `not in (...)` ya no cuelga de `forma_pago` sino de la
@@ -35,7 +35,7 @@ import { MEDIOS_LISR_27_III, FORMA_PAGO_SIN_PAGAR } from './cuadre/engine';
 // REP no cuenta— se conservan sobre la nueva forma.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const RUTA_SQL = 'supabase/migrations/0305_15pct_efectivo_forma_pago_efectiva.sql';
+const RUTA_SQL = 'supabase/migrations/0345_combustible_rep_por_definir.sql';
 const sql = readFileSync(RUTA_SQL, 'utf8');
 
 /** El `not in (...)` del `filter` que define el numerador del 15%. */
@@ -46,23 +46,19 @@ function listaDelSql(): string[] {
 }
 
 describe('el cubo del 15% (RFA 2026 regla 2.9) dice lo mismo en TS y en SQL', () => {
-  it('la lista de medios admitidos por la LISR 27-III es la MISMA en engine.ts y en la 0305', () => {
+  it('la lista de medios admitidos por la LISR 27-III es la MISMA en engine.ts y en la definición vigente', () => {
     expect([...listaDelSql()].sort()).toEqual([...MEDIOS_LISR_27_III].sort());
   });
 
-  it("la 0305 excluye '99 Por definir' del numerador cuando no hay REP, igual que el motor", () => {
-    // RMF 2.7.1.29 fr. II: '99' sin complemento de pago no es "un medio
-    // distinto", es que la contraprestación NO se ha pagado. En TS es
-    // `FORMA_PAGO_SIN_PAGAR`; en SQL, `forma_pago_efectiva` se vuelve NULL
-    // para ese caso (rama `when forma_pago = '99' then null`), y por eso '99'
-    // no aparece en la lista de arriba: el filtro ya no compara contra '99'
-    // directamente, compara contra la forma DERIVADA.
+  it("la RPC vigente excluye '99 Por definir' del numerador cuando no hay REP, igual que el motor", () => {
+    // La forma cruda sin REP queda NULL; la forma REP 99 también se
+    // excluye explícitamente, pues sigue sin definir un medio de pago.
     expect(FORMA_PAGO_SIN_PAGAR).toBe('99');
     expect(sql).toMatch(/when\s+forma_pago\s*=\s*'99'\s+then\s+null/i);
-    expect(listaDelSql()).not.toContain('99');
+    expect(sql).toMatch(/forma_pago_efectiva\s*<>\s*'99'/i);
   });
 
-  it("la 0305 juzga un '99' con REP (`pagado_en`) por `pagado_forma` — la forma EFECTIVA, no la cruda", () => {
+  it("la RPC vigente juzga un '99' con REP (`pagado_en`) por `pagado_forma` — la forma EFECTIVA, no la cruda", () => {
     // FIS-C1/FIS-C2: el mismo criterio que `formaPagoJuzgable` (engine.ts:636)
     // y `formaPagoEfectiva` (fiscal.ts). Antes (0190) un '99' con REP se
     // excluía del numerador igual que uno sin pagar — dos hechos distintos
@@ -70,7 +66,7 @@ describe('el cubo del 15% (RFA 2026 regla 2.9) dice lo mismo en TS y en SQL', ()
     expect(sql).toMatch(/when\s+forma_pago\s*=\s*'99'\s+and\s+pagado_en\s+is\s+not\s+null\s+then\s+pagado_forma/i);
   });
 
-  it('la 0305 no cuenta un gasto sin forma de pago (NULL no es efectivo)', () => {
+  it('la RPC vigente no cuenta un gasto sin forma de pago (NULL no es efectivo)', () => {
     // Mismo criterio que `causasDe` y que `getAcumuladoCombustible`: suponer
     // efectivo donde no se sabe le quita al cliente una deducción que sí tiene.
     expect(sql).toMatch(/forma_pago_efectiva\s+is\s+not\s+null/i);
