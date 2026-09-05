@@ -23,21 +23,13 @@ export async function register() {
   const { avisarConfiguracionSilenciosa } = await import('@/lib/observability/arranque');
   avisarConfiguracionSilenciosa();
 
-  const { verificarMigracionesCriticas, verificarAvisoDePrivacidad, verificarSondeoEscritura0172 } = await import('@/lib/likida/startup');
+  const { verificarMigracionesCriticas, verificarAvisoDePrivacidad } = await import('@/lib/likida/startup');
   // TAMPOCO SE ESPERA (auditoría prod 22-ago-2026, RES-2): eran once sondeos
   // en serie contra la base, sin tope de consulta, y `register()` retenía la
   // primera petición de la instancia fría hasta que todos contestaran. Ahora
   // corren en paralelo, acotados, y el diagnóstico sale por el log sin
   // bloquear el primer 200. Nunca lanza; el catch es por si acaso.
   void verificarMigracionesCriticas().catch(() => { /* ya se reportó dentro */ });
-
-  // ESTE SÍ SE ESPERA (MEDIO REINCIDENTE, auditoría 24 y 25): a diferencia de
-  // los diez de arriba, el sondeo de la 0172 ESCRIBE una fila real en
-  // `tenant`. Con `void`, la instancia se congela en cuanto sale el primer
-  // 200 y el `delete` de limpieza se queda en vuelo — la fila fantasma
-  // aparece en `/admin` como una flota más. Se espera SOLO a este, sin volver
-  // a bloquear los diez sondeos de lectura de arriba.
-  await verificarSondeoEscritura0172().catch(() => { /* ya se reportó dentro */ });
 
   // Y si la liga del aviso de privacidad EXISTE. Es lo único que distingue un
   // dominio bien escrito de uno sin registrar, y hasta la auditoría 6 la función

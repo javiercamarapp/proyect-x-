@@ -59,7 +59,7 @@ const filas = [{
   // campos por comprobante que `cubetaDe`/`aGasto` leen — sin ellos
   // `rpcDesactualizada` contesta 409 (`route.ts:104-110`), que es
   // exactamente lo que este archivo prueba que NO debe pasar aquí.
-  version: 281,
+  version: 342, revision: 'aprobada',
   gastos: [{
     id: 'g1', concepto: 'diesel', subtotal: 3000, descuento: null, tieneCfdi: true,
     monto: 3000, fecha: '2026-08-20', cfdiUuid: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',

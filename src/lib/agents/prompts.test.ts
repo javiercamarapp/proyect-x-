@@ -10,6 +10,8 @@ const ctx: TenantContext = { tenantId: 't1', nombreFlota: 'Flota Demo', agentNam
  *  que responde `find src/app/dashboard -name page.tsx` en la auditoría. */
 function contarPaginasDashboard(dir: string): number {
   let n = 0;
+  // `dir` nace de la raíz fija del repositorio y solo recorre sus hijos.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) n += contarPaginasDashboard(join(dir, e.name));
     else if (e.name === 'page.tsx') n += 1;

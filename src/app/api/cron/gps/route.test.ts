@@ -46,6 +46,9 @@ interface EventosFalsos {
   tenantId: string; proveedor: string;
   leidos: number; guardados: number; huerfanos: number; disparos: number;
   sinTurno?: boolean; sinPermiso?: boolean; error?: string;
+  eventosEnCuarentena?: number; eventosCuarentenaMuertos?: number;
+  eventosOutboxPendientes?: number; eventosOutboxMuertos?: number;
+  avisosPendientes?: number; avisosMuertos?: number;
 }
 const flotaOk = (t: string): FlotaFalsa =>
   ({ tenantId: t, proveedor: 'samsara', leidas: 2, guardadas: 2, huerfanas: 0 });
@@ -104,6 +107,12 @@ describe('el reloj que la ruta les presta a las dos fases', () => {
     expect(optsGps.venceEn).toEqual(expect.any(Number));
     expect(optsEventos.venceEn).toBe(optsGps.venceEn);
   });
+
+  it('prioriza seguridad: eventos corre antes que la telemetría de posiciones', async () => {
+    await GET(peticion());
+    expect(sincronizarEventosTodas.mock.invocationCallOrder[0])
+      .toBeLessThan(sincronizarGpsTodas.mock.invocationCallOrder[0]);
+  });
 });
 
 describe('el corte por reloj se late y se dice, no se calla', () => {
@@ -145,5 +154,27 @@ describe('el corte por reloj se late y se dice, no se calla', () => {
     expect(cuerpo.eventos.sinTurnoPorReloj).toBe(0);
     const [, estado] = registrarLatido.mock.calls[0] as unknown as [string, string];
     expect(estado).toBe('ok');
+  });
+
+  it('DLQ, cuarentena u aviso muerto impiden verde falso y alertan al operador', async () => {
+    sincronizarEventosTodas.mockResolvedValue([{
+      ...eventosOk('t-1'), eventosEnCuarentena: 3, eventosCuarentenaMuertos: 1,
+      eventosOutboxPendientes: 2, eventosOutboxMuertos: 1,
+      avisosPendientes: 1, avisosMuertos: 1,
+    }]);
+
+    const res = await GET(peticion());
+    const cuerpo = await res.json() as { eventos: Record<string, number> };
+
+    expect(cuerpo.eventos).toMatchObject({
+      enCuarentena: 3, cuarentenaMuertos: 1, outboxPendientes: 2,
+      outboxMuertos: 1, avisosPendientes: 1, avisosMuertos: 1,
+    });
+    expect(registrarLatido).toHaveBeenCalledWith('gps', 'parcial', expect.objectContaining({
+      eventosMuertos: 3,
+    }));
+    expect(alertarOperador).toHaveBeenCalledWith('cron.gps.dlq', expect.objectContaining({
+      afectados: expect.stringContaining('t-1'), eventosMuertos: 3,
+    }));
   });
 });

@@ -170,6 +170,18 @@ describe('logger — un fallo de CLIENTE llega también al servidor', () => {
     vi.unstubAllGlobals();
   });
 
+  it('redacta datos sensibles también en el mensaje antes de consola y del POST', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('window', {});
+    const fetchSpy = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response('{}'));
+    vi.stubGlobal('fetch', fetchSpy);
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    logger.error(`Fallo XAXX010101000 525500000000 ${uuid}`);
+    const mensaje = `Fallo [RFC] [TEL] ${huellaId(uuid)}`;
+    expect(JSON.parse(ultimaLinea(consoleSpy)).msg).toBe(mensaje);
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body)).msg).toBe(mensaje);
+  });
+
   it('en el navegador (window existe), un error hace POST a /api/client-error', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubGlobal('window', {});

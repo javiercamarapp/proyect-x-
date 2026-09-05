@@ -3,6 +3,7 @@
 // (el matcher del proxy excluye /api: esta línea es la única).
 import { NextResponse, type NextRequest } from 'next/server';
 import { getSessionTenant } from '@/lib/auth/session';
+import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerArea } from '@/lib/auth/visibilidad';
 import { listarConversaciones } from '@/lib/likida/chat/conversaciones';
 import { logger } from '@/lib/logger';
@@ -13,6 +14,8 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const sesion = await getSessionTenant();
   if (!sesion) return NextResponse.json({ error: 'sin sesion' }, { status: 401 });
+  const rechazoMfa = await rechazoMfaSuperadminApi(sesion);
+  if (rechazoMfa) return rechazoMfa;
   if (!puedeVerArea(sesion.rol, 'dinero')) {
     return NextResponse.json({ error: 'sin acceso' }, { status: 403 });
   }

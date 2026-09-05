@@ -131,11 +131,12 @@ export async function GET(req: NextRequest) {
       if (regresiones.length > 0) cronCheck = 'degraded';
       else if (cronCheck !== 'degraded') cronCheck = 'config_ausente';
       if (configAusente.length > 0) {
-        logger.warn('health.cron_config_ausente', {
-          crons: configAusente,
-          motivos: configAusente.map((c) => latidos[c].detalle.motivo),
-        });
         for (const c of configAusente) {
+          // Código controlado por el catálogo: sobrevive al saneador sin
+          // enviar la prosa potencialmente privada del motivo a Sentry.
+          logger.warn('health.cron_config_ausente', {
+            codigo: `cron_config_ausente:${c}`, ruta: `/api/cron/${c}`,
+          });
           await alertarHuecoConfiguracion(`cron.config_ausente:${c}`, String(latidos[c].detalle.motivo), {
             cron: c,
             estado: latidos[c].ultimoEstado,

@@ -1,13 +1,11 @@
 import Link from 'next/link';
-import { revalidatePath } from 'next/cache';
 import { getResumenNegocio } from '@/lib/admin/negocio';
 import { getAdquisicion } from '@/lib/admin/adquisicion';
-import { listarCampanas, pausarCampana, refrescarGastoMeta, estadoIntegracionAds } from '@/lib/admin/campanas';
-import { getSessionTenant } from '@/lib/auth/session';
-import { mensajeParaPantalla } from '@/lib/likida/errores';
-import { ControlCampanas, type AccionCampana } from './campanas';
+import { listarCampanas, estadoIntegracionAds } from '@/lib/admin/campanas';
+import { ControlCampanas } from './campanas';
+import { accionPausarCampana, accionRefrescarGasto } from './acciones';
 import { tenantDemo } from '@/lib/auth/tenant-demo';
-import { listarProspectos, ESTADOS_PROSPECTO, conteosVacios, esEstadoProspecto } from '@/lib/likida/vendedores';
+import { listarProspectos, ESTADOS_PROSPECTO, conteosVacios, normalizarEstadoProspecto } from '@/lib/likida/vendedores';
 import { getEmbudoActivacion, getCohortesUso } from '@/lib/admin/instrumentacion';
 import { usd } from '@/lib/utils';
 import { numero, fechaCorta } from '@/lib/formato';
@@ -59,33 +57,6 @@ export default async function CrecimientoPage() {
   ]);
   const integracionAds = estadoIntegracionAds();
 
-  async function accionPausarCampana(id: string): Promise<AccionCampana> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin pausa campañas.' };
-    try {
-      const r = await pausarCampana(String(id), s.userId);
-      revalidatePath('/admin/crecimiento');
-      return { ok: true, mensaje: r.mensaje };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(e, 'pausar la campaña') };
-    }
-  }
-
-  async function accionRefrescarGasto(): Promise<AccionCampana> {
-    'use server';
-    const s = await getSessionTenant();
-    if (s?.rol !== 'superadmin') return { ok: false, error: 'Solo el superadmin mide el gasto.' };
-    try {
-      const r = await refrescarGastoMeta();
-      revalidatePath('/admin/crecimiento');
-      if (!r.configurada) return { ok: false, error: 'META_ADS_TOKEN no está configurado — no hay de dónde leer el gasto.' };
-      const fallo = r.fallidas.length > 0 ? ` · fallaron: ${r.fallidas.map((f) => `${f.nombre} (${f.motivo})`).join(', ')}` : '';
-      return { ok: true, mensaje: `Gasto medido en ${r.medidas} campaña${r.medidas === 1 ? '' : 's'}${fallo}.` };
-    } catch (e) {
-      return { ok: false, error: mensajeParaPantalla(e, 'medir el gasto') };
-    }
-  }
   const datosCosto = r.porDia.map((d) => ({ dia: d.dia, valor: d.costoUsd }));
   const chipsTokens = r.porDia.slice(-8).map((d) => d.tokens);
   // AUDITORÍA 10, ALTO — el H1 y el párrafo de abajo decían "Con 1 flota
@@ -141,20 +112,13 @@ export default async function CrecimientoPage() {
               </p>
             </div>
           ) : prospectos.length > 0 && (() => {
-            // AUDITORÍA 24, ADM-15 (parte 2): un prospecto en un estado de
-            // Cal.com (appointment/rescheduled/…, ESTADOS_FUNNEL) no está en
-            // ESTADOS_PROSPECTO — sin la guardia, `porEstado[p.estado]++`
-            // indexaba una llave inexistente en silencio y ese prospecto
-            // desaparecía del embudo sin aviso, aunque siguiera contando en
-            // el denominador de "N prospectos del censo".
             const porEstado = conteosVacios();
-            let enEstadosDeAgenda = 0;
             for (const p of prospectos) {
-              if (esEstadoProspecto(p.estado)) porEstado[p.estado]++;
-              else enEstadosDeAgenda++;
+              const estado = normalizarEstadoProspecto(p.estado);
+              if (estado !== null) porEstado[estado]++;
             }
             const embudo = ESTADOS_PROSPECTO
-              .filter((e) => e.valor !== 'perdido')
+              .filter((e) => e.valor !== 'lost')
               .map((e) => ({ etiqueta: e.rotulo, valor: porEstado[e.valor] }));
             return (
               <div className="card p-4">
@@ -166,11 +130,10 @@ export default async function CrecimientoPage() {
                   <HBars datos={embudo} formato="entero" />
                 </div>
                 <p className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-                  {porEstado.cerrado > 0
-                    ? `Conversión a cierre: ${porEstado.cerrado} de ${numero(prospectos.length)}.`
+                  {porEstado.won > 0
+                    ? `Conversión a cierre: ${porEstado.won} de ${numero(prospectos.length)}.`
                     : 'Sin cierres todavía — la conversión no se inventa con cero cerrados.'}
-                  {porEstado.perdido > 0 && ` ${numero(porEstado.perdido)} perdidos.`}
-                  {enEstadosDeAgenda > 0 && ` ${numero(enEstadosDeAgenda)} en estados de agenda (Cal.com), fuera de este embudo.`}
+                  {porEstado.lost > 0 && ` ${numero(porEstado.lost)} perdidos.`}
                   {' '}El detalle por vendedor vive en <Link href="/admin/vendedores" className="underline">Vendedores</Link>;
                   lo que espera tu aprobación, en <Link href="/admin/aprobaciones" className="underline">Aprobaciones</Link>.
                 </p>

@@ -18,13 +18,16 @@ vi.mock('@/lib/admin/salud', () => ({
 
 const reclamarSalidasWhatsApp = vi.fn();
 const finalizarSalidaWhatsApp = vi.fn();
-vi.mock('@/lib/likida/wa_outbox', () => ({
+vi.mock('@/lib/likida/wa_outbox', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/likida/wa_outbox')>(),
   reclamarSalidasWhatsApp: () => reclamarSalidasWhatsApp(),
   finalizarSalidaWhatsApp: (s: unknown, messageId?: string, error?: string) => finalizarSalidaWhatsApp(s, messageId, error),
 }));
 
 const alertarOperador = vi.fn(async (_e: string, _d: Record<string, unknown>) => {});
 vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: (e: string, d: Record<string, unknown>) => alertarOperador(e, d) }));
+const rpc = vi.fn(async (): Promise<{ data: number | null; error: { message: string } | null }> => ({ data: 0, error: null }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc }) }));
 
 // BACK-19-1 (CRÍTICO, cherry-pick de dae7f640): el cron ahora consulta el
 // kill switch antes de reclamar. Este archivo prueba otra cosa (el aviso de
@@ -42,7 +45,7 @@ const salida = (id: string) => ({ id, payload: { to: '5219999999999' }, intentos
 beforeEach(() => {
   puertaCron.mockClear(); registrarLatido.mockClear();
   reclamarSalidasWhatsApp.mockReset(); finalizarSalidaWhatsApp.mockReset();
-  alertarOperador.mockClear();
+  alertarOperador.mockClear(); rpc.mockReset(); rpc.mockResolvedValue({ data: 0, error: null });
   process.env.WHATSAPP_ACCESS_TOKEN = 'token';
   process.env.WHATSAPP_PHONE_NUMBER_ID = 'phone';
 });
@@ -54,7 +57,7 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
   // vehículo pasa a ser lo que sí es de la fila: la red se cae en su envío.
   it('la red se cae en su envío y la fila muere: avisa al operador', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('a')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: true });
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: true });
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNRESET'); }));
 
     await GET(peticion());
@@ -65,18 +68,20 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
 
   it('un fallo transitorio que NO mata la fila (va a reintentar sola): sin alerta', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('b')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: false });
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: false });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('rate limited', { status: 429 })));
 
     await GET(peticion());
 
     expect(alertarOperador).not.toHaveBeenCalled();
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'b' }), undefined, expect.stringMatching(/^retryable:HTTP 429:/));
     vi.unstubAllGlobals();
   });
 
   it('Meta acepta con wamid: éxito, sin alerta, sin llamar dos veces', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('c')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: false });
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: false });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: 'wamid.1' }] }), { status: 200 })));
 
     const r = await GET(peticion());
@@ -87,33 +92,112 @@ describe('el outbox avisa cuando una salida MUERE, no en cualquier fallo', () =>
     vi.unstubAllGlobals();
   });
 
-  it('MEDIO-278 (auditoría 25, REINCIDENTE): un 200 sin wamid es Meta ACEPTANDO — se marca sent, no se reencola', async () => {
+  it('GPS R4: claim perdido al finalizar un 200 no cuenta enviada y deja el cron en fallo', async () => {
+    reclamarSalidasWhatsApp.mockResolvedValue([salida('claim-perdido')]);
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: false, muerta: false });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: 'wamid.claim-perdido' }] }), { status: 200 })));
+
+    const r = await GET(peticion());
+    const body = await r.json() as { fallidas: number; enviadas: number };
+
+    expect(r.status).toBe(500);
+    expect(body).toEqual(expect.objectContaining({ fallidas: 1, enviadas: 0 }));
+    expect(registrarLatido).toHaveBeenLastCalledWith('wa-outbox', 'parcial', expect.objectContaining({
+      fallidas: 1, enviadas: 0,
+    }));
+    expect(alertarOperador).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('GPS R4: un receipt terminal anterior al vínculo cuenta fallida y alerta, no enviada', async () => {
+    reclamarSalidasWhatsApp.mockResolvedValue([salida('receipt-previo')]);
+    // La RPC encuentra el receipt terminal al escribir provider_message_id y
+    // el trigger convierte la salida en dead en esa misma sentencia.
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: true });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: 'wamid.terminal-previo' }] }), { status: 200 })));
+
+    const r = await GET(peticion());
+    const body = await r.json() as { fallidas: number; enviadas: number };
+
+    expect(r.status).toBe(500);
+    expect(body).toEqual(expect.objectContaining({ fallidas: 1, enviadas: 0 }));
+    expect(alertarOperador).toHaveBeenCalledWith('cron.wa_outbox', expect.objectContaining({
+      codigo: 'salida_muerta',
+      error: expect.stringContaining('ya había reportado un fallo terminal'),
+    }));
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('GPS R4: fallo del reconciliador queda en respuesta y latido sin falso ok', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'reconciliador caído' } });
+    reclamarSalidasWhatsApp.mockResolvedValue([]);
+
+    const r = await GET(peticion());
+    const body = await r.json() as { fallosBackstop?: string[] };
+
+    expect(r.status).toBe(500);
+    expect(body.fallosBackstop).toContain('reconciliacion: reconciliador caído');
+    expect(registrarLatido).toHaveBeenLastCalledWith('wa-outbox', 'parcial', expect.objectContaining({
+      fallosBackstop: ['reconciliacion: reconciliador caído'],
+    }));
+  });
+
+  it('GPS R4: respuesta inválida del reconciliador tampoco produce falso ok', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    reclamarSalidasWhatsApp.mockResolvedValue([]);
+
+    const r = await GET(peticion());
+    const body = await r.json() as { fallosBackstop?: string[] };
+
+    expect(r.status).toBe(500);
+    expect(body.fallosBackstop).toContain('reconciliacion: respuesta inválida');
+    expect(registrarLatido).toHaveBeenLastCalledWith('wa-outbox', 'parcial', expect.objectContaining({
+      fallosBackstop: ['reconciliacion: respuesta inválida'],
+    }));
+  });
+
+  it('GPS R4: fallo de la purga también queda visible en respuesta y latido', async () => {
+    rpc.mockResolvedValueOnce({ data: 2, error: null });
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'purga caída' } });
+    reclamarSalidasWhatsApp.mockResolvedValue([]);
+
+    const r = await GET(peticion());
+    const body = await r.json() as { fallosBackstop?: string[] };
+
+    expect(r.status).toBe(500);
+    expect(body.fallosBackstop).toContain('purga: purga caída');
+    expect(registrarLatido).toHaveBeenLastCalledWith('wa-outbox', 'parcial', expect.objectContaining({
+      fallosBackstop: ['purga: purga caída'],
+    }));
+  });
+
+  it('GPS R3: un 200 sin wamid queda dead/manual-review y alerta, no se reencola', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('e')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: false });
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: true });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ messages: [] }), { status: 200 })));
 
     const r = await GET(peticion());
     const body = await r.json() as { fallidas: number; enviadas: number };
 
-    expect(alertarOperador).not.toHaveBeenCalled();
-    expect(body.fallidas).toBe(0);
-    expect(body.enviadas).toBe(1);
-    // Nunca se manda con `undefined`/vacío: eso reencolaría por la RPC
-    // (`p_message_id is null` → 'pending'/'dead'), duplicando un envío que
-    // Meta ya aceptó.
+    expect(alertarOperador).toHaveBeenCalledWith('cron.wa_outbox', expect.objectContaining({ codigo: 'salida_muerta' }));
+    expect(body.fallidas).toBe(1);
+    expect(body.enviadas).toBe(0);
     expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'e' }), expect.stringMatching(/^sin_wamid:/), undefined);
+      expect.objectContaining({ id: 'e' }), undefined, 'sin_wamid:e');
     vi.unstubAllGlobals();
   });
 
   it('un HTTP de error de Meta que SÍ agota reintentos: avisa', async () => {
     reclamarSalidasWhatsApp.mockResolvedValue([salida('d')]);
-    finalizarSalidaWhatsApp.mockResolvedValue({ muerta: true });
+    finalizarSalidaWhatsApp.mockResolvedValue({ ok: true, muerta: true });
     vi.stubGlobal('fetch', vi.fn(async () => new Response('bad request', { status: 400 })));
 
     await GET(peticion());
 
     expect(alertarOperador).toHaveBeenCalledWith('cron.wa_outbox', expect.objectContaining({ codigo: 'salida_muerta' }));
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'd' }), undefined, expect.stringMatching(/^terminal:HTTP 400:/));
     vi.unstubAllGlobals();
   });
 });

@@ -6,14 +6,17 @@
 // LLM ve los gastos ya extraídos como contexto y decide cuándo cuadrar/cerrar.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { randomUUID } from 'crypto';
 import { idLiquidacionDeViaje } from '@/lib/likida/liquidacion/id';
+import { rutasPdfVersionadas } from './liquidacion/rutas_pdf';
 import { registerTool, type ToolContext } from '@/lib/llm/tool-executor';
 import { cuadrarDesdeDB } from './cuadre/desde_db';
 import { copiasDeComprobante } from './cuadre/engine';
 import { estaApagado } from './interruptores';
 import { registrarCorrida } from './agentes/corridas';
-import { getViaje, getOperador, saveLiquidacion, conteoDeGastosCambio } from './repo';
+import {
+  getViaje, getOperador, saveLiquidacion, leerSnapshotInsumosCierre,
+  insumosDeCierreCambiaron,
+} from './repo';
 import { getConfig } from './config';
 import { generarLiquidacionPDF } from './liquidacion/pdf';
 import { getDatosFiscales } from '@/lib/saas/fiscal';
@@ -197,12 +200,21 @@ registerTool('cuadrar_viaje', {
       // que el motor: el año del viaje (los comprobantes), no el del reloj.
       const viajeCtx = await getViaje(ctx.viajeId, ctx.tenantId).catch(() => null);
       const ejercicio = viajeCtx?.fechaInicio ? Number(viajeCtx.fechaInicio.slice(0, 4)) : new Date().getUTCFullYear();
-      const acum = await getAcumuladoCombustible(ctx.tenantId, ejercicio);
-      const t = evaluarTope15(acum);
       // AUDITORÍA 14, ALTO: la elegibilidad de la flota (declarada al
       // registrarse) tiene que llegar al aviso — una flota no elegible no
       // recibe "te quedan $X antes de perder la deducción".
+      // AUDITORÍA 26 · continuación, FIS-A3 (ALTO): la config se lee ANTES
+      // porque el acumulado la necesita. Este era el cuarto sitio que mide el
+      // cubo del 15%, y el único que lo pedía sin las claves del SAT: la RPC
+      // de la 0305 sin `p_claves` cuenta solo `concepto = 'diesel'`, así que un
+      // ticket de gasolinera clasificado 'otro' con su CFDI posterior —el
+      // camino normal, foto antes que XML— quedaba fuera del denominador. El
+      // motor decía `excedido` y el agente contestaba «holgado» sobre la misma
+      // liquidación. El año ya se había armonizado por esta misma razón
+      // (auditoría 15); faltaban las claves.
       const cfg = await getConfig(ctx.tenantId);
+      const acum = await getAcumuladoCombustible(ctx.tenantId, ejercicio, cfg.hidrocarburos?.claves ?? []);
+      const t = evaluarTope15(acum);
       const f15 = cfg.facilidadCombustibleEfectivo;
       const elegible = (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
         ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)
@@ -322,8 +334,12 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     // fotografiar UNA vez. Lo que se devuelve —y lo que la guardia del
     // processor narra por WhatsApp— tiene que ser la fotografía que de verdad
     // se archivó, nunca la primera.
+    // El sello se toma ANTES de leer/calcultar. La RPC no confía en él: lo
+    // recalcula bajo lock; su función es demostrar que todo lo que el motor y
+    // los PDF leyeron sigue siendo exactamente lo que se va a persistir.
+    let snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
     const [primerCuadre, viaje, operador] = await Promise.all([
-      computeCuadre(ctx.tenantId, ctx.viajeId!),
+      computeCuadre(ctx.tenantId, ctx.viajeId!, undefined, { modo: 'cierre' }),
       getViaje(ctx.viajeId!, ctx.tenantId),
       ctx.operadorId ? getOperador(ctx.operadorId, ctx.tenantId) : Promise.resolve(null),
     ]);
@@ -388,7 +404,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
         const subir = async (bytes: Uint8Array, path: string) => {
           const up = await supabaseAdmin().storage.from('liquidaciones').upload(path, Buffer.from(bytes), {
             contentType: 'application/pdf',
-            upsert: true,
+            upsert: false,
           });
           if (up.error) { logger.warn('pdf.upload', { path, err: up.error.message }); return undefined; }
           return path;
@@ -406,11 +422,14 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
         } catch (e) {
           logger.warn('pdf.razon_social', { err: e instanceof Error ? e.message : String(e) });
         }
-        pdfPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'contralor'), `${ctx.tenantId}/${ctx.viajeId}.pdf`);
-        pdfOperadorPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'operador'), `${ctx.tenantId}/${ctx.viajeId}-operador.pdf`);
+        const paths = rutasPdfVersionadas(ctx.tenantId, ctx.viajeId!);
+        pdfPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'contralor'), paths.contralor);
+        pdfOperadorPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'operador'), paths.operador);
       } catch (e) {
         logger.error('pdf.gen', { err: e instanceof Error ? e.message : String(e) });
       }
+      // Una mitad nunca se publica ni se entrega como pareja completa.
+      if (!pdfPath || !pdfOperadorPath) { pdfPath = undefined; pdfOperadorPath = undefined; }
     };
     await generarPdfs(liq);
 
@@ -428,16 +447,17 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     // distinto cada vez, y el último no sería más verdadero que el primero.
     let liquidacionId: string;
     try {
-      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length);
+      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length, snapshot);
     } catch (e) {
-      if (!conteoDeGastosCambio(e)) throw e;
-      logger.warn('cierre.gasto_en_la_ventana', {
+      if (!insumosDeCierreCambiaron(e)) throw e;
+      logger.warn('cierre.insumo_en_la_ventana', {
         tenantId: ctx.tenantId, viajeId: ctx.viajeId, gastosDelPrimerCuadre: liq.gastos.length,
       });
       // Segunda y última fotografía: cuadre nuevo, PDF nuevos, cierre nuevo.
-      liq = await computeCuadre(ctx.tenantId, ctx.viajeId!);
+      snapshot = await leerSnapshotInsumosCierre(ctx.tenantId, ctx.viajeId!);
+      liq = await computeCuadre(ctx.tenantId, ctx.viajeId!, undefined, { modo: 'cierre' });
       await generarPdfs(liq);
-      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length);
+      liquidacionId = await saveLiquidacion(ctx.tenantId, liq, pdfPath, liq.gastos.length, snapshot);
     }
     // ── LA CORRIDA SE ANOTA (0102 + 0115) ───────────────────────────────────
     // Después de persistir — la liquidación YA está cerrada — y con el
@@ -462,6 +482,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     });
     return {
       liquidacion_id: liquidacionId,
+      pdf_url: pdfPath ?? null,
       estatus: liq.estatus,
       diferencia: liq.diferencia,
       pdf_generado: Boolean(pdfOperadorPath),

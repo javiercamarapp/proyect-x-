@@ -23,6 +23,7 @@ type Resp = { data: unknown; error: { message: string } | null };
 
 let respRpc: Resp;
 let respPosiciones: Resp;
+let respPoll: Resp;
 let respCredenciales: Resp;
 const llamadas: Array<{ tipo: 'rpc' | 'from'; nombre: string; args?: unknown }> = [];
 let paginasServidas = 0;
@@ -31,7 +32,11 @@ vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
     rpc: (fn: string, args: unknown) => {
       llamadas.push({ tipo: 'rpc', nombre: fn, args });
-      const r = fn === 'ultimas_posiciones_tenant' ? respPosiciones : respRpc;
+      const r = fn === 'ultimas_posiciones_tenant'
+        ? respPosiciones
+        : fn === 'estado_poll_gps_tenant'
+          ? respPoll
+          : respRpc;
       return { then: (res: (v: Resp) => unknown) => Promise.resolve(r).then(res) };
     },
     from: (tabla: string) => {
@@ -58,6 +63,7 @@ beforeEach(() => {
   paginasServidas = 0;
   respRpc = { data: { unidadesConPosicion: 0, ultimaPosicion: null }, error: null };
   respPosiciones = { data: [], error: null };
+  respPoll = { data: [], error: null };
   respCredenciales = { data: [], error: null };
 });
 
@@ -68,7 +74,31 @@ describe('getEstadoRastreo — los dos escalares salen de la base, no de las fil
     expect(r.unidadesConPosicion).toBe(12);
     expect(r.ultimaPosicion).toBe('2026-08-22T15:00:00+00:00');
     expect(llamadas).toContainEqual({ tipo: 'rpc', nombre: 'estado_rastreo_tenant', args: { p_tenant: 't-1' } });
+    expect(llamadas).toContainEqual({ tipo: 'rpc', nombre: 'estado_poll_gps_tenant', args: { p_tenant: 't-1' } });
     expect(llamadas.some((l) => l.tipo === 'from' && l.nombre === 'posicion')).toBe(false);
+  });
+
+  it('distingue la recepción del poll, la medición del dispositivo y el backlog', async () => {
+    respPoll = { data: [{
+      proveedor: 'samsara', recurso: 'posiciones',
+      ultimoPoll: '2026-09-03T10:05:00Z', ultimoCompleto: '2026-09-03T10:00:00Z',
+      ultimaMedida: '2026-09-03T09:58:00Z', backlogPendiente: true,
+      paginas: 11, elementos: 5100, error: 'deadline',
+      eventosInvalidosUltima: 2, eventosInvalidosTotal: 9,
+      eventosEnCuarentena: 4, eventosCuarentenaMuertos: 1,
+      eventosOutboxPendientes: 3, eventosOutboxMuertos: 2,
+      avisosPendientes: 1, avisosMuertos: 1,
+    }], error: null };
+    const r = await getEstadoRastreo('t-1');
+    expect(r.polls[0]).toMatchObject({
+      ultimoPoll: '2026-09-03T10:05:00Z', ultimaMedida: '2026-09-03T09:58:00Z',
+      backlogPendiente: true, paginas: 11, elementos: 5100,
+      eventosInvalidosUltima: 2, eventosInvalidosTotal: 9,
+      eventosEnCuarentena: 4, eventosCuarentenaMuertos: 1,
+      eventosOutboxPendientes: 3, eventosOutboxMuertos: 2,
+      avisosPendientes: 1, avisosMuertos: 1,
+    });
+    expect(r.ultimaPosicion).toBeNull();
   });
 
   it('sin una sola posición, `ultimaPosicion` es null — no una fecha inventada', async () => {

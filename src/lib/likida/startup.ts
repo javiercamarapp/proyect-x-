@@ -2,8 +2,6 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { acotada } from './presupuesto';
 
-const ZERO = '00000000-0000-0000-0000-000000000000';
-
 /**
  * Verifica que la migración 0005 (mutex try_lock_viaje + unique(viaje_id)) esté
  * aplicada. Si falta, la protección de doble liquidación NO está activa y hoy se
@@ -70,46 +68,13 @@ export async function verificarMigracionesCriticas(): Promise<void> {
     // despliegue: se arreglaba, se volvía a desplegar, y aparecía la siguiente.
     // El arranque tiene que decir de una vez TODO lo que falta.
     const sondeos: Sondeo[] = [
-      // Migración 0005 (mutex try_lock_viaje + unique(viaje_id)). El índice
-      // `viaje_lock_pkey` se verifica en el bloque de índices de abajo; aquí se
-      // sondea la FUNCIÓN. Se usa un viaje REAL: el UUID de ceros choca con la FK
-      // `viaje_lock_viaje_id_fkey` (migración 0075) y el probe gritaba «FALTA
-      // 0005» en una base donde estaba aplicada — un falso positivo que mandaba a
-      // correr `supabase db push` contra un problema inexistente (el modo de fallo
-      // caro que este archivo existe para evitar).
-      async () => {
-        const { data: viajeReal } = await acotada(admin.from('viaje').select('id').limit(1), 'startup.0005.viaje');
-        if (!viajeReal?.[0]?.id) {
-          // Base vacía: sin viajes no hay doble liquidación que proteger; el unique
-          // `viaje_lock_pkey` sí se verifica en el bloque de índices de abajo.
-          logger.info('startup.migraciones_0005_skip', { msg: 'sin viajes en la base; el probe del mutex no corre (el índice unique sí se verifica)' });
-          return false;
-        }
-        const { data: locked, error } = await acotada(admin.rpc('try_lock_viaje', { p_viaje: viajeReal[0].id, p_ttl_ms: 1 }), 'startup.0005');
-        let falta = false;
-        if (error) {
-          reportarProbe(error, 'FALTA la migración 0005 (try_lock_viaje / unique(viaje_id)): la protección de doble liquidación NO está activa. Corre `supabase db push`.');
-          falta = true;
-        }
-        // SOLO si el lease lo tomó ESTE sondeo. `unlock_viaje` (0005) es un
-        // `delete ... where viaje_id = p_viaje` sin noción de dueño: liberarlo
-        // incondicionalmente le borraba el lease a quien lo tuviera. Un arranque
-        // en frío durante un cierre en vuelo abría el mutex que impide la doble
-        // liquidación, sobre el viaje que `limit 1` devolviera, y sin un log.
-        // Con `p_ttl_ms: 1` el lease propio expira solo; esto es por prolijidad.
-        if (locked === true) await acotada(admin.rpc('unlock_viaje', { p_viaje: viajeReal[0].id }), 'startup.0005.unlock');
-        return falta;
-      },
-
-      // AUDIT_V3 orquestación CRÍTICO: migración 0011 (barrera de intake). Si falta,
-      // intakeDelta devuelve 0 en silencio → esperarIntake retorna true de inmediato
-      // y el "listo" cuadra sobre gastos PARCIALES (fotos aún en OCR). Probe explícito.
-      async () => {
-        const { error: e11 } = await acotada(admin.rpc('intake_delta', { p_viaje: ZERO, p_delta: 0 }), 'startup.0011');
-        if (!e11) return false;
-        reportarProbe(e11, 'FALTA la migración 0011 (intake_delta / viaje.intake_pendientes): la barrera de ráfaga NO está activa y un "listo" puede cuadrar sobre gastos parciales. Corre `supabase db push`.');
-        return true;
-      },
+      // AUDITORÍA PROD 03-sep-2026: los probes de funciones NO deben ejecutar
+      // lógica de negocio. `guardar_liquidacion_tx` con UUID cero generó decenas
+      // de errores reales en Postgres; el mutex tomó un viaje real y el CHECK 624
+      // insertaba/borraba un tenant en cada arranque frío. La 0326 expone un solo
+      // lector de catálogo que comprueba firma exacta, sobrecargas y definición
+      // del CHECK sin tocar una fila de cliente.
+      garantiasEsquema(admin),
 
       // Migración 0031: el TTL del MISMO contador. Se sonda leyendo la columna que
       // la migración agrega, y aquí sí sirve —al revés que el sondeo de la 0019,
@@ -129,18 +94,6 @@ export async function verificarMigracionesCriticas(): Promise<void> {
       // el folio que leyó la visión —el que baila— y nadie se entera, porque el
       // camino sigue "funcionando". Probe de lectura: no escribe nada.
       columna(admin, 'codigo_pendiente', 'id', 'FALTA la migración 0016 (codigo_pendiente): el acercamiento que llegue antes que su ticket pierde el folio exacto y el gasto se queda con el folio del OCR. Corre `supabase db push`.'),
-
-      // Las dos migraciones nuevas del camino del dinero. La 0017 hace el merge de
-      // ocr_extra con claim (sin ella se pisan los folios de portal entre fotos de
-      // una misma ráfaga); la 0019 impide que el mismo CFDI se liquide dos veces.
-      async () => {
-        const { error: e17 } = await acotada(admin.rpc('enriquecer_gasto_codigo', {
-          p_gasto: ZERO, p_tenant: ZERO, p_extra: {}, p_cfdi_uuid: null,
-        }), 'startup.0017');
-        if (!e17) return false;
-        reportarProbe(e17, 'FALTA la migración 0017 (enriquecer_gasto_codigo): el folio del portal que trae un acercamiento no se pega y se pierde. Corre `supabase db push`.');
-        return true;
-      },
 
       // ── ÍNDICES ÚNICOS. SE MIRA EL CATÁLOGO, QUE ES LO ÚNICO QUE LOS VE ─────
       //
@@ -173,46 +126,6 @@ export async function verificarMigracionesCriticas(): Promise<void> {
       catalogo(admin, 'triggers_faltantes', TRIGGERS, 'trigger',
         'No se pudieron verificar los triggers de "nada entra tras liquidar" (falta la migración 0043, `triggers_faltantes`). Corre `supabase db push`.'),
 
-      // Migración 0033: la constancia del aviso de privacidad separada de su
-      // reserva. Si falta, `liberarEnvioAviso` llama a una función que no existe,
-      // el error se registra y no se lanza —es best-effort a propósito— así que la
-      // reserva se queda puesta y el operador NUNCA recibe su aviso. Sin ella
-      // tampoco se escribe una sola constancia del art. 16: `confirmar` no existe.
-      async () => {
-        const { error: e33 } = await acotada(admin.rpc('confirmar_aviso_privacidad', {
-          p_operador: ZERO, p_tenant: ZERO, p_version: 'sonda',
-        }), 'startup.0033');
-        if (!e33) return false;
-        reportarProbe(e33, 'FALTA la migración 0033 (confirmar/liberar_aviso_privacidad): NINGUNA constancia del art. 16 de la LFPDPPP se está escribiendo, y una reserva que no se puede soltar deja al operador sin recibir su aviso. Corre `supabase db push`.');
-        return true;
-      },
-
-      // Migración 0022 (sobrecarga ambigua de guardar_liquidacion_tx). Es la única
-      // que se detecta por el ERROR de una llamada, no por su ausencia: si 0013 y
-      // 0021 conviven, la función existe DOS veces y Postgres responde
-      // `is not unique` (SQLSTATE 42725) ante una llamada de 11 argumentos.
-      //
-      // Va aquí porque este chequeo ya dijo `ok: true` sobre una base que no podía
-      // cerrar una sola liquidación: la 0022 se aplicó a mano en producción y
-      // nunca entró al repo, así que cualquier proyecto nuevo nace con las dos.
-      // Se sonda con argumentos deliberadamente inválidos —un tenant que no
-      // existe— porque lo que importa es CUÁL error responde, no que funcione.
-      async () => {
-        const { error: e22 } = await acotada(admin.rpc('guardar_liquidacion_tx', {
-          p_tenant: ZERO, p_viaje: ZERO, p_total_comprobado: 0, p_total_anticipo: 0,
-          p_diferencia: 0, p_estatus: 'sonda', p_diferencias: [], p_ieps: 0,
-          p_iva: 0, p_peaje: 0, p_pdf_url: null,
-        }), 'startup.0022');
-        if (e22 && (e22.code === '42725' || /is not unique|no es única/i.test(e22.message ?? ''))) {
-          logger.error('startup.migraciones', {
-            msg: 'FALTA la migración 0022: `guardar_liquidacion_tx` existe con DOS firmas (la de 0013 y la de 0021) y toda llamada de 11 argumentos falla con "is not unique". NINGUNA liquidación puede cerrar. Corre `supabase db push`.',
-            code: e22.code, err: e22.message,
-          });
-          return true;
-        }
-        return false;
-      },
-
       // ── LAS QUE EL CÓDIGO USA Y NADIE SONDEABA (auditoría prod, RES-9) ───
       //
       // El sondeo llegaba hasta la 0043 y el código vivo depende de la 0119
@@ -224,70 +137,66 @@ export async function verificarMigracionesCriticas(): Promise<void> {
       // ANTES que el código que la lee, y el arranque lo comprueba.
       ...Object.entries(COLUMNAS_RECIENTES).map(([clave, c]) => columna(admin, c.tabla, c.columna, `FALTA la migración ${clave} (${c.tabla}.${c.columna}): ${c.consecuencia} Corre \`supabase db push\`.`)),
 
-      // El sondeo de la 0172 (CHECK 624 Coordinados) NO vive aquí: es el único
-      // de todos estos que ESCRIBE, y por eso `register()` lo espera aparte —
-      // ver `verificarSondeoEscritura0172` más abajo.
     ];
 
     const resultados = await Promise.allSettled(sondeos.map((s) => s()));
     let faltan = false;
+    let inconclusos = false;
     for (const r of resultados) {
       if (r.status === 'fulfilled') { faltan = faltan || r.value; continue; }
       // Un sondeo que LANZA (cliente sin env, bucket inexistente…) no es
       // "falta la migración": se dice como lo que es y no se afirma nada.
+      inconclusos = true;
       logger.warn('startup.migraciones_sondeo_fallo', { err: r.reason instanceof Error ? r.reason.message : String(r.reason) });
     }
-    if (!faltan) logger.info('startup.migraciones', { ok: true });
+    // `ok` significa que TODOS pudieron preguntar y ninguno encontró faltantes.
+    // Antes un query builder que lanzaba dejaba warning + `{ok:true}` en la
+    // misma corrida: el agregador sano podía tapar al diagnóstico inconcluso.
+    if (!faltan && !inconclusos) logger.info('startup.migraciones', { ok: true });
   } catch (e) {
     // Sin env/DB (p. ej. durante el build) → no romper, solo avisar.
     logger.warn('startup.migraciones_skip', { err: e instanceof Error ? e.message : String(e) });
   }
 }
 
+const GARANTIAS_ESQUEMA: Record<string, string> = {
+  '0005:try_lock_viaje': 'FALTA la firma única de `try_lock_viaje` (0005/0280): el mutex del cierre no se puede adquirir de forma inequívoca.',
+  '0280:unlock_viaje': 'FALTA la firma única de `unlock_viaje` (0280): el dueño del lease no puede liberarlo de forma cercada.',
+  '0011:intake_delta': 'FALTA la firma única de `intake_delta` (0011/0031): la barrera de ráfaga no está disponible.',
+  '0017:enriquecer_gasto_codigo': 'FALTA la firma única de `enriquecer_gasto_codigo` (0017): el folio exacto no se puede conciliar atómicamente.',
+  '0033:confirmar_aviso_privacidad': 'FALTA la firma única de `confirmar_aviso_privacidad` (0033): no se puede escribir la constancia de entrega.',
+  '0033:liberar_aviso_privacidad': 'FALTA la firma única de `liberar_aviso_privacidad` (0033): una reserva fallida puede quedar retenida.',
+  '0022:guardar_liquidacion_tx': 'FALTA la firma única vigente de `guardar_liquidacion_tx` (0022/0321): una sobrecarga vuelve ambigua la llamada y NINGUNA liquidación puede cerrar.',
+  '0172:tenant_regimen_fiscal_dominio:624': 'FALTA la garantía 0172: `tenant_regimen_fiscal_dominio` no está validado o no admite el régimen 624 Coordinados.',
+};
+
 /**
- * El sondeo de la migración 0172 (CHECK `tenant_regimen_fiscal_dominio` con
- * 624). No hay columna nueva que leer: se inserta un `tenant` throwaway y se
- * borra. 23514 = el CHECK de 0056 sigue vigente y un coordinado no puede
- * declararse.
- *
- * MEDIO REINCIDENTE (auditoría 24 y 25, `agentico.md`): este es el ÚNICO de
- * los sondeos de `verificarMigracionesCriticas` que ESCRIBE, y por eso vive
- * en su propia función en vez de en ese arreglo — `register()` lo AWAITEA en
- * vez de dispararlo con `void` como el resto. Con `void`, en Vercel el
- * webhook contesta 200 en ~40 ms y la instancia se congela con el `delete`
- * del `finally` en vuelo; `lib/admin/negocio.ts:384` no filtra el nombre
- * `__likida_probe_624__`, así que la fila fantasma aparece en `/admin` como
- * una flota más, con plan `demo`, y suma en el conteo. Con 0 clientes reales,
- * una flota fantasma es la mitad de la lista.
+ * Un solo RPC de lectura reemplaza los probes que antes ejecutaban negocio.
+ * La 0326 compara pg_proc/pg_constraint; no toma leases ni toca filas.
  */
-export async function verificarSondeoEscritura0172(): Promise<void> {
-  try {
-    const admin = supabaseAdmin();
-    const PROBE = '__likida_probe_624__';
-    await acotada(admin.from('tenant').delete().eq('nombre', PROBE), 'startup.0172.cleanup');
-    try {
-      const { data, error } = await acotada(
-        admin.from('tenant').insert({ nombre: PROBE, regimen_fiscal: '624' }).select('id'),
-        'startup.0172',
+function garantiasEsquema(admin: ReturnType<typeof supabaseAdmin>): Sondeo {
+  return async () => {
+    const { data, error } = await acotada(
+      admin.rpc('garantias_arranque_faltantes'),
+      'startup.garantias_arranque_faltantes',
+    );
+    if (error) {
+      reportarProbe(
+        error,
+        'No se pudieron verificar las firmas críticas ni el CHECK 624 (falta la migración 0326, `garantias_arranque_faltantes`). Corre `supabase db push`.',
       );
-      if (error) {
-        if (error.code === '23514' || /tenant_regimen_fiscal_dominio|regimen_fiscal/i.test(error.message ?? '')) {
-          reportarProbe(error, 'FALTA la migración 0172 (CHECK 624 Coordinados): el catálogo del código admite 624 y la base lo rechaza. Un coordinado no puede declararse. Corre `supabase db push`.');
-        } else if (error.code) {
-          reportarProbe(error, `Sondeo 0172 (CHECK 624) contestó ${error.code}: ${error.message ?? ''}`);
-        }
-        return;
-      }
-      const id = Array.isArray(data) ? data[0]?.id : undefined;
-      if (id) await acotada(admin.from('tenant').delete().eq('id', id), 'startup.0172.cleanup');
-    } finally {
-      await acotada(admin.from('tenant').delete().eq('nombre', PROBE), 'startup.0172.cleanup');
+      return true;
     }
-  } catch (e) {
-    // Sin env/DB (p. ej. durante el build) → no romper, solo avisar.
-    logger.warn('startup.migraciones_skip', { err: e instanceof Error ? e.message : String(e) });
-  }
+    if (!Array.isArray(data) || data.length === 0) return false;
+    for (const clave of data as string[]) {
+      logger.error('startup.migraciones', {
+        msg: `${GARANTIAS_ESQUEMA[clave] ?? `Garantía de esquema desconocida: ${clave}`}. Corre \`supabase db push\`.`,
+      });
+    }
+    return true;
+  };
 }
+
 const INDICES = {
   uq_gasto_cfdi_uuid: 'migración 0019: sin ella el mismo CFDI se liquida dos veces, con su IVA acreditado por duplicado',
   uq_operador_telefono_activo: 'migración 0024: sin ella un mismo teléfono puede resolver a dos operadores y el gasto se le carga a quien no fue',

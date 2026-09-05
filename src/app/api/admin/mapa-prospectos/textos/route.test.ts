@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -45,4 +46,24 @@ describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {
     expect(r.status).toBe(200);
     expect(getTextosProspectos).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/textos',JSON.stringify({...{ids:['11111111-1111-1111-1111-111111111111']},ignorado:'x'.repeat(700000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(getTextosProspectos).not.toHaveBeenCalled();
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/textos',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(getTextosProspectos).not.toHaveBeenCalled();
+ });
+});
+
+it('2000 UUIDs escapados caben completos en el transporte',async()=>{
+ const ids=Array.from({length:2000},(_,i)=>`11111111-1111-1111-1111-${String(i).padStart(12,'0')}`);
+ const crudo=JSON.stringify({ids}).replace(/[0-9-]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));
+ const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/textos',crudo);
+ expect((await POST(p.req)).status).toBe(200);expect(getTextosProspectos).toHaveBeenCalledWith(ids);
 });

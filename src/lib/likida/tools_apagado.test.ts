@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./liquidacion/rutas_pdf', async (original) => ({
+  ...await original<typeof import('./liquidacion/rutas_pdf')>(),
+  rutasPdfVersionadas: (tenant: string, viaje: string) => ({
+    contralor: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046.pdf`,
+    operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
+  }),
+}));
 import { randomUUID } from 'node:crypto';
 import type { Liquidacion } from '@/types/likida';
 
@@ -42,6 +50,8 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => ({ id: 'v1', folio: 'VJ-1', anticipo: 8000 })),
   getOperador: vi.fn(async () => ({ id: 'o1', nombre: 'Juan', telefono: '5219993700779' })),
   saveLiquidacion,
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
 vi.mock('@/lib/saas/fiscal', () => ({ getDatosFiscales: vi.fn(async () => null) }));
@@ -125,8 +135,12 @@ describe('el kill switch de agente:liquidacion (0110) — antes decorativo, ahor
   it('ENCENDIDO (sin fila, el default del catálogo): el cierre corre completo', async () => {
     const r = await cerrar();
     expect(r.success, r.error).toBe(true);
-    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02).
-    expect(saveLiquidacion).toHaveBeenCalledWith('t1', LIQ, 't1/v1.pdf', LIQ.gastos.length);
+    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02) y el
+    // 5º sella la versión/hash de los insumos económicos y fiscales.
+    expect(saveLiquidacion).toHaveBeenCalledWith(
+      't1', LIQ, 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf', LIQ.gastos.length,
+      { version: 1, hash: 'a'.repeat(64) },
+    );
   });
 });
 
@@ -144,7 +158,7 @@ describe('la bitácora de liquidacion (0102 + 0115) — la primera del corazón 
   });
 
   it("un ejemplar del PDF caído degrada la corrida a 'parcial' con el motivo redactado", async () => {
-    fallaEnRuta.add('t1/v1.pdf');
+    fallaEnRuta.add('t1/v1-version-00000000-0000-4000-8000-000000000046.pdf');
     const r = await cerrar();
     expect(r.success, 'el cierre VALE aunque falte un papel').toBe(true);
     expect(corridas[0]).toMatchObject({ estado: 'parcial' });

@@ -30,6 +30,7 @@ import { encolarPieza, verificarFormatoCampana } from './cola';
 import { registrarCorrida, type DisparoCorrida } from './corridas';
 import { notasSinPersona } from '@/lib/likida/prospectos/seudonimo';
 import { logger } from '@/lib/logger';
+import { normalizarEstadoProspecto } from '../vendedores';
 
 // Las ÚNICAS cifras que el correo puede decir (prompts/redactor.md §3,
 // guía canónica del 15-ago-2026). Cambiarlas aquí es cambiar el guion.
@@ -213,7 +214,7 @@ export function primerNombreDelContacto(contactoNombre: string | null): string |
 export function sustituirMarcador(texto: string, nombre: string | null): string {
   if (nombre) return texto.split(MARCADOR_NOMBRE).join(nombre);
   return texto
-    .replace(new RegExp(`\\s*${MARCADOR_NOMBRE.replace(/[{}]/g, '\\$&')}\\s*,`, 'g'), ',')
+    .replace(new RegExp(`\\s*${MARCADOR_NOMBRE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*,`, 'g'), ',')
     .split(MARCADOR_NOMBRE).join('');
 }
 
@@ -292,7 +293,8 @@ export async function redactarCorreoFrio(
   if (error) throw new Error(`redactarCorreoFrio: ${error.message}`);
   if (!p) throw new DatoInvalido('Ese prospecto no existe — recarga el tablero.');
   const prospecto = p as { id: string; empresa: string; contacto_nombre: string | null; correo: string | null; ciudad: string | null; estado: string; fuente: string; notas: string | null; scian: string | null; similitud_icp_pct: number | null };
-  if (prospecto.estado === 'cerrado' || prospecto.estado === 'perdido') {
+  const estadoCanonico = normalizarEstadoProspecto(prospecto.estado);
+  if (estadoCanonico === 'won' || estadoCanonico === 'lost') {
     throw new DatoInvalido(`Este prospecto está ${prospecto.estado} — a un ${prospecto.estado} no se le redacta correo frío.`);
   }
   // AGB-6: compuerta de ICP ANTES de gastar modelo — fail closed, como la

@@ -1,3 +1,12 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./liquidacion/rutas_pdf', async (original) => ({
+  ...await original<typeof import('./liquidacion/rutas_pdf')>(),
+  rutasPdfVersionadas: (tenant: string, viaje: string) => ({
+    contralor: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046.pdf`,
+    operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
+  }),
+}));
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 5 · ALTO REINCIDENTE — el arreglo de la ronda 4 quedó anclado en la
 // función y no en el cableado.
@@ -26,7 +35,6 @@
 // los bytes que se suben a storage, cada uno en su ruta.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Liquidacion, Viaje, Operador } from '@/types/likida';
 
@@ -70,6 +78,8 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => VIAJE),
   getOperador: vi.fn(async () => OPERADOR),
   saveLiquidacion,
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
 vi.mock('@/lib/supabase/admin', () => ({
@@ -123,14 +133,14 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
   it('sube el ejemplar del contralor y el del operador, en rutas distintas', async () => {
     const r = await cerrar();
     expect(r.success, r.error).toBe(true);
-    expect([...subidos.keys()].sort()).toEqual(['t1/v1-operador.pdf', 't1/v1.pdf']);
+    expect([...subidos.keys()].sort()).toEqual(['t1/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf', 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf']);
   });
 
   // CONTROL de la de abajo: si el PDF del contralor no trajera el veredicto, la
   // prueba del operador pasaría por vacío.
   it('el ejemplar del CONTRALOR trae el veredicto fiscal completo', async () => {
     await cerrar();
-    expect(await textoDelPdf(subidos.get('t1/v1.pdf')!)).toMatch(/lista negra|EFOS/);
+    expect(await textoDelPdf(subidos.get('t1/v1-version-00000000-0000-4000-8000-000000000046.pdf')!)).toMatch(/lista negra|EFOS/);
   });
 
   // MUTACIÓN M19. Con `'contralor'` en la línea del ejemplar del operador, el
@@ -139,14 +149,14 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
   // reenviar. Es el hallazgo ALTO de la ronda 4, resucitado.
   it('el ejemplar del OPERADOR no trae lo que él no puede arreglar (M19)', async () => {
     await cerrar();
-    expect(await textoDelPdf(subidos.get('t1/v1-operador.pdf')!)).not.toMatch(/lista negra|EFOS/);
+    expect(await textoDelPdf(subidos.get('t1/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf')!)).not.toMatch(/lista negra|EFOS/);
   });
 
   // El otro lado del filtro: sin esto, "arreglar" M19 generando un PDF vacío para
   // el operador dejaría la prueba de arriba verde y al chofer sin su papel.
   it('pero SÍ trae lo que él puede arreglar y su liquidación completa', async () => {
     await cerrar();
-    const t = await textoDelPdf(subidos.get('t1/v1-operador.pdf')!);
+    const t = await textoDelPdf(subidos.get('t1/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf')!);
     expect(t).toMatch(/XML/);
     expect(t).toMatch(/Juan/);
     expect(t).toMatch(/Total comprobado/);
@@ -155,8 +165,11 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
   it('en `liquidacion.pdf_path` se guarda el ejemplar del CONTRALOR, que es el registro', async () => {
     await cerrar();
     // El 4º argumento es el conteo de comprobantes que la 0158 compara dentro
-    // del candado del viaje (DAT-02): el papel y la base cuentan lo mismo.
-    expect(saveLiquidacion).toHaveBeenCalledWith('t1', LIQ, 't1/v1.pdf', LIQ.gastos.length);
+    // del candado del viaje (DAT-02); el 5º sella los insumos bajo el candado.
+    expect(saveLiquidacion).toHaveBeenCalledWith(
+      't1', LIQ, 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf', LIQ.gastos.length,
+      { version: 1, hash: 'a'.repeat(64) },
+    );
   });
 
   it('el resultado declara que el PDF del operador se generó (de eso depende el envío)', async () => {
@@ -174,11 +187,11 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
     expect((r.result as { pdf_contralor_generado: boolean }).pdf_contralor_generado).toBe(true);
   });
 
-  it('si SOLO falla la subida del ejemplar del contralor, el resultado lo distingue del operador', async () => {
-    fallaEnRuta.add('t1/v1.pdf'); // el del contralor; el del operador es 't1/v1-operador.pdf'
+  it('si falla el contralor, ninguna mitad queda publicada como pareja', async () => {
+    fallaEnRuta.add('t1/v1-version-00000000-0000-4000-8000-000000000046.pdf'); // el del contralor; el del operador es 't1/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf'
     const r = await cerrar();
     const res = r.result as { pdf_generado: boolean; pdf_contralor_generado: boolean };
     expect(res.pdf_contralor_generado, 'el del contralor falló y el campo tiene que decirlo').toBe(false);
-    expect(res.pdf_generado, 'el del operador se subió bien y no debe verse afectado').toBe(true);
+    expect(res.pdf_generado, 'la mitad subida no queda publicada para entrega').toBe(false);
   });
 });

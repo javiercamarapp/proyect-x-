@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10,6 +11,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const llamadas: Array<{ system: string; messages: Array<{ content: string }> }> = [];
 const escrituras: Array<Record<string, unknown>> = [];
 const estadoSesion = vi.hoisted(() => ({ tenantId: '22222222-2222-2222-2222-222222222222' as string | null }));
+const estadoCrm = vi.hoisted(() => ({ valor: 'nuevo' }));
+const presupuestos = vi.hoisted(() => [] as unknown[][]);
 /** BE-29: cuando está puesto, el `update` de la ficha falla. */
 let errorAlGuardar: { message: string } | null = null;
 
@@ -29,10 +32,13 @@ const PROSPECTO = {
 vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
     from: () => ({
-      select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: PROSPECTO, error: null }) }) }),
+      select: () => ({ eq: () => ({ single: () => Promise.resolve({ data: { ...PROSPECTO, estado: estadoCrm.valor }, error: null }) }) }),
       update: (v: Record<string, unknown>) => { escrituras.push(v); return { eq: () => Promise.resolve({ error: errorAlGuardar }) }; },
     }),
   }),
+}));
+vi.mock('@/lib/llm/budget', () => ({
+  createLlmBudget: (...args: unknown[]) => { presupuestos.push(args); return { prueba: true }; },
 }));
 vi.mock('@/lib/llm/openrouter', () => ({
   generateStructured: (args: { system: string; messages: Array<{ content: string }> }) => {
@@ -47,7 +53,8 @@ vi.mock('@/lib/llm/openrouter', () => ({
     });
   },
 }));
-vi.mock('@/lib/ratelimit', () => ({ rateLimit: () => Promise.resolve(true) }));
+const cuotaMensaje = vi.fn(async () => true);
+vi.mock('@/lib/ratelimit', () => ({ rateLimit: () => cuotaMensaje() }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../puerta', () => ({
   sesionSuperadmin: () => Promise.resolve({
@@ -65,9 +72,12 @@ function postear(cabeceras?: Record<string, string>) {
 }
 
 beforeEach(() => {
+  cuotaMensaje.mockReset();cuotaMensaje.mockResolvedValue(true);
   llamadas.length = 0;
   escrituras.length = 0;
   errorAlGuardar = null;
+  estadoCrm.valor = 'nuevo';
+  presupuestos.length = 0;
   estadoSesion.tenantId = '22222222-2222-2222-2222-222222222222';
   process.env.NEXT_PUBLIC_APP_URL = 'https://app.likida.ai';
 });
@@ -82,6 +92,27 @@ describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {
 });
 
 describe('POST /api/admin/mapa-prospectos/mensaje — la persona no sale', () => {
+  it.each(['won', 'cerrado', 'lost', 'perdido'])('%s se rechaza antes del presupuesto, modelo y escritura', async (estado) => {
+    estadoCrm.valor = estado;
+
+    const r = await postear();
+    const j = await r.json() as { codigo?: string };
+
+    expect(r.status).toBe(409);
+    expect(j.codigo).toBe('prospecto_terminal');
+    expect(presupuestos).toHaveLength(0);
+    expect(llamadas).toHaveLength(0);
+    expect(escrituras).toHaveLength(0);
+  });
+
+  it('un prospecto vivo sí crea un presupuesto, llama una vez al modelo y guarda una vez', async () => {
+    estadoCrm.valor = 'proposal';
+    expect((await postear()).status).toBe(200);
+    expect(presupuestos).toHaveLength(1);
+    expect(llamadas).toHaveLength(1);
+    expect(escrituras).toHaveLength(1);
+  });
+
   it('falla cerrado antes de llamar al modelo cuando la sesión no tiene tenant de presupuesto', async () => {
     estadoSesion.tenantId = null;
 
@@ -151,4 +182,26 @@ describe('BE-29 — lo que ya se pagó se entrega, aunque no se pueda guardar', 
     expect(j.guardado).toBe(true);
     expect(j.aviso).toBeUndefined();
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({...{id:PROSPECTO.id},ignorado:'x'.repeat(20000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+ });
+});
+
+it('cuota agotada no lee ni genera',async()=>{
+ cuotaMensaje.mockResolvedValue(false);const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({id:PROSPECTO.id}));
+ expect((await POST(p.req)).status).toBe(429);expect(p.estado().leidos).toBe(0);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
+});
+it('id con tipo array no se convierte en UUID',async()=>{
+ const p=peticionStream('https://app.likida.ai/api/admin/mapa-prospectos/mensaje',JSON.stringify({id:[PROSPECTO.id]}));
+ expect((await POST(p.req)).status).toBe(400);expect(llamadas).toHaveLength(0);expect(escrituras).toHaveLength(0);
 });

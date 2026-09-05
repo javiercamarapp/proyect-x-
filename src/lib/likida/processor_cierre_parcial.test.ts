@@ -78,6 +78,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   claimMessage: (...a: unknown[]) => claimMessage(...(a as [string])),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
@@ -102,6 +103,8 @@ vi.mock('@/lib/likida/repo', () => ({
 }));
 /** AUDITORÍA 24, AGEN-1/AGEN-A1: la lectura de la BASE que decide si cerró. */
 const getLiquidacionDeViaje = vi.fn<(t: string, v: string) => Promise<{ id: string; pdfUrl: string | null } | undefined>>(async () => undefined);
+const lecturaCierre = vi.fn<(t: string, v: string) => Promise<{ data: unknown; error: { message: string } | null }>>();
+const consultasCierre: Array<{ campos: string; filtros: Array<[string, unknown]> }> = [];
 const vincularCostosALiquidacion = vi.fn();
 vi.mock('@/lib/likida/costos', () => ({
   registrarCosto: vi.fn(), registrarCostoWhatsApp: vi.fn(),
@@ -114,8 +117,17 @@ vi.mock('@/lib/supabase/admin', () => ({
       const b: Record<string, unknown> = {};
       const self = () => b;
       for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'limit']) b[m] = self;
+      const consulta = { campos: '', filtros: [] as Array<[string, unknown]> };
+      b.select = (campos: string) => { consulta.campos = campos; return b; };
+      b.eq = (campo: string, valor: unknown) => { consulta.filtros.push([campo, valor]); return b; };
       b.range = async () => ({ data: [], error: null, count: 0 });
-      b.maybeSingle = async () => ({ data: null, error: null });
+      b.maybeSingle = async () => {
+        if (_tabla === 'liquidacion' && consulta.campos.includes('viaje:viaje_id(estatus)')) {
+          consultasCierre.push(consulta);
+          return lecturaCierre(String(consulta.filtros.find(([k]) => k === 'tenant_id')?.[1]), String(consulta.filtros.find(([k]) => k === 'viaje_id')?.[1]));
+        }
+        return { data: null, error: null };
+      };
       b.then = (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok);
       return b;
     },
@@ -142,14 +154,14 @@ vi.mock('./avisar_cierre', () => ({ avisarCierreAlJefe: (a: unknown) => avisarCi
 const { processInbound } = await import('./processor');
 const { PartialExecutionError } = await import('@/lib/llm/openrouter');
 
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
 /** El agente MURIÓ a media ronda, pero `guardar_liquidacion` YA había corrido
  *  con éxito: la liquidación existe en la base, con sus dos PDFs. */
 const cierreParcial = () => new PartialExecutionError(
   'timeout del proveedor',
   new Error('timeout del proveedor'),
-  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
   10, 10, 0,
 );
 
@@ -166,6 +178,14 @@ beforeEach(() => {
   loadConversation.mockResolvedValue({ id: 'c1', turns: [], cierreSinComprobantes: true });
   vincularCostosALiquidacion.mockReset();
   getLiquidacionDeViaje.mockReset(); getLiquidacionDeViaje.mockResolvedValue(undefined);
+  consultasCierre.length = 0;
+  lecturaCierre.mockReset();
+  lecturaCierre.mockImplementation(async (t, v) => {
+    // Los casos históricos representan cierres commiteados. La consulta nueva
+    // exige ahora esos estados explícitos además del id/puntero que simulaban.
+    const liq = await getLiquidacionDeViaje(t, v);
+    return { data: liq ? { id: liq.id, pdf_url: liq.pdfUrl, revision: 'pendiente', viaje: { estatus: 'liquidado' } } : null, error: null };
+  });
   cuadrarDesdeDB.mockReset(); cuadrarDesdeDB.mockResolvedValue({ totalComprobado: 1234 });
   avisarCierreAlJefe.mockClear();
   sellarEntregaLiquidacion.mockClear();
@@ -284,7 +304,7 @@ describe('AGEN-1 — un guardar_liquidacion que reporta fallo sin tumbar el cicl
   it('control: con la tool exitosa no se consulta la base (el snapshot de la tool manda)', async () => {
     runAgent.mockResolvedValue({
       finalText: 'Listo', model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0, costoPorModelo: {},
-      toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+      toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
     });
     await processInbound(listo);
     expect(getLiquidacionDeViaje).not.toHaveBeenCalled();
@@ -307,7 +327,7 @@ describe('AGEN-A1 — el cierre que abortó con la tool en vuelo y commiteó ent
 
   it('manda el PDF, avisa al jefe, y NO registra `pdf.contralor_no_generado`', async () => {
     runAgent.mockRejectedValue(abortoConToolEnVuelo());
-    getLiquidacionDeViaje.mockResolvedValue({ id: 'L-77', pdfUrl: 't-1/v-9.pdf' });
+    getLiquidacionDeViaje.mockResolvedValue({ id: 'L-77', pdfUrl: 't1/v1.pdf' });
     await processInbound(listo);
 
     const dichos = textos().join(' | ');
@@ -326,6 +346,66 @@ describe('AGEN-A1 — el cierre que abortó con la tool en vuelo y commiteó ent
     await processInbound(listo);
     expect(documentos()).toHaveLength(0);
     expect(textos().join(' | ')).toMatch(/no pude generarte el PDF/);
+  });
+});
+
+describe('recierre rechazado: la fila histórica no confirma un cierre nuevo', () => {
+  const toolFallida = { toolName: 'guardar_liquidacion', args: {}, result: null, error: 'saveLiquidacion: 23514: viaje liquidado con liquidación rechazada', durationMs: 20 };
+  const ciclo = () => ({ finalText: 'Ya quedó cerrada', toolCalls: [toolFallida], model: 'm', tokensIn: 0, tokensOut: 0, costUsd: 0, costoPorModelo: {} });
+  const version = 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf';
+  const fila = (revision: string, viaje: unknown) => ({ id: 'L-rechazada', pdf_url: version, revision, viaje });
+
+  it.each(['normal', 'aborto'])('%s: rechazo23514 no anuncia cierre, no entrega PDF viejo y mantiene conversación anclada', async (camino) => {
+    lecturaCierre.mockResolvedValue({ data: fila('rechazada', { estatus: 'en_cuadre' }), error: null });
+    if (camino === 'normal') runAgent.mockResolvedValue(ciclo());
+    else runAgent.mockRejectedValue(new PartialExecutionError('timeout', new Error('timeout'), [toolFallida], 0, 0, 0));
+    await processInbound(listo);
+    const dicho = textos().join(' | ');
+    expect(dicho).toContain('Tu liquidación sigue rechazada');
+    expect(dicho).toContain('corrige o completa los comprobantes');
+    expect(dicho).not.toMatch(/cerrado=true|ya quedó cerrada|Ya cerré/);
+    expect(documentos()).toHaveLength(0);
+    expect(createSignedUrl).not.toHaveBeenCalled();
+    expect(avisarCierreAlJefe).not.toHaveBeenCalled();
+    expect(saveConversation).toHaveBeenCalledWith('c1', expect.anything(), 'v1', expect.anything());
+    expect(consultasCierre).toEqual([{ campos: 'id,pdf_url,revision,viaje:viaje_id(estatus)', filtros: [['tenant_id', 't1'], ['viaje_id', 'v1']] }]);
+  });
+
+  it.each([
+    ['rechazada', { estatus: 'liquidado' }],
+    ['pendiente', { estatus: 'en_cuadre' }],
+    ['aprobada', null],
+    ['ajustada', [{ estatus: 'liquidado' }]],
+    ['desconocida', { estatus: 'liquidado' }],
+  ])('estado incoherente o incompleto %s/%j se declara no verificable', async (revision, viaje) => {
+    lecturaCierre.mockResolvedValue({ data: fila(String(revision), viaje), error: null });
+    runAgent.mockResolvedValue(ciclo());
+    await processInbound(listo);
+    expect(textos().join(' | ')).toContain('No pude confirmar');
+    expect(textos().join(' | ')).not.toMatch(/cerrado=true|ya quedó cerrada/);
+    expect(avisarCierreAlJefe).not.toHaveBeenCalled();
+    expect(documentos()).toHaveLength(0);
+  });
+
+  it.each(['pendiente', 'aprobada', 'ajustada'])('recupera cierre vigente %s/liquidado y su versión PDF', async revision => {
+    lecturaCierre.mockResolvedValue({ data: fila(revision, { estatus: 'liquidado' }), error: null });
+    runAgent.mockResolvedValue(ciclo());
+    await processInbound(listo);
+    expect(textos().join(' | ')).toContain('cerrado=true');
+    expect(createSignedUrl).toHaveBeenCalledWith(version.replace('.pdf', '-operador.pdf'), expect.any(Number));
+    expect(createSignedUrl).toHaveBeenCalledWith(version, expect.any(Number));
+    expect(avisarCierreAlJefe).toHaveBeenCalled();
+  });
+
+  it('aborto con lectura indeterminada no confirma ni niega el cierre', async () => {
+    lecturaCierre.mockResolvedValue({ data: null, error: { message: 'lectura sin respuesta' } });
+    runAgent.mockRejectedValue(new PartialExecutionError('timeout', new Error('timeout'), [toolFallida], 0, 0, 0));
+    await processInbound(listo);
+    const dicho = textos().join(' | ');
+    expect(dicho).toContain('No pude confirmar');
+    expect(dicho).not.toMatch(/cerrado=true|ya quedó cerrada|sigue abierto|NO.*cerr/);
+    expect(avisarCierreAlJefe).not.toHaveBeenCalled();
+    expect(documentos()).toHaveLength(0);
   });
 });
 

@@ -1,0 +1,89 @@
+{
+  "codigo_probado": "26ef75d3 (aplicación/build) + corrección del proxy IPv6, SHA256 3c61cc6df97fbf5190607d8251ce7831b16d27e566716afdaa717f7884390bed",
+  "fecha": "2026-09-05",
+  "entorno": "macOS local; PostgreSQL17; Node26.7.0; Supabase privado loopback55321/55322; Next build producción",
+  "unidad_cobertura": {
+    "aprobadas": 12071,
+    "fallidas": 0,
+    "omitidas": 3,
+    "detalle_omitidas": "2 mediciones de tiempo se ejecutan aparte sin instrumentación; 1 arnés tickets reales no ejecutado",
+    "cobertura": {
+      "sentencias": 83.22,
+      "ramas": 73.31,
+      "funciones": 86.64,
+      "lineas": 85.91
+    }
+  },
+  "tiempo_sin_instrumentar": {
+    "aprobadas": 96,
+    "fallidas": 0,
+    "omitidas": 0
+  },
+  "typecheck": "PASS",
+  "lint": {
+    "warnings_heredados": 156,
+    "baseline": 194,
+    "nuevos": 0,
+    "errores": 0
+  },
+  "build": "PASS26ef75d3; sólo infraestructura de pruebas cambia después del build",
+  "resiliencia_offline": "PASS",
+  "sql": {
+    "migraciones_desde_cero": 324,
+    "contratos_ci": 17,
+    "pgtap": 40,
+    "aislamiento_bloques": 242,
+    "aprobados": 238,
+    "fallos": 0,
+    "reportes": 4
+  },
+  "snapshot": {
+    "archivos_regulares_identicos": 3938,
+    "enlaces_skills_claude_excluidos": 5,
+    "alcance": "Cotejo26ef75d3; después sólo se copian proxy-local.mjs y su test, conservando el build y el binding IPv6 original"
+  },
+  "auditoria_runtime": {
+    "high": 0,
+    "critical": 0
+  },
+  "escaneo_secretos_historia": {
+    "hallazgos": 2,
+    "revision": "2 fixtures sintéticos; ningún secreto real identificado"
+  },
+  "navegador_final": {
+    "build_sha": "26ef75d317d8ff00fd455dc5604704934277cf80",
+    "test_sha": "26ef75d3 + proxy SHA256 3c61cc6df97fbf5190607d8251ce7831b16d27e566716afdaa717f7884390bed",
+    "casos": 72,
+    "aprobados": 72,
+    "fallidos": 0,
+    "entornos": [
+      "Chromium escritorio",
+      "Pixel7 emulado"
+    ],
+    "minutos": 1.8,
+    "intentos": "26ef75d3 falló con502 en login contra localhost IPv6-only. Se preservó el fallo y se corrigió fallback de proxy, sin cambiar bindingNext. Repetición completa72PASS; mantiene historia de capturaCDP anterior.",
+    "limite": "No WebKit/Firefox ni proveedores reales"
+  },
+  "github": {
+    "pr": "https://github.com/javiercamarapp/proyect-x-/pull/332",
+    "sha_ci_aprobado": "8439e2d9aa2748b3c54e050244cae8d0161553ee",
+    "calidad": "PASS push/PR",
+    "postgres": "PASS push/PR",
+    "e2e": "PASS push/PR",
+    "codeql": "PASS26ef75d3; nuevo fixIPv6 requiere checks sobre su SHA",
+    "gitguardian": "Falso positivo revisado en clave explícitamente ficticia seed_guard.test.ts; pendiente clasificación en panel",
+    "merge": "PENDIENTE"
+  },
+  "vercel": "PENDIENTE; pushes cancelados por Ignored Build Step, sin activación productiva",
+  "limites": [
+    "Sin prueba de proveedores reales ni mensajes externos",
+    "Soak24h incompleto por suspensiones del host",
+    "Storage externo sin destino/credenciales; SQL backup no lo cubre",
+    "Sin catálogos/acuerdos aprobados del cliente ni importación SAP real",
+    "No acredita latencia o capacidad de producción; Node de CI22 y Vercel24 se verifican remotamente"
+  ],
+  "hallazgo_recierre": "CORREGIDO071b0a07; estado y revisión coherentes en una lectura, 32 pruebas focales y revisión independiente; nueva cobertura12021 y navegador72PASS",
+  "lote_codeql": "CodeQL remoto26ef75d3PASS. IPv6local detectó regresión funcional adicional; corregida con37pruebas, revisión independiente, cobertura12071PASS y navegador72PASS. Reanálisis remoto del fix pendiente.",
+  "actualizado_utc": "2026-09-05T22:46:20Z",
+  "pipeline_node": "Calidad y builds de despliegue con Node24 alineados al proyecto Vercel; ejecuciónrealNode24 PENDIENTE"
+}

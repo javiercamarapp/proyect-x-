@@ -22,6 +22,7 @@ vi.mock('@/lib/agents/run', () => ({ runAgent: (...a: unknown[]) => runAgent(...
 vi.mock('@/lib/likida/conv', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   resolveOperador: vi.fn(async () => ({ tenantId: 't1', operadorId: 'o1' })),
+  viajeAbiertoDesdeMs: vi.fn(async () => null),
   getOpenViaje: vi.fn(async () => 'v1'),
   getTenantContext: vi.fn(async () => ({ nombre: 'Flota' })),
   // `cierreSinComprobantes: true` deja pasar el freno de "cierre sin
@@ -32,6 +33,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   claimMessage: (...a: unknown[]) => claimMessage(...(a as [string])),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const), releaseViajeLock: vi.fn(),
   releaseMessageClaim: vi.fn(),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
@@ -70,7 +72,7 @@ vi.mock('@/lib/logger', () => ({ logger }));
 
 const { processInbound } = await import('./processor');
 
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
 describe('processInbound — ctxCerro sobrevive a un fallo posterior al cierre exitoso', () => {
   beforeEach(() => {

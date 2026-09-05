@@ -17,7 +17,7 @@
  * la vista iOS/WebKit no está cubierta.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
 
 test.use({ storageState: ESTADOS.duena });

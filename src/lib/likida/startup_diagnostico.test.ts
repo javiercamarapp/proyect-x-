@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const rpc = vi.fn();
 const from = vi.fn();
+const metodoTabla = vi.fn();
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc, from }) }));
 
 const error = vi.fn();
@@ -32,7 +33,9 @@ const { verificarMigracionesCriticas } = await import('./startup');
 // las pruebas midan cualquier cosa menos lo que dicen medir.
 const tabla = (resultado: { error: unknown; data?: unknown } = { error: null }) => {
   const enlace: Record<string, unknown> = {};
-  for (const m of ['select', 'not', 'eq', 'limit', 'insert', 'delete']) enlace[m] = () => enlace;
+  for (const m of ['select', 'not', 'eq', 'limit', 'insert', 'delete']) {
+    enlace[m] = () => { metodoTabla(m); return enlace; };
+  }
   // `await` sobre el enlace resuelve al resultado (igual que el query builder real).
   enlace.then = (r: (v: unknown) => unknown) => Promise.resolve(resultado).then(r);
   return enlace;
@@ -42,7 +45,7 @@ const tabla = (resultado: { error: unknown; data?: unknown } = { error: null }) 
 const okTabla = tabla({ data: [{ id: 'viaje-real-1' }], error: null });
 
 beforeEach(() => {
-  rpc.mockReset(); from.mockReset(); error.mockReset(); warn.mockReset(); info.mockReset();
+  rpc.mockReset(); from.mockReset(); metodoTabla.mockReset(); error.mockReset(); warn.mockReset(); info.mockReset();
   from.mockReturnValue(okTabla);
 });
 
@@ -59,15 +62,17 @@ describe('diagnóstico de migraciones', () => {
     expect(meta.msg).not.toContain('FALTA');
   });
 
-  it('una migración que de verdad falta SÍ se reporta como error', async () => {
+  it('si falta el lector catalogal 0326 SÍ se reporta como error', async () => {
     // PostgREST contesta con código cuando la función no existe: hubo respuesta.
-    rpc.mockResolvedValue({ error: { code: 'PGRST202', message: 'Could not find the function public.try_lock_viaje' } });
+    rpc.mockImplementation(async (nombre: string) => (nombre === 'garantias_arranque_faltantes'
+      ? { error: { code: 'PGRST202', message: 'Could not find the function public.garantias_arranque_faltantes' } }
+      : { data: [], error: null }));
     await verificarMigracionesCriticas();
 
     expect(warn).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith('startup.migraciones', expect.objectContaining({ code: 'PGRST202' }));
     const mensajes = error.mock.calls.map((c) => (c[1] as { msg: string }).msg).join(' | ');
-    expect(mensajes).toContain('FALTA la migración 0005');
+    expect(mensajes).toContain('0326');
   });
 
   it('con todo aplicado, dice que está bien y no grita', async () => {
@@ -79,52 +84,20 @@ describe('diagnóstico de migraciones', () => {
     expect(info).toHaveBeenCalledWith('startup.migraciones', { ok: true });
   });
 
-  it('el mutex (0005) se sondea con el viaje real, no con el UUID de ceros', async () => {
-    rpc.mockResolvedValue({ error: null });
-    await verificarMigracionesCriticas();
-    const llamadaLock = rpc.mock.calls.find((c) => c[0] === 'try_lock_viaje');
-    expect(llamadaLock).toBeDefined();
-    expect(llamadaLock![1].p_viaje).toBe('viaje-real-1');
-  });
-
-  // AUDITORÍA 18, ALTO (lo levantaron agéntico y operabilidad por separado): el
-  // sondeo llamaba `unlock_viaje` INCONDICIONALMENTE, sin mirar si
-  // `try_lock_viaje` había devuelto true. Y `unlock_viaje` (0005:48) es un
-  // `delete ... where viaje_id = p_viaje` sin noción de dueño.
-  //
-  // Entra: un arranque en frío mientras otro proceso tiene tomado el lease del
-  // viaje que `select id from viaje limit 1` devuelve.
-  // Salía: el probe le borra el lease a ese proceso. El mutex que existe para
-  // impedir la doble liquidación queda abierto a media liquidación, sin un solo
-  // log. El TTL de 1 ms del propio probe ya lo hacía innecesario.
-  it('si el lease es de OTRO proceso, el sondeo NO lo libera', async () => {
-    rpc.mockImplementation((fn: string) =>
-      Promise.resolve(fn === 'try_lock_viaje' ? { data: false, error: null } : { data: null, error: null }));
+  it('el arranque no invoca ninguna RPC de negocio ni escribe filas', async () => {
+    rpc.mockResolvedValue({ data: [], error: null });
     await verificarMigracionesCriticas();
 
-    expect(rpc.mock.calls.some((c) => c[0] === 'try_lock_viaje')).toBe(true);
-    expect(rpc.mock.calls.some((c) => c[0] === 'unlock_viaje')).toBe(false);
-  });
-
-  it('si el lease lo tomó el sondeo, sí lo libera', async () => {
-    rpc.mockImplementation((fn: string) =>
-      Promise.resolve(fn === 'try_lock_viaje' ? { data: true, error: null } : { data: null, error: null }));
-    await verificarMigracionesCriticas();
-
-    expect(rpc.mock.calls.some((c) => c[0] === 'unlock_viaje')).toBe(true);
-  });
-
-  // La red se puede caer en cualquiera de los cuatro probes, no solo en el primero.
-  it('el mismo criterio aplica al probe de la barrera de intake', async () => {
-    // POR NOMBRE: desde RES-2 los sondeos corren en paralelo y el orden de
-    // llegada de las RPC ya no es el del archivo.
-    rpc.mockImplementation(async (nombre: string) => (nombre === 'intake_delta'
-      ? { error: { code: '', message: 'fetch failed' } }
-      : { error: null }));
-    await verificarMigracionesCriticas();
-
-    expect(error).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith('startup.migraciones_sin_verificar', expect.anything());
+    const invocadas = rpc.mock.calls.map((c) => c[0] as string);
+    expect(invocadas).toContain('garantias_arranque_faltantes');
+    expect(invocadas).toEqual(expect.arrayContaining(['indices_faltantes', 'triggers_faltantes']));
+    expect(invocadas).not.toEqual(expect.arrayContaining([
+      'try_lock_viaje', 'unlock_viaje', 'intake_delta',
+      'enriquecer_gasto_codigo', 'confirmar_aviso_privacidad',
+      'liberar_aviso_privacidad', 'guardar_liquidacion_tx',
+    ]));
+    expect(metodoTabla).not.toHaveBeenCalledWith('insert');
+    expect(metodoTabla).not.toHaveBeenCalledWith('delete');
   });
 
   // El límite: un error CON código, aunque el mensaje suene a red, es una
@@ -136,6 +109,21 @@ describe('diagnóstico de migraciones', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalled();
   });
+
+  it('si un sondeo LANZA, registra diagnóstico inconcluso y nunca dice ok', async () => {
+    rpc.mockResolvedValue({ data: [], error: null });
+    from.mockImplementation((nombre: string) => {
+      if (nombre === 'codigo_pendiente') throw new Error('query builder roto');
+      return okTabla;
+    });
+
+    await verificarMigracionesCriticas();
+
+    expect(warn).toHaveBeenCalledWith('startup.migraciones_sondeo_fallo', {
+      err: 'query builder roto',
+    });
+    expect(info).not.toHaveBeenCalledWith('startup.migraciones', { ok: true });
+  });
 });
 
 // CRÍTICO de la auditoría 5 (modelo de datos): la migración 0022 estaba aplicada
@@ -145,24 +133,19 @@ describe('diagnóstico de migraciones', () => {
 // liquidación cierra. Y este chequeo no la sondeaba: decía `ok: true`.
 describe('la sobrecarga ambigua de guardar_liquidacion_tx', () => {
   it('con DOS firmas vivas, el arranque lo grita en vez de decir ok', async () => {
-    // POR NOMBRE, no por posición. Estaba encadenado con `mockResolvedValueOnce`
-    // en el orden exacto de los sondeos, así que agregar uno nuevo en medio
-    // —el de la 0033— corría la fila y esta prueba empezaba a medir otra cosa.
-    // Una prueba que se rompe al insertar un sondeo ANTES del que le importa no
-    // está midiendo lo que dice.
-    rpc.mockImplementation(async (nombre: string) => (nombre === 'guardar_liquidacion_tx'
-      ? { error: { code: '42725', message: 'function guardar_liquidacion_tx(...) is not unique' } }
+    rpc.mockImplementation(async (nombre: string) => (nombre === 'garantias_arranque_faltantes'
+      ? { data: ['0022:guardar_liquidacion_tx'], error: null }
       : { data: [], error: null }));
     await verificarMigracionesCriticas();
 
     expect(info).not.toHaveBeenCalledWith('startup.migraciones', { ok: true });
-    expect(error).toHaveBeenCalledWith('startup.migraciones', expect.objectContaining({ code: '42725' }));
+    expect(error).toHaveBeenCalledWith('startup.migraciones', expect.anything());
     const [, meta] = error.mock.calls[0] as [string, { msg: string }];
     expect(meta.msg).toContain('0022');
     expect(meta.msg).toContain('NINGUNA liquidación puede cerrar');
   });
 
-  it('un error NORMAL de esa sonda (tenant inexistente) no se confunde con la ambigüedad', async () => {
+  it('una firma exacta no se confunde con una sobrecarga', async () => {
     rpc.mockResolvedValue({ data: [], error: null });
     await verificarMigracionesCriticas();
     expect(info).toHaveBeenCalledWith('startup.migraciones', { ok: true });
@@ -176,12 +159,9 @@ describe('la sobrecarga ambigua de guardar_liquidacion_tx', () => {
 // cuenta doble en el comprobado y su IVA se acredita por duplicado.
 describe('el arranque dice TODO lo que falta, no lo primero', () => {
   it('con dos migraciones ausentes, reporta las dos', async () => {
-    // Sin slot para `unlock`: desde la auditoría 18 el sondeo solo libera el
-    // lease si `try_lock_viaje` devolvió `true`, y aquí devuelve error.
-    rpc.mockImplementation(async (nombre: string) => (
-      nombre === 'try_lock_viaje' ? { error: { code: 'PGRST202', message: 'no try_lock_viaje' } }
-      : nombre === 'intake_delta' ? { error: { code: 'PGRST202', message: 'no intake_delta' } }
-      : { error: null }));
+    rpc.mockImplementation(async (nombre: string) => (nombre === 'garantias_arranque_faltantes'
+      ? { data: ['0005:try_lock_viaje', '0011:intake_delta'], error: null }
+      : { data: [], error: null }));
     await verificarMigracionesCriticas();
 
     const mensajes = error.mock.calls.map((c) => (c[1] as { msg: string }).msg).join(' | ');
@@ -340,7 +320,7 @@ describe('el TTL del contador de la barrera (0031)', () => {
 describe('los sondeos corren en paralelo y cubren las migraciones recientes', () => {
   it('una RPC que no contesta no retiene a las demás: todas se disparan de una vez', async () => {
     let resolverColgada: (() => void) | undefined;
-    rpc.mockImplementation((nombre: string) => (nombre === 'intake_delta'
+    rpc.mockImplementation((nombre: string) => (nombre === 'garantias_arranque_faltantes'
       ? new Promise((r) => { resolverColgada = () => r({ error: null }); })
       : Promise.resolve({ error: null })));
     const corrida = verificarMigracionesCriticas();
@@ -348,8 +328,9 @@ describe('los sondeos corren en paralelo y cubren las migraciones recientes', ()
     await new Promise((r) => setTimeout(r, 0));
     const nombres = rpc.mock.calls.map((c) => c[0] as string);
     expect(nombres).toContain('indices_faltantes');
-    expect(nombres).toContain('confirmar_aviso_privacidad');
-    expect(nombres).toContain('guardar_liquidacion_tx');
+    expect(nombres).toContain('triggers_faltantes');
+    expect(nombres).not.toContain('confirmar_aviso_privacidad');
+    expect(nombres).not.toContain('guardar_liquidacion_tx');
     resolverColgada!();
     await corrida;
     expect(info).toHaveBeenCalledWith('startup.migraciones', { ok: true });

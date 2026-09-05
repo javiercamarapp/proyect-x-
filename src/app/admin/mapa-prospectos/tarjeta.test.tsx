@@ -12,8 +12,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { ProspectoMapa, TextosProspecto } from '@/lib/admin/prospectos-mapa';
+import type { DetalleProspecto, ProspectoMapa, TextosProspecto } from '@/lib/admin/prospectos-mapa';
 import { TarjetaProspecto } from './cerebro';
+import { Detalle } from './[id]/detalle';
 import { mensajeWa } from './mensajes';
 
 const base: ProspectoMapa = {
@@ -27,7 +28,7 @@ const base: ProspectoMapa = {
 };
 
 const pintar = (p: ProspectoMapa, t?: TextosProspecto) =>
-  renderToStaticMarkup(<TarjetaProspecto p={p} t={t} nuevo={false} />);
+  renderToStaticMarkup(<TarjetaProspecto p={p} t={t} nuevo={false} onAfinar={() => undefined} />);
 
 describe('la tarjeta del Cerebro con los textos fuera del listado', () => {
   it('sin mensaje redactado: los botones abren YA, con la plantilla', () => {
@@ -73,5 +74,20 @@ describe('la tarjeta del Cerebro con los textos fuera del listado', () => {
     expect(html).not.toContain('Correo');
     // La ruta a la dirección real sí sigue: no depende de ningún texto.
     expect(html).toContain('Cómo llegar');
+  });
+
+  it.each(['won', 'cerrado', 'lost', 'perdido'])('en %s no muestra el botón de Mensaje IA', (estado) => {
+    const html = pintar({ ...base, estado });
+    expect(html).not.toContain('Mensaje IA');
+  });
+
+  it.each(['won', 'cerrado', 'lost', 'perdido'])('la ficha en %s tampoco muestra Redactar con IA', (estado) => {
+    const detalle: DetalleProspecto = {
+      ...base, estado,
+      notas: null, mensajeWaIa: null, correoAsuntoIa: null, correoCuerpoIa: null,
+      sitio: null, sitioVerificado: false, historia: null, viajesMesEstimado: null,
+      fuenteCruda: 'censo', creadoEn: '2026-08-01T00:00:00.000Z', personas: [],
+    };
+    expect(renderToStaticMarkup(<Detalle p={detalle} />)).not.toContain('Redactar con IA');
   });
 });

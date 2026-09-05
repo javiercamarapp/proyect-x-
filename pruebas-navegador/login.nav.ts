@@ -7,30 +7,21 @@
  *     proxy.ts por matcher y requireSessionTenant en la página).
  *   · El magic link entero: formulario → correo (Mailpit) → enlace → sesión
  *     → panel. Nada inyecta cookies a mano.
- *   · El aterrizaje depende del rol — pero no como dice el comentario de
- *     `auth/callback/route.ts`. Ese código promete que "sin next explícito"
- *     el superadmin cae directo en /admin (`puertaDeEntrada`); en los
- *     HECHOS, el formulario de /login SIEMPRE manda `next=/dashboard`
- *     (`login/page.tsx:94`, sin `?next=` en la URL de origen), así que
- *     `destinoExplicito` nunca es null para un login real por el
- *     formulario — la puerta directa de `puertaDeEntrada` es HOY
- *     inalcanzable desde la UI. El superadmin aterriza en /dashboard,
- *     que sin tenant lo manda a /admin/elegir-flota (requireSessionTenant).
- *     Sigue siendo funcional (un clic en "Volver a la consola" y está en
- *     /admin) — hallazgo de E.27, no arreglado aquí: tocar el fallback de
- *     `next` en login/page.tsx es cambiar el login real de producción, y
- *     ese archivo no lo toca esta rama. flota_admin sí cae en /dashboard
- *     tal cual, porque ESE es su `puertaDeEntrada` de todos modos.
+ *   · El superadmin debe inscribir y verificar un segundo factor real.
+ *     El magic link por sí solo no permite entrar a /admin. El helper usa
+ *     el secreto mostrado por la UI local, como una app de autenticación;
+ *     GoTrue valida el código y entrega la sesión AAL2.
  *   · El anti-oráculo (auditoría 18, M24): un correo sin cuenta ve la misma
  *     confirmación Y no recibe correo — sin esperar por reloj: el testigo es
  *     un correo real pedido DESPUÉS por el mismo SMTP; cuando ése ya llegó,
  *     el del inexistente tuvo su oportunidad y no está.
  *
- * Estas pruebas piden 4 de los 7 correos del presupuesto (ver apoyo/sesion).
+ * Estas pruebas piden 4 de los 10 correos del presupuesto (ver apoyo/sesion).
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './apoyo/fixture';
 import { CORREOS, entrar, pedirEnlace, mensajesDe, enlaceDelCorreo } from './apoyo/sesion';
+import { completarMfaSuperadmin, rechazarCodigoMfaInvalido } from './apoyo/mfa';
 
 test('sin sesión, /dashboard rebota a /login y conserva el destino', async ({ page }) => {
   await page.goto('/dashboard/viajes');
@@ -46,13 +37,14 @@ test('la dueña entra por el enlace del correo y ve el panel de SU flota', async
   await expect(page.locator('body')).toContainText(/Flota Demo|Dueña E2E/);
 });
 
-test('el superadmin aterriza en el selector de flota, y de ahí entra a su consola', async ({ page }) => {
+test('el superadmin debe verificar el segundo factor antes de abrir su consola', async ({ page }) => {
   await entrar(page, CORREOS.superadmin);
-  // Ver el comentario de cabecera: HOY aterriza en /admin/elegir-flota, no
-  // directo en /admin — sigue siendo funcional, no un callejón sin salida.
-  await expect(page).toHaveURL(/\/admin\/elegir-flota/);
-  await expect(page.locator('body')).toContainText('¿Qué flota quieres ver?');
-  await page.getByRole('link', { name: 'Volver a la consola' }).click();
+  await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=retar/);
+  await page.goto('/admin');
+  await expect(page).toHaveURL(/\/dashboard\/mi-perfil\?exige=retar/);
+  await rechazarCodigoMfaInvalido(page);
+  await completarMfaSuperadmin(page);
+  await page.goto('/admin');
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.locator('body')).toContainText('Consola de Likida');
 });

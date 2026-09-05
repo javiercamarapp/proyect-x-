@@ -4,7 +4,7 @@ jerarquia: 1
 instrumento: "Ley del Impuesto al Valor Agregado"
 articulo_o_regla: "5"
 titulo: "Requisitos del acreditamiento del IVA"
-citas_en_codigo: ["LIVA art. 5"]
+citas_en_codigo: ["LIVA art. 5", "LIVA 5-III"]
 texto_vigente: >
   Artículo 5o.- Para que sea acreditable el impuesto al valor agregado deberán
   reunirse los siguientes requisitos:
@@ -26,8 +26,15 @@ texto_vigente: >
   II. Que el impuesto al valor agregado haya sido trasladado expresamente al
   contribuyente y que conste por separado en los comprobantes fiscales a que se
   refiere la fracción III del artículo 32 de esta Ley.
+
+  III. Que el impuesto al valor agregado trasladado al contribuyente haya sido
+  efectivamente pagado en el mes de que se trate;
 estado_verificacion: verificado_fuente_primaria
 nota_verificacion: >
+  Ampliación del 5-sep-2026: fracción III cotejada contra página 10 del PDF
+  oficial de diputados.gob.mx. Sustenta el pago efectivo en el mes que ya
+  exige el motor; no se cambia el cálculo ni se presume pago por una captura.
+
   Cerrada el 28-jul-2026 contra el texto vigente. Estaba `sin_verificar` mientras
   el motor YA calculaba `ivaAcreditable` con ella y el PDF lo imprimía en verde
   como dinero recuperable — decidir dinero sobre una ficha sin verificar.

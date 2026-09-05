@@ -23,6 +23,8 @@ vi.mock('@/lib/likida/hitos_viaje', async (original) => ({
 vi.mock('@/lib/likida/conv', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   resolveOperador: (...a: unknown[]) => resolveOperador(...a),
+  viajeAbiertoDesdeMs: vi.fn(async () => null),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
   getOpenViaje: vi.fn(async () => 'v1'),
   getTenantContext: vi.fn(async () => ({ nombre: 'Flota' })),
   loadConversation: vi.fn(async () => ({ id: 'c1', turns: [] })),
@@ -108,7 +110,7 @@ describe('processInbound — los hitos del chofer, cableados', () => {
   });
 
   it('"listo" sigue siendo del CIERRE: ningún hito se sella', async () => {
-    await processInbound(msg('listo'));
+    await processInbound(msg('listo', 1788534000000));
     expect(sellarHito).not.toHaveBeenCalled();
     // El freno de cierre contesta (pregunta si va sin comprobantes) — lo que
     // importa aquí es que el mensaje NO se lo comió el módulo de hitos.

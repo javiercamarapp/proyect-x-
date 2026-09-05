@@ -75,7 +75,12 @@ const RECEPTOR_FISICA: ReceptorFiscal = {
 
 const ID = generarIdCcp();
 const AHORA = new Date('2026-08-27T18:00:00Z');
-const EMI = { metodoPago: 'PPD' as const, formaPago: '99' };
+const EMI = {
+  metodoPago: 'PPD' as const,
+  formaPago: '99',
+  // Salida 15:00Z = 09:00 hora de México; llegada capturada, no calculada.
+  fechaLlegadaEstimada: '2026-08-27T16:00',
+};
 
 describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
   it('receptor MORAL: comprobante completo con IVA 16% y retención 4%, sin Sello', () => {
@@ -102,6 +107,10 @@ describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
     // El complemento viaja completo dentro del mismo comprobante.
     expect(x).toContain(`IdCCP="${ID}"`);
     expect(x).toContain('PermSCT="TPAF01"');
+    expect(x).toContain('TipoUbicacion="Origen" IDUbicacion="OR000001"');
+    expect(x).toContain('TipoUbicacion="Destino" IDUbicacion="DE000001"');
+    expect(x).toContain('FechaHoraSalidaLlegada="2026-08-27T16:00:00"');
+    expect(x.match(/FechaHoraSalidaLlegada=/g)).toHaveLength(2);
     // SIN sellar: esos tres los pone el PAC con el CSD de su bóveda.
     expect(x).not.toContain('Sello=');
     expect(x).not.toContain('NoCertificado="');
@@ -143,16 +152,16 @@ describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
 
   it('PPD con forma ≠ 99 se rechaza (Anexo 20); PUE exige la clave real de 2 dígitos', () => {
     const ppdMal = armarCfdiTimbrable(viajeDe(datosCompletos()), ID, EMISOR, RECEPTOR_MORAL, 10000,
-      { metodoPago: 'PPD', formaPago: '03' }, AHORA);
+      { ...EMI, metodoPago: 'PPD', formaPago: '03' }, AHORA);
     expect(ppdMal.ok).toBe(false);
     if (!ppdMal.ok) expect(ppdMal.faltantes.join(' ')).toContain('99');
 
     const pueMal = armarCfdiTimbrable(viajeDe(datosCompletos()), ID, EMISOR, RECEPTOR_MORAL, 10000,
-      { metodoPago: 'PUE', formaPago: 'efectivo' }, AHORA);
+      { ...EMI, metodoPago: 'PUE', formaPago: 'efectivo' }, AHORA);
     expect(pueMal.ok).toBe(false);
 
     const pueBien = armarCfdiTimbrable(viajeDe(datosCompletos()), ID, EMISOR, RECEPTOR_MORAL, 10000,
-      { metodoPago: 'PUE', formaPago: '03' }, AHORA);
+      { ...EMI, metodoPago: 'PUE', formaPago: '03' }, AHORA);
     expect(pueBien.ok).toBe(true);
     if (pueBien.ok) expect(pueBien.xml).toContain('FormaPago="03"');
   });
@@ -175,7 +184,7 @@ describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
 
   it('c6-8: PUE con forma 99 se rebota AQUÍ, con el porqué — no en el PAC', () => {
     const r = armarCfdiTimbrable(viajeDe(datosCompletos()), ID, EMISOR, RECEPTOR_MORAL, 10000,
-      { metodoPago: 'PUE', formaPago: '99' }, AHORA);
+      { ...EMI, metodoPago: 'PUE', formaPago: '99' }, AHORA);
     expect(r.ok).toBe(false);
     if (r.ok) return;
     const junto = r.faltantes.join(' | ');
@@ -208,6 +217,23 @@ describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
     expect(r.xml).toContain('SubTotal="3333.33"');
     expect(r.xml).toContain('Total="3733.33"');
   });
+
+  it('falla cerrado sin llegada válida o cuando no es posterior a la salida', () => {
+    for (const fechaLlegadaEstimada of [null, '', '2026-02-31T10:00', '2026-08-27T08:59']) {
+      const r = armarCfdiTimbrable(viajeDe(datosCompletos()), ID, EMISOR, RECEPTOR_MORAL, 10000,
+        { ...EMI, fechaLlegadaEstimada }, AHORA);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.faltantes.join(' ')).toMatch(/llegada/i);
+    }
+  });
+
+  it('transporte internacional falla cerrado mientras el bloque aduanero no esté modelado', () => {
+    const d = datosCompletos();
+    d.ccpViaje = { ...d.ccpViaje!, transpInternac: true };
+    const r = armarCfdiTimbrable(viajeDe(d), ID, EMISOR, RECEPTOR_MORAL, 10000, EMI, AHORA);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.faltantes.join(' ')).toContain('datos aduaneros');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -218,6 +244,8 @@ describe('armarCfdiTimbrable — el CFDI completo sin sellar', () => {
 // vive en el art. 3, fracción II del Reglamento de la LIVA.
 // ═══════════════════════════════════════════════════════════════════════════
 describe('la retención del 4% cita la norma correcta y tiene ficha', () => {
+  // URL constante del archivo hermano bajo prueba; no recibe entrada externa.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   const fuente = readFileSync(new URL('./carta_porte_cfdi.ts', import.meta.url), 'utf8');
 
   it('el comentario ya NO cita la regla 3.1.2 de la RMF para la tasa', () => {

@@ -25,8 +25,21 @@ import net from 'node:net';
 // El servidor es local: no hay red, no hay Supabase y no se gasta un centavo.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const servidorMudo = net.createServer((s) => { s.on('error', () => {}); /* acepta y calla */ });
-await new Promise<void>((r) => servidorMudo.listen(0, '127.0.0.1', () => r()));
+const conexionesMudas = new Set<net.Socket>();
+const servidorMudo = net.createServer((s) => {
+  conexionesMudas.add(s);
+  s.on('close', () => conexionesMudas.delete(s));
+  s.on('error', () => {}); /* acepta y calla */
+});
+await new Promise<void>((resolve, reject) => {
+  // Fallar al abrir el socket (p. ej. sandbox) debe rechazar la importación;
+  // sin listener de error la suite espera una promesa que nunca se resuelve.
+  servidorMudo.once('error', reject);
+  servidorMudo.listen(0, '127.0.0.1', () => {
+    servidorMudo.off('error', reject);
+    resolve();
+  });
+});
 const puerto = (servidorMudo.address() as net.AddressInfo).port;
 
 // Van ANTES del import: `supabaseAdmin()` lee la URL al construir el cliente y
@@ -49,8 +62,12 @@ process.env.LIKIDA_TOPE_CONSULTA_MS = '1500';   // el de producción son 8 000
 const { getViaje, getGastos, gastoExistePorHash, saveLiquidacion } = await import('./repo');
 const { TOPE_CONSULTA_MS } = await import('./presupuesto');
 
-afterAll(() => {
-  servidorMudo.close();
+afterAll(async () => {
+  // Los aborts de fetch no garantizan que undici cierre de inmediato los
+  // sockets en pool. Cerrarlos explícitamente evita que el worker siga vivo
+  // después de que todas las assertions ya pasaron.
+  for (const socket of conexionesMudas) socket.destroy();
+  await new Promise<void>((resolve) => servidorMudo.close(() => resolve()));
   if (ENV_ORIGINAL.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = ENV_ORIGINAL.url;
   if (ENV_ORIGINAL.key === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = ENV_ORIGINAL.key;
   if (ENV_ORIGINAL.tope === undefined) delete process.env.LIKIDA_TOPE_CONSULTA_MS; else process.env.LIKIDA_TOPE_CONSULTA_MS = ENV_ORIGINAL.tope;

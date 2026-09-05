@@ -111,8 +111,10 @@ PY
 
 pieza)
   RUTINA="${1:?rutina}"; CARPETA="${2:?carpeta}"
-  python3 - "$RUTINA" "$CARPETA" <<'PY' 2>/dev/null || true
+  python3 - "$RUTINA" "$CARPETA" <<'PY' 2>/dev/null || echo '[bus] No se pudo espejar la pieza; revisar el worker y el tamaño de la vista previa.' >&2
 import base64, json, os, sys, urllib.request, urllib.parse, mimetypes, pathlib
+sys.path.insert(0, str(pathlib.Path(os.environ['REPO']) / 'scripts/mejora-diaria'))
+from worker_payloads import codificar, MAX_MEDIA_BYTES
 rutina, carpeta = sys.argv[1], pathlib.Path(sys.argv[2])
 COLA = pathlib.Path(os.environ["COLA"])
 MODO = os.environ.get("BUS_MODO", "legacy")
@@ -139,21 +141,25 @@ for candidato in ("post.md", "guion.md", "copy.md", "META.md"):
 
 preview = None
 for f in sorted(archivos):
-    if f.suffix.lower() in (".png", ".jpg", ".jpeg") and f.stat().st_size < 4 * 1024 * 1024:
+    if f.suffix.lower() in (".png", ".jpg", ".jpeg") and f.stat().st_size <= (MAX_MEDIA_BYTES if MODO == "worker" else 4 * 1024 * 1024):
         preview = f; break
 
 if MODO == "worker":
     cuerpo = {"rutina": rutina, "carpeta": rel, "titulo": carpeta.name, "tipo": tipo, "copyMd": copy_md}
+    sin_preview = preview is None and any(f.suffix.lower() in (".png", ".jpg", ".jpeg") for f in archivos)
+    if sin_preview:
+        print("[bus] Aviso: la pieza se enviará sin vista previa; ninguna imagen cabe en el límite de 3 MiB.")
     if preview:
         cuerpo["mediaBase64"] = base64.b64encode(preview.read_bytes()).decode()
         cuerpo["mediaNombre"] = preview.name
         cuerpo["mediaMime"] = mimetypes.guess_type(preview.name)[0] or "application/octet-stream"
     req = urllib.request.Request(
         f"{os.environ['APP_URL']}/api/worker/bus/pieza",
-        data=json.dumps(cuerpo).encode(), method="POST",
+        data=codificar(cuerpo), method="POST",
         headers={"x-worker-key": os.environ["WORKER_KEY"], "Content-Type": "application/json"})
     urllib.request.urlopen(req, timeout=60).read()
-    print(f"[bus] pieza espejada (worker): {rel} ({tipo})")
+    detalle = f"{tipo}; sin vista previa" if sin_preview else tipo
+    print(f"[bus] pieza espejada (worker): {rel} ({detalle})")
     sys.exit(0)
 
 # ── legacy (service role) ──
@@ -216,11 +222,15 @@ for enc in sorted((BASE / "encargos").glob("*.md")):
                   "encargo_md": texto[:20000]})
 
 if MODO == "worker":
-    req = urllib.request.Request(
-        f"{os.environ['APP_URL']}/api/worker/bus/catalogo",
-        data=json.dumps({"rutinas": filas}).encode(), method="POST",
-        headers={"x-worker-key": os.environ["WORKER_KEY"], "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=30).read()
+    import sys
+    sys.path.insert(0, str(pathlib.Path(os.environ['REPO']) / 'scripts/mejora-diaria'))
+    from worker_payloads import lotes_catalogo
+    for datos in lotes_catalogo(filas):
+        req = urllib.request.Request(
+            f"{os.environ['APP_URL']}/api/worker/bus/catalogo",
+            data=datos, method="POST",
+            headers={"x-worker-key": os.environ['WORKER_KEY'], "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=30).read()
 else:
     for f in filas:
         f["actualizado_en"] = datetime.datetime.now(datetime.timezone.utc).isoformat()

@@ -20,12 +20,12 @@ import { logger } from '@/lib/logger';
 import { sufijoTenant } from '../../sufijo';
 import { VistaAgenteProveedores } from './vista';
 import { SeccionNotificaciones } from '../seccion-notificaciones';
+import { MAX_ARCHIVO_SUBIDA_BYTES, MENSAJE_ARCHIVO_GRANDE } from '@/lib/http/subidas_formulario';
 
 export const dynamic = 'force-dynamic';
 
 const MAX_XML_BYTES = 2 * 1024 * 1024;
-/** Una foto de celular pesa unidades de MB; 8 ya es un archivo equivocado. */
-const MAX_FOTO_BYTES = 8 * 1024 * 1024;
+const MAX_FOTO_BYTES = MAX_ARCHIVO_SUBIDA_BYTES;
 const TIPOS_FOTO = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 /** El gateo de las actions — helper de módulo (una action solo captura
@@ -148,7 +148,7 @@ export default async function PaginaAgenteProveedores({
     const archivo = fd.get('archivo');
     if (!(archivo instanceof File) || archivo.size === 0) return { error: 'Elige la foto de la factura.' };
     if (!TIPOS_FOTO.has(archivo.type)) return { error: 'Eso no es una foto (JPG, PNG o WebP). Si tienes el XML, súbelo por el otro botón — es el dato duro.' };
-    if (archivo.size > MAX_FOTO_BYTES) return { error: 'Esa foto pesa demasiado. Una foto de celular normal entra sin problema.' };
+    if (archivo.size > MAX_FOTO_BYTES) return { error: MENSAJE_ARCHIVO_GRANDE };
 
     const dataUrl = `data:${archivo.type};base64,${Buffer.from(await archivo.arrayBuffer()).toString('base64')}`;
     const rfc = (await getFiscalDeFlota(tenantId).catch(() => null))?.flota?.rfc || null;

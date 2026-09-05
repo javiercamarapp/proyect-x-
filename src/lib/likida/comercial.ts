@@ -477,6 +477,25 @@ export interface EstadoRastreo {
   proveedores: Array<{ proveedor: string; ultimos4: string | null; activo: boolean; probadaEn: string | null; ultimoError: string | null }>;
   unidadesConPosicion: number;
   ultimaPosicion: string | null;
+  polls: Array<{
+    proveedor: string;
+    recurso: 'posiciones' | 'eventos';
+    ultimoPoll: string | null;
+    ultimoCompleto: string | null;
+    ultimaMedida: string | null;
+    backlogPendiente: boolean;
+    paginas: number;
+    elementos: number;
+    eventosInvalidosUltima: number;
+    eventosInvalidosTotal: number;
+    eventosEnCuarentena: number;
+    eventosCuarentenaMuertos: number;
+    eventosOutboxPendientes: number;
+    eventosOutboxMuertos: number;
+    avisosPendientes: number;
+    avisosMuertos: number;
+    error: string | null;
+  }>;
 }
 
 /**
@@ -486,7 +505,7 @@ export interface EstadoRastreo {
  */
 export async function getEstadoRastreo(tenantId: string): Promise<EstadoRastreo> {
   const admin = supabaseAdmin();
-  const [creds, rastreo] = await Promise.all([
+  const [creds, rastreo, polls] = await Promise.all([
     // El catálogo de credenciales SÍ se trae: es una fila por proveedor
     // (dos o tres), y de ella se pinta una lista, no un número.
     traerTodo<Record<string, unknown>>(
@@ -505,6 +524,7 @@ export async function getEstadoRastreo(tenantId: string): Promise<EstadoRastreo>
     // `(tenant_id, medida_en)` ya los puso la 0155; lo que faltaba era no
     // traerse las filas. `estado_rastreo_tenant()` (0162) agrega en la base.
     traerEstadoRastreoSql(tenantId),
+    traerEstadoPollGps(tenantId),
   ]);
 
   return {
@@ -517,7 +537,48 @@ export async function getEstadoRastreo(tenantId: string): Promise<EstadoRastreo>
     })),
     unidadesConPosicion: rastreo.unidadesConPosicion,
     ultimaPosicion: rastreo.ultimaPosicion,
+    polls,
   };
+}
+
+async function traerEstadoPollGps(tenantId: string): Promise<EstadoRastreo['polls']> {
+  const { data, error } = await acotada(
+    supabaseAdmin().rpc('estado_poll_gps_tenant', { p_tenant: tenantId }),
+    'getEstadoRastreo.poll',
+  );
+  if (error) throw new Error(`getEstadoRastreo.poll: ${error.message}`);
+  if (!Array.isArray(data)) throw new Error('getEstadoRastreo.poll: estado_poll_gps_tenant devolvió otra forma (¿migración 0324 sin aplicar?)');
+  return data.map((fila) => {
+    const f = fila as Record<string, unknown>;
+    const recurso = f.recurso;
+    if ((recurso !== 'posiciones' && recurso !== 'eventos') || typeof f.proveedor !== 'string' ||
+        typeof f.backlogPendiente !== 'boolean' || !esNumero(f.paginas) || !esNumero(f.elementos) ||
+        !esNumero(f.eventosInvalidosUltima) || !esNumero(f.eventosInvalidosTotal) ||
+        !esNumero(f.eventosEnCuarentena) || !esNumero(f.eventosCuarentenaMuertos) ||
+        !esNumero(f.eventosOutboxPendientes) || !esNumero(f.eventosOutboxMuertos) ||
+        !esNumero(f.avisosPendientes) || !esNumero(f.avisosMuertos)) {
+      throw new Error('getEstadoRastreo.poll: fila inválida de la migración 0324');
+    }
+    return {
+      proveedor: f.proveedor,
+      recurso,
+      ultimoPoll: esTextoONulo(f.ultimoPoll) ? f.ultimoPoll : null,
+      ultimoCompleto: esTextoONulo(f.ultimoCompleto) ? f.ultimoCompleto : null,
+      ultimaMedida: esTextoONulo(f.ultimaMedida) ? f.ultimaMedida : null,
+      backlogPendiente: f.backlogPendiente,
+      paginas: f.paginas,
+      elementos: f.elementos,
+      eventosInvalidosUltima: f.eventosInvalidosUltima,
+      eventosInvalidosTotal: f.eventosInvalidosTotal,
+      eventosEnCuarentena: f.eventosEnCuarentena,
+      eventosCuarentenaMuertos: f.eventosCuarentenaMuertos,
+      eventosOutboxPendientes: f.eventosOutboxPendientes,
+      eventosOutboxMuertos: f.eventosOutboxMuertos,
+      avisosPendientes: f.avisosPendientes,
+      avisosMuertos: f.avisosMuertos,
+      error: esTextoONulo(f.error) ? f.error : null,
+    };
+  });
 }
 
 /**

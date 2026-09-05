@@ -14,17 +14,21 @@
 //     y el cliente degrada al respondedor gratis — el chat nunca queda mudo.
 import { NextResponse, type NextRequest } from 'next/server';
 import { getSessionTenant } from '@/lib/auth/session';
+import { rechazoMfaSuperadminApi } from '@/lib/auth/api-superadmin';
 import { puedeVerArea } from '@/lib/auth/visibilidad';
 import { registrarCosto, faseDeModelo } from '@/lib/likida/costos';
 import { PartialExecutionError } from '@/lib/llm/openrouter';
 import { guardarIntercambio } from '@/lib/likida/chat/conversaciones';
 import { ejecutarAnalista } from '@/lib/agents/analista';
 import { logger } from '@/lib/logger';
+import { codigoDeError } from '@/lib/observability/sentry';
 import { rateLimit } from '@/lib/ratelimit';
 import { validarMensajes, validarConversacionId } from './validacion';
 import { topeDiaUsd, gastoChatHoyUsd } from './tope';
 import { tenantEfectivoChat } from './tenant';
 import { vieneDeNuestroSitio } from '@/lib/auth/csrf';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
+import { MAX_CHAT_BYTES } from './limites';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -49,6 +53,8 @@ export async function POST(req: NextRequest) {
 
   const sesion = await getSessionTenant();
   if (!sesion) return NextResponse.json({ error: 'sin sesion' }, { status: 401 });
+  const rechazoMfa = await rechazoMfaSuperadminApi(sesion);
+  if (rechazoMfa) return rechazoMfa;
   if (!puedeVerArea(sesion.rol, 'dinero')) {
     return NextResponse.json({ error: 'sin acceso' }, { status: 403 });
   }
@@ -66,8 +72,11 @@ export async function POST(req: NextRequest) {
     { status: req.nextUrl.searchParams.get('tenant') ? 503 : 403 });
   const { tenantId, nombreFlota } = efectivo;
 
+  const lectura = await leerTextoAcotado(req, MAX_CHAT_BYTES);
+  if (!lectura.ok) return NextResponse.json({ error: lectura.motivo === 'demasiado_grande' ? 'cuerpo demasiado grande' : 'cuerpo inválido' },
+    { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 });
   let cuerpo: unknown;
-  try { cuerpo = await req.json(); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
+  try { cuerpo = JSON.parse(lectura.texto); } catch { return NextResponse.json({ error: 'cuerpo inválido' }, { status: 400 }); }
   const mensajes = validarMensajes((cuerpo as { mensajes?: unknown })?.mensajes);
   if (!mensajes) return NextResponse.json({ error: 'mensajes inválidos' }, { status: 400 });
   // El id de conversación al que anexar (historial 0088). Inválido o ajeno →
@@ -155,7 +164,11 @@ export async function POST(req: NextRequest) {
             logger.error('chat.costo_parcial_sin_registrar', { tenantId, err: e2 instanceof Error ? e2.message : String(e2) });
           }
         }
-        logger.error('chat.analista.fallo', { tenantId, err: err instanceof Error ? err.message : String(err) });
+        logger.error('chat.analista.fallo', {
+          tenantId, ruta: '/api/dashboard/chat',
+          codigo: codigoDeError(err instanceof PartialExecutionError ? err.cause ?? err : err),
+          err: err instanceof Error ? err.message : String(err),
+        });
         manda({ t: 'error', error: 'el analista no pudo responder en este momento' });
       } finally {
         try { controlador.close(); } catch { /* ya cerrado */ }

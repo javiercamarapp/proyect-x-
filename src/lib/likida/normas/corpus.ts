@@ -304,7 +304,8 @@ export const NORMAS: readonly Norma[] = [
     "estado_verificacion": "verificado_fuente_primaria",
     "jerarquia": 1,
     "citasEnCodigo": [
-      "LIVA art. 5"
+      "LIVA art. 5",
+      "LIVA 5-III"
     ]
   },
   {
@@ -504,6 +505,21 @@ export const NORMAS: readonly Norma[] = [
     "jerarquia": 3,
     "citasEnCodigo": [
       "RMF 2.7.1.21"
+    ]
+  },
+  {
+    "archivo": "rmf-2026-2.7.1.29.yaml",
+    "id": "rmf-2026-2.7.1.29",
+    "tipo": "regla_general",
+    "instrumento": "Resolución Miscelánea Fiscal para 2026",
+    "articulo_o_regla": "2.7.1.29",
+    "titulo": "Forma de pago por definir y complemento de recepción de pagos",
+    "estado_verificacion": "verificado_fuente_primaria",
+    "fuente_url": "https://www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/documentos2026/rmf/rmf/RMF_2026-DOF-28122025.pdf#page=112",
+    "verificado_el": "2026-09-05",
+    "jerarquia": 3,
+    "citasEnCodigo": [
+      "RMF 2.7.1.29"
     ]
   },
   {

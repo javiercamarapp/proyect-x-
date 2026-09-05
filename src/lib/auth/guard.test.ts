@@ -177,13 +177,12 @@ describe('requireSuperadmin', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SEG-3 (auditoría 24) — MFA OBLIGATORIO PARA SUPERADMIN, DETRÁS DE PALANCA.
+// SEG-3 (auditoría 24) — MFA OBLIGATORIO PARA SUPERADMIN.
 //
-// Lo que se fija: (a) con la palanca APAGADA no cambia nada ni se pregunta
-// nada — el default no puede dejar a Javier fuera de su consola; (b) con la
-// palanca puesta, sin factor / en AAL1 / sin poder preguntar, las dos puertas
-// rebotan a Mi perfil diciendo cuál de los tres casos es; (c) Mi perfil, que
-// es donde se inscribe, NO se gatea — o sería un círculo.
+// Lo que se fija: (a) en desarrollo solo se exige con la palanca explícita;
+// (b) en producción se exige por default, con una única salida temporal de
+// recuperación; (c) sin factor / en AAL1 / sin poder preguntar, las dos
+// puertas rebotan a Mi perfil; (d) Mi perfil NO se gatea — o sería un círculo.
 // ═══════════════════════════════════════════════════════════════════════════
 describe('MFA obligatorio para superadmin (SEG-3)', () => {
   const SUPER = { userId: 'u-2', tenantId: null, rol: 'superadmin', nombre: 'Javier' };
@@ -194,7 +193,7 @@ describe('MFA obligatorio para superadmin (SEG-3)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('palanca APAGADA: entra igual que siempre y ni se pregunta por el factor', async () => {
+  it('fuera de producción y sin palanca: no se pregunta por el factor', async () => {
     getSessionTenant.mockResolvedValue(SUPER);
     veredictoMfa.mockResolvedValue('inscribir');
     await expect(requireSuperadmin()).resolves.toEqual(SUPER);
@@ -203,13 +202,26 @@ describe('MFA obligatorio para superadmin (SEG-3)', () => {
     expect(redirect).not.toHaveBeenCalled();
   });
 
-  it('un valor distinto de "obligatorio" NO enciende la exigencia', async () => {
+  it('fuera de producción, un valor distinto de "obligatorio" no enciende la exigencia', async () => {
     for (const v of ['true', '1', 'si', 'Obligatorios']) {
       vi.stubEnv('LIKIDA_SUPERADMIN_MFA', v);
       getSessionTenant.mockResolvedValue(SUPER);
       veredictoMfa.mockResolvedValue('inscribir');
       await expect(requireSuperadmin()).resolves.toEqual(SUPER);
     }
+    expect(veredictoMfa).not.toHaveBeenCalled();
+  });
+
+  it('en producción queda encendido aunque falte la variable; solo el escape temporal lo apaga', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    getSessionTenant.mockResolvedValue(SUPER);
+    veredictoMfa.mockResolvedValue('inscribir');
+    await expect(requireSuperadmin()).rejects.toThrow('NEXT_REDIRECT');
+
+    vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'desactivado-temporal');
+    redirect.mockClear();
+    veredictoMfa.mockClear();
+    await expect(requireSuperadmin()).resolves.toEqual(SUPER);
     expect(veredictoMfa).not.toHaveBeenCalled();
   });
 
@@ -270,7 +282,11 @@ const { requireVendedor, exigirVerRuta } = await import('./guard');
 const { inicioDe } = await import('./visibilidad');
 
 describe('requireVendedor — la puerta de /vendedor', () => {
-  beforeEach(() => { redirect.mockClear(); getSessionTenant.mockReset(); });
+  beforeEach(() => {
+    redirect.mockClear(); getSessionTenant.mockReset(); veredictoMfa.mockReset();
+    veredictoMfa.mockResolvedValue('ok');
+    vi.unstubAllEnvs();
+  });
 
   it('sin sesión, manda a /login con next=/vendedor', async () => {
     getSessionTenant.mockResolvedValue(null);
@@ -291,6 +307,17 @@ describe('requireVendedor — la puerta de /vendedor', () => {
     await expect(requireVendedor()).resolves.toEqual(s);
     expect(redirect).not.toHaveBeenCalled();
   });
+
+  it.each(['inscribir', 'retar', 'no_verificable'])(
+    'superadmin con MFA obligatorio y veredicto %s rebota antes de ver el pipeline',
+    async (resultado) => {
+      vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+      getSessionTenant.mockResolvedValue({ userId: 'u-2', tenantId: null, rol: 'superadmin', nombre: 'Javier' });
+      veredictoMfa.mockResolvedValue(resultado);
+      await expect(requireVendedor()).rejects.toThrow('NEXT_REDIRECT');
+      expect(redirect).toHaveBeenCalledWith(`/dashboard/mi-perfil?exige=${resultado}`);
+    },
+  );
 
   it.each(['flota_admin', 'contador', 'encargado', 'operador'])(
     'un %s de una flota cliente NO entra: rebota a SU casa (inicioDe), jamás al pipeline comercial',

@@ -14,7 +14,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import type { DetalleProspecto } from '@/lib/admin/prospectos-mapa-client';
-import { COLOR_EMBUDO, NOMBRE_GIRO } from '@/lib/admin/prospectos-mapa-client';
+import { COLOR_EMBUDO, NOMBRE_GIRO, esProspectoTerminal } from '@/lib/admin/prospectos-mapa-client';
 import { hrefWa, hrefCorreo, mensajeWa, correoProspecto } from '../mensajes';
 import { fechaHoraMx, numero } from '@/lib/formato';
 
@@ -233,11 +233,13 @@ export function Detalle({ p }: { p: DetalleProspecto }) {
       <section>
         <div className="flex items-center justify-between gap-3 mb-3">
           <h2 className="text-base font-semibold" style={{ color: TINTA }}>Mensajes</h2>
-          <button onClick={() => void afinar()} disabled={afinando}
-            className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
-            style={{ border: '1px solid #7c3aed55', color: '#6d28d9', background: 'color-mix(in srgb, #7c3aed 8%, var(--surface))', opacity: afinando ? 0.6 : 1 }}>
-            {afinando ? 'redactando…' : datos.mensajesGeneradosEn ? '↻ Redactar de nuevo con IA' : '✨ Redactar con IA'}
-          </button>
+          {!esProspectoTerminal(p.estado) && (
+            <button onClick={() => void afinar()} disabled={afinando}
+              className="px-3 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ border: '1px solid #7c3aed55', color: '#6d28d9', background: 'color-mix(in srgb, #7c3aed 8%, var(--surface))', opacity: afinando ? 0.6 : 1 }}>
+              {afinando ? 'redactando…' : datos.mensajesGeneradosEn ? '↻ Redactar de nuevo con IA' : '✨ Redactar con IA'}
+            </button>
+          )}
         </div>
         {datos.mensajesGeneradosEn && (
           <p className="text-[11px] mb-3" style={{ color: TENUE }}>

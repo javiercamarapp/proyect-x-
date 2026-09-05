@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 
 // El pageview del panel (0251): sesión con tenant real obligatoria, catálogo
 // CERRADO de pantallas, el superadmin en preview NO cuenta, y 204 SIEMPRE —
@@ -33,6 +34,16 @@ const pedir = (cuerpo: unknown, cabeceras?: Record<string, string>) =>
 const FLOTA = { userId: 'u-1', tenantId: 't-1', rol: 'flota_admin' };
 
 beforeEach(() => { limiteOk = true; eventos.length = 0; sesion = { ...FLOTA }; });
+
+it('más de1000bytes chunked se cancela sin registrar pageview y conserva204', async () => {
+  const p = peticionStream('https://x/api/dashboard/evento', JSON.stringify({
+    ruta: '/dashboard/viajes', ignorado: 'x'.repeat(3000),
+  }), 1100);
+  expect((await POST(p.req)).status).toBe(204);
+  expect(eventos).toHaveLength(0);
+  expect(p.estado().cancelado).toBe(true);
+  expect(p.estado().leidos).toBe(1100);
+});
 
 describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {
   it('desde otro sitio: 204 (esta ruta jamás contesta un problema) pero sin escribir', async () => {

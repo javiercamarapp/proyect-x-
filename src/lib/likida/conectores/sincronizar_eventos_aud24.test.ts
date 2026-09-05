@@ -18,9 +18,11 @@ import type { Http } from './tipos';
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../presupuesto', () => ({ acotada: (q: unknown) => q }));
 vi.mock('./cofre', () => ({ descifrar: (v: string) => JSON.parse(v) }));
-vi.mock('../asistencia_camara', () => ({
-  dispararAsistenciaPorEventoCamara: vi.fn(async () => ({ resultado: 'abierta' as const, incidenciaId: 'inc-1', avisado: true })),
-}));
+const disparar = vi.hoisted(() => vi.fn(async () => ({
+  resultado: 'abierta' as const, incidenciaId: 'inc-1',
+  avisoEstado: 'encolado' as const, avisoOutboxId: 'outbox-1',
+})));
+vi.mock('../asistencia_camara', () => ({ dispararAsistenciaPorEventoCamara: disparar }));
 
 const UNIDADES = vi.hoisted(() => [
   { id: 'u-1', tenant_id: 't-1', gps_proveedor: 'samsara', gps_device_id: 'dev-1' },
@@ -32,6 +34,9 @@ const estado = vi.hoisted(() => ({
   viajes: [] as Array<Record<string, unknown>>,
   operadores: [] as Array<Record<string, unknown>>,
   errorViaje: null as string | null,
+  cuarentena: [] as Array<Record<string, unknown>>,
+  zonaHoraria: 'America/Mexico_City' as string,
+  sellados: new Set<string>(),
 }));
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -45,6 +50,8 @@ vi.mock('@/lib/supabase/admin', () => ({
       api.eq = (c: string, v: unknown) => { filtros[c] = v; return api; };
       api.in = (c: string, v: unknown[]) => { filtros[`in:${c}`] = v; return api; };
       api.not = () => api; api.is = () => api; api.order = () => api; api.limit = () => api;
+      api.lte = () => api; api.or = () => api;
+      api.maybeSingle = () => Promise.resolve({ data: { zona_horaria: estado.zonaHoraria }, error: null });
       api.update = () => { esUpdate = true; return api; };
 
       const casa = (f: Record<string, unknown>) =>
@@ -61,13 +68,32 @@ vi.mock('@/lib/supabase/admin', () => ({
       } else if (tabla === 'operador') {
         api.then = (res: (v: unknown) => unknown) => res({ data: estado.operadores.filter(casa), error: null });
       } else if (tabla === 'evento_seguridad_flota') {
-        api.upsert = (fila: Record<string, unknown>) => ({
+        api.upsert = (entrada: Record<string, unknown> | Array<Record<string, unknown>>) => ({
           select: () => {
-            estado.guardados.push(fila);
-            return Promise.resolve({ data: [{ id: `fila-${estado.guardados.length}` }], error: null });
+            const filas = Array.isArray(entrada) ? entrada : [entrada];
+            estado.guardados.push(...filas);
+            return Promise.resolve({ data: filas.map((fila, i) => ({ id: `fila-${estado.guardados.length + i}`, evento_id_externo: fila.evento_id_externo })), error: null });
           },
         });
-        api.then = (res: (v: unknown) => unknown) => res({ data: esUpdate ? null : [], error: null });
+        api.then = (res: (v: unknown) => unknown) => {
+          if (esUpdate) {
+            estado.sellados.add(String(filtros.evento_id_externo));
+            return res({ data: null, error: null });
+          }
+          return res({
+            data: estado.guardados.filter((f) =>
+              f.grave === true && f.tenant_id === filtros.tenant_id && f.proveedor === filtros.proveedor &&
+              !estado.sellados.has(String(f.evento_id_externo))),
+            error: null,
+          });
+        };
+      } else if (tabla === 'evento_seguridad_cuarentena') {
+        api.upsert = (entrada: Array<Record<string, unknown>>) => ({
+          select: () => {
+            estado.cuarentena.push(...entrada);
+            return Promise.resolve({ data: entrada, error: null });
+          },
+        });
       } else {
         api.then = (res: (v: unknown) => unknown) => res({ data: [], error: null });
       }
@@ -96,14 +122,20 @@ const samsaraCon = (eventos: unknown[]): Http => async () => ({
 
 /** El operador de `unidad` lleva viaje vivo; `aviso` decide si ya se le avisó. */
 function alVolante(unidadId: string, operadorId: string, aviso: boolean) {
-  estado.viajes.push({ tenant_id: 't-1', unidad_id: unidadId, operador_id: operadorId, estatus: 'abierto' });
+  estado.viajes.push({
+    id: `viaje-${operadorId}`, folio: `F-${operadorId}`,
+    tenant_id: 't-1', unidad_id: unidadId, operador_id: operadorId, estatus: 'abierto',
+    fecha_inicio: '2026-08-01', fecha_fin: null,
+  });
   estado.operadores.push({ id: operadorId, tenant_id: 't-1', aviso_privacidad_en: aviso ? '2026-08-01T00:00:00Z' : null });
 }
 
 const guardadasDe = () => estado.guardados.map((g) => g.unidad_id);
 
 beforeEach(() => {
-  estado.guardados = []; estado.viajes = []; estado.operadores = []; estado.errorViaje = null;
+  estado.guardados = []; estado.viajes = []; estado.operadores = [];
+  estado.errorViaje = null; estado.cuarentena = []; estado.zonaHoraria = 'America/Mexico_City';
+  estado.sellados.clear();
 });
 
 describe('LEG-1 · el evento de cámara no se guarda sin aviso previo', () => {
@@ -119,6 +151,15 @@ describe('LEG-1 · el evento de cámara no se guarda sin aviso previo', () => {
     expect(r.sinAvisoPrevio).toBe(1);
     expect(guardadasDe()).toEqual(['u-2']);
     expect(guardadasDe()).not.toContain('u-1');
+    const referencia = estado.cuarentena.find((q) => q.motivo === 'sin_aviso_previo');
+    expect(referencia).toMatchObject({ motivo: 'sin_aviso_previo' });
+    expect(referencia?.evento_id_externo).not.toBe('e-1');
+    expect(referencia?.evento_id_externo).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(referencia).not.toHaveProperty('asset_id');
+    expect(referencia).not.toHaveProperty('unidad_id');
+    expect(referencia).not.toHaveProperty('lat');
+    expect(referencia).not.toHaveProperty('etiquetas');
+    expect(referencia).not.toHaveProperty('url_evento');
   });
 
   // AUDITORÍA 25 (ALTO, REINCIDENTE): esta prueba afirmaba lo CONTRARIO —que
@@ -140,7 +181,61 @@ describe('LEG-1 · el evento de cámara no se guarda sin aviso previo', () => {
     const r = await sincronizarEventosDeFlota(
       't-1', 'samsara', CRED, samsaraCon([evento('e-1', 'dev-1'), evento('e-2', 'dev-2')]), AHORA,
     );
-    expect(r.error).toMatch(/no se guardó ningún evento/);
+    expect(r.error).toMatch(/conductor histórico/);
     expect(estado.guardados).toHaveLength(0);
+  });
+
+  it('evalúa el aviso del conductor histórico, no el viaje vivo actual de la unidad', async () => {
+    estado.viajes.push(
+      {
+        id: 'v-historico', folio: 'F-HIST',
+        tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-historico', estatus: 'liquidado',
+        fecha_inicio: '2026-07-01', fecha_fin: '2026-07-10',
+      },
+      {
+        id: 'v-actual', folio: 'F-ACT',
+        tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-actual', estatus: 'abierto',
+        fecha_inicio: '2026-08-01', fecha_fin: null,
+      },
+    );
+    estado.operadores.push(
+      { id: 'op-historico', tenant_id: 't-1', aviso_privacidad_en: '2026-06-30T12:00:00Z' },
+      { id: 'op-actual', tenant_id: 't-1', aviso_privacidad_en: null },
+    );
+    const pasado = {
+      ...evento('e-historico', 'dev-1'),
+      startMs: '2026-07-05T18:00:00Z',
+      behaviorLabels: [{ label: 'Crash' }],
+    };
+
+    const r = await sincronizarEventosDeFlota('t-1', 'samsara', CRED, samsaraCon([pasado]), AHORA);
+
+    expect(r.sinAvisoPrevio ?? 0).toBe(0);
+    expect(guardadasDe()).toEqual(['u-1']);
+    expect(estado.guardados[0]).toMatchObject({ viaje_id: 'v-historico', operador_id: 'op-historico' });
+    expect(disparar).toHaveBeenCalledWith(expect.objectContaining({
+      viajeId: 'v-historico', operadorId: 'op-historico', viajeFolio: 'F-HIST',
+    }));
+  });
+
+  it('usa la zona IANA del tenant y bloquea dos viajes solapados aunque converjan al mismo chofer', async () => {
+    estado.zonaHoraria = 'America/Tijuana';
+    estado.viajes.push(
+      { id: 'v-1', folio: 'F-1', tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-mismo', estatus: 'liquidado', fecha_inicio: '2026-07-04', fecha_fin: '2026-07-04' },
+      { id: 'v-2', folio: 'F-2', tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-mismo', estatus: 'liquidado', fecha_inicio: null, aceptado_en: '2026-07-04T12:00:00-07:00', fecha_fin: '2026-07-04' },
+      { id: 'v-actual', folio: 'F-ACT', tenant_id: 't-1', unidad_id: 'u-1', operador_id: 'op-actual', estatus: 'abierto', fecha_inicio: '2026-07-05', fecha_fin: null },
+    );
+    estado.operadores.push(
+      { id: 'op-mismo', tenant_id: 't-1', aviso_privacidad_en: '2026-07-01T00:00:00Z' },
+      { id: 'op-actual', tenant_id: 't-1', aviso_privacidad_en: null },
+    );
+    // En UTC ya es 5-jul; en Tijuana todavía es 4-jul.
+    const pasada = { ...evento('e-tijuana', 'dev-1'), startMs: '2026-07-05T02:30:00Z' };
+
+    const r = await sincronizarEventosDeFlota('t-1', 'samsara', CRED, samsaraCon([pasada]), AHORA);
+
+    expect(r.sinAvisoPrevio).toBe(1);
+    expect(guardadasDe()).toEqual([]);
+    expect(estado.cuarentena).toEqual([expect.objectContaining({ motivo: 'viaje_ambiguo' })]);
   });
 });

@@ -3,8 +3,8 @@
 # Levanta la base de Cuadra con datos de Innovativos en UN comando: `npm run
 # setup`. Dos caminos, cualquiera sirve:
 #
-#   A) LOCAL — sin credenciales de nadie (necesita Docker Desktop corriendo):
-#        supabase start
+#   A) LOCAL NUEVA Y DESECHABLE — necesita Docker, Supabase CLI y psql:
+#        CI=true node scripts/ci/e2e/iniciar-pila.mjs
 #        npm run setup     # este script detecta la pila local sola
 #
 #   B) REMOTO — contra un proyecto real de Supabase:
@@ -14,7 +14,8 @@
 # AUDITORÍA 25, MEDIO REINCIDENTE — en un clon limpio `npm run setup` moría
 # aquí mismo: sin DATABASE_URL, sin crear `.env.local` (solo existía
 # `.env.example`), sin comprobar que `psql` existiera, y sin ofrecer la ruta
-# LOCAL que el propio repo ya usa en `e2e-navegador.yml` (`supabase start`).
+# LOCAL que usa `e2e-navegador.yml`. El bootstrap prepara índices concurrentes
+# antes de0332; `supabase start` directo sobre el esquema completo no basta.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -33,8 +34,8 @@ DB="${DATABASE_URL:-${SUPABASE_DB_URL:-}}"
 ESTADO_LOCAL=""
 
 # Sin DATABASE_URL: antes de rendirse, ¿ya hay una pila LOCAL corriendo?
-# `supabase start` la deja en 127.0.0.1:54322 (supabase/config.toml:41) — el
-# MISMO camino sin credenciales de nadie que usa `e2e-navegador.yml`.
+# El bootstrap deja la pila en los puertos de supabase/config.toml, igual
+# que `e2e-navegador.yml`; aquí se consulta el puerto real con status.
 if [ -z "$DB" ] && command -v supabase >/dev/null 2>&1; then
   salida="$(supabase status -o json 2>/dev/null || true)"
   if [ -n "$salida" ]; then
@@ -53,8 +54,9 @@ fi
 if [ -z "$DB" ]; then
   echo "❌ Falta DATABASE_URL. Dos caminos, cualquiera sirve:"
   echo ""
-  echo "   A) LOCAL — sin credenciales de nadie (necesita Docker Desktop corriendo):"
-  echo "        supabase start"
+  echo "   A) LOCAL NUEVA Y DESECHABLE — necesita Docker, Supabase CLI y psql:"
+  echo "        CI=true node scripts/ci/e2e/iniciar-pila.mjs"
+  echo "        # No usar supabase start directo: 0332 requiere índices concurrentes previos."
   echo "        npm run setup       # este script detecta la pila sola en el siguiente intento"
   echo ""
   echo "   B) REMOTO — contra un proyecto real de Supabase:"
@@ -162,6 +164,14 @@ if psql "$DB" -q -tAc "select 1 from information_schema.tables where table_schem
 else
   echo "▸ Aplicando migraciones…"
   for f in supabase/migrations/*.sql; do
+    case "$(basename "$f")" in
+      0332_*)
+        echo "  → Preflight de índices concurrentes antes de0332"
+        # Proceso independiente en autocommit: CONCURRENTLY no puede correr
+        # dentro de una transacción; -X evita opciones de .psqlrc heredadas.
+        psql "$DB" -X -v ON_ERROR_STOP=1 -q -f scripts/ci/0335_preflight_retencion_indices.sql
+        ;;
+    esac
     echo "  → $(basename "$f")"
     psql "$DB" -v ON_ERROR_STOP=1 -q -f "$f"
   done

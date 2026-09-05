@@ -95,6 +95,60 @@ function de(tabla: string, op: string): Registro[] {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('el embudo: solo transiciones del dominio', () => {
+  it('mantiene visibles los 11 estados canónicos y absorbe los tres nombres históricos', () => {
+    // Regresión FUNC-P1-01: Cal.com escribía estos estados válidos en la
+    // base, pero el catálogo del tablero solo tenía seis columnas. El cambio
+    // que esta prueba debe detectar es volver a separar el dominio de Cal.com
+    // del dominio que cuentan y pintan vendedor/admin.
+    expect(ESTADOS_PROSPECTO.map((e) => e.valor)).toEqual([
+      'nuevo', 'contactado', 'appointment', 'rescheduled', 'cancelled',
+      'no-show', 'demo', 'proposal', 'pilot', 'won', 'lost',
+    ]);
+
+    const conteos = agruparConteos([
+      { vendedorId: 'a', estado: 'nuevo' },
+      { vendedorId: 'a', estado: 'contactado' },
+      { vendedorId: 'a', estado: 'appointment' },
+      { vendedorId: 'a', estado: 'rescheduled' },
+      { vendedorId: 'a', estado: 'cancelled' },
+      { vendedorId: 'a', estado: 'no-show' },
+      { vendedorId: 'a', estado: 'demo' },
+      { vendedorId: 'a', estado: 'proposal' },
+      { vendedorId: 'a', estado: 'pilot' },
+      { vendedorId: 'a', estado: 'won' },
+      { vendedorId: 'a', estado: 'lost' },
+      // Las filas históricas no crean columnas duplicadas: se suman a su
+      // significado canónico negociación→proposal, cerrado→won, perdido→lost.
+      { vendedorId: 'a', estado: 'negociacion' },
+      { vendedorId: 'a', estado: 'cerrado' },
+      { vendedorId: 'a', estado: 'perdido' },
+    ]).get('a');
+
+    expect(conteos).toEqual({
+      nuevo: 1, contactado: 1, appointment: 1, rescheduled: 1,
+      cancelled: 1, 'no-show': 1, demo: 1, proposal: 2, pilot: 1,
+      won: 2, lost: 2,
+    });
+  });
+
+  it('ofrece transiciones coherentes a los eventos de agenda y conserva las transiciones históricas', () => {
+    expect(puedeTransicionar('contactado', 'appointment')).toBe(true);
+    expect(puedeTransicionar('appointment', 'rescheduled')).toBe(true);
+    expect(puedeTransicionar('rescheduled', 'cancelled')).toBe(true);
+    expect(puedeTransicionar('cancelled', 'contactado')).toBe(true);
+    expect(puedeTransicionar('no-show', 'appointment')).toBe(true);
+    expect(puedeTransicionar('demo', 'proposal')).toBe(true);
+    expect(puedeTransicionar('proposal', 'pilot')).toBe(true);
+    expect(puedeTransicionar('pilot', 'won')).toBe(true);
+    expect(puedeTransicionar('lost', 'contactado')).toBe(true);
+
+    // Compatibilidad de escrituras antiguas: los alias se interpretan, no se
+    // borran ni obligan a migrar la fila antes de poder moverla.
+    expect(puedeTransicionar('demo', 'negociacion')).toBe(true);
+    expect(puedeTransicionar('negociacion', 'cerrado')).toBe(true);
+    expect(puedeTransicionar('perdido', 'contactado')).toBe(true);
+  });
+
   it('avanza por etapas y puede corregir un paso atrás', () => {
     expect(puedeTransicionar('nuevo', 'contactado')).toBe(true);
     expect(puedeTransicionar('contactado', 'demo')).toBe(true);
@@ -187,7 +241,7 @@ describe('agruparConteos y filtro de texto', () => {
       { vendedorId: null, estado: 'nuevo' },
       { vendedorId: 'a', estado: 'tibio' },
     ]);
-    expect(m.get('a')).toEqual({ ...conteosVacios(), nuevo: 1, cerrado: 1 });
+    expect(m.get('a')).toEqual({ ...conteosVacios(), nuevo: 1, won: 1 });
     expect(m.get(null)).toEqual({ ...conteosVacios(), nuevo: 1 });
   });
 
@@ -298,10 +352,26 @@ describe('cambiarEstadoProspecto', () => {
     await cambiarEstadoProspecto(P1, 'cerrado');
     const [up] = de('prospecto', 'update');
     const fila = up.payload as Record<string, unknown>;
-    expect(fila.estado).toBe('cerrado');
+    expect(fila.estado).toBe('won');
     expect(typeof fila.cerrado_en).toBe('string');
     // Anclado al estado que se leyó: si otro lo movió en medio, 0 filas.
     expect(up.eq).toContainEqual(['estado', 'negociacion']);
+  });
+
+  it.each([
+    ['demo', 'negociacion', 'proposal'],
+    ['proposal', 'perdido', 'lost'],
+  ])('acepta alias %s→%s pero persiste siempre %s', async (actual, alias, canonico) => {
+    respuestas.set('prospecto', [
+      { data: { id: P1, estado: actual }, error: null },
+      { data: [{ id: P1 }], error: null },
+    ]);
+
+    await cambiarEstadoProspecto(P1, alias);
+
+    const [up] = de('prospecto', 'update');
+    expect((up.payload as Record<string, unknown>).estado).toBe(canonico);
+    expect(up.eq).toContainEqual(['estado', actual]);
   });
 
   it('a un destino no-cerrado, cerrado_en viaja null — nunca queda fecha falsa', async () => {

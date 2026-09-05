@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { rateLimit, clientIp, bodyExcede } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 import { DatoInvalido } from '@/lib/likida/errores';
 import { esCarnada, validarPropuesta, identificaFactura, TEXTO_LIGA_NO_VALIDA } from '@/lib/likida/portal_pago';
@@ -17,10 +18,9 @@ import { avisarPropuestaAlContralor } from '@/lib/likida/portal_pago_aviso';
 //
 // Candados, EN ESTE ORDEN (el molde es `/api/marketing/prospecto`, #124):
 //
-//  1. Tope de cuerpo (4 KB). Cinco campos no pesan más que eso.
-//  2. Límite de tasa por IP (10 / 10 min). Un cliente que se equivoca y
-//     corrige cabe de sobra; una manguera de propuestas hacia la bandeja del
-//     contralor, no.
+//  0. Tamaño declarado excesivo: 413 sin consultar el limitador distribuido.
+//  1. Límite de tasa por IP (10 / 10 min), antes de leer el stream.
+//  2. Tope de cuerpo (4 KB) durante la lectura. Cinco campos caben de sobra.
 //  3. Honeypot (`sitioWeb`): si viene lleno, 200 SIN escribir. Decirle al bot
 //     que lo cachamos es enseñarle a esquivarlo la próxima vez.
 //  4. El token, resuelto contra la base. Un token que no vale contesta 404 con
@@ -59,16 +59,22 @@ interface Cuerpo {
 const s = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 export async function POST(req: Request) {
-  if (bodyExcede(req, 4_000)) {
-    return NextResponse.json({ error: 'El cuerpo es demasiado grande.' }, { status: 413 });
-  }
+  // Rechazo barato de tamaño declarado; el stream sigue acotado tras la cuota.
+  if (bodyExcede(req, 4_000)) return NextResponse.json({ error: 'Envío demasiado grande.' }, { status: 413 });
   if (!(await rateLimit(`portal-pago:${clientIp(req)}`, 10, 10 * 60_000))) {
     return NextResponse.json({ error: 'Demasiados intentos. Espera unos minutos y vuelve a intentarlo.' }, { status: 429 });
+  }
+  const lectura = await leerTextoAcotado(req, 4_000);
+  if (!lectura.ok) {
+    return NextResponse.json(
+      { error: lectura.motivo === 'demasiado_grande' ? 'El cuerpo es demasiado grande.' : 'No se entendió el envío. Recarga la página.' },
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
   }
 
   let c: Cuerpo;
   try {
-    c = (await req.json()) as Cuerpo;
+    c = JSON.parse(lectura.texto) as Cuerpo;
   } catch {
     return NextResponse.json({ error: 'No se entendió el envío. Recarga la página.' }, { status: 400 });
   }

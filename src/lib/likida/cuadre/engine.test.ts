@@ -1532,12 +1532,23 @@ describe('RFA 2026 regla 2.9 — la matriz del 15% de combustible en efectivo', 
   // El escenario de la regla: combustible CON factura (cfdiUuid) pagado en
   // efectivo — sin CFDI, el gasto cae a por_confirmar por la regla del ticket,
   // y la facilidad del 15% no aplica (no hay comprobante que ampare).
-  const g15 = (p: Partial<Gasto>): Gasto => g({ concepto: 'diesel', monto: 1000, formaPago: '01', cfdiUuid: `u-${Math.random()}`, ...p });
+  // AUDITORÍA 26 · continuación, FIS-C2c: la fecha y el `anioEjercicio` se
+  // declaran EXPLÍCITOS, como ya hacía el bloque de la auditoría 15 más abajo.
+  // Estos fixtures no traían ninguna de las dos, y el motor leía «sin año»
+  // como «de este año»: la matriz medía su aritmética apoyada en esa lectura.
+  // Corregido el motor, un comprobante sin fecha se abstiene, así que un
+  // fixture sin fecha ya no puede ejercitar la aritmética del 15%. Ninguna
+  // aserción de este bloque cambió — solo se completó la entrada, para que
+  // cada prueba mida lo que su título dice y no un caso que producción
+  // (`desde_db.ts`, único llamador que enciende `facilidad15`, y que siempre
+  // manda `anioEjercicio`) no puede producir.
+  const g15 = (p: Partial<Gasto>): Gasto => g({ concepto: 'diesel', monto: 1000, formaPago: '01', fecha: '2026-07-15', cfdiUuid: `u-${Math.random()}`, ...p });
 
   it('elegible + dentro del 15% → deducible, con el contador del ejercicio', () => {
     const r = cuadrarViaje({
       viajeId: 'v15a', anticipo: 3000, politica,
       facilidad15: true, totalCombustibleEjercicio: 10000, efectivoPrevEjercicio: 500,
+      anioEjercicio: '2026',
       gastos: [g15({ id: 'g15a', monto: 1000 })],
     });
     const d = r.diferencias.find((x) => x.tipo === 'combustible_efectivo_dentro15')!;
@@ -1553,6 +1564,7 @@ describe('RFA 2026 regla 2.9 — la matriz del 15% de combustible en efectivo', 
     const r = cuadrarViaje({
       viajeId: 'v15b', anticipo: 3000, politica,
       facilidad15: true, totalCombustibleEjercicio: 10000, efectivoPrevEjercicio: 1400,
+      anioEjercicio: '2026',
       gastos: [g15({ id: 'g15b', monto: 1000 })],
     });
     // acumulado = 1400 + 1000 = 2400 > 1500 → de ESTE comprobante caben 100
@@ -1571,6 +1583,7 @@ describe('RFA 2026 regla 2.9 — la matriz del 15% de combustible en efectivo', 
     const r = cuadrarViaje({
       viajeId: 'v15f', anticipo: 5000, politica,
       facilidad15: true, totalCombustibleEjercicio: 10000, efectivoPrevEjercicio: 0,
+      anioEjercicio: '2026',
       gastos: [
         g15({ id: 'g1', monto: 1000 }),
         g15({ id: 'g2', monto: 1000 }),
@@ -1589,6 +1602,7 @@ describe('RFA 2026 regla 2.9 — la matriz del 15% de combustible en efectivo', 
     const excede = cuadrarViaje({
       viajeId: 'v15g', anticipo: 3000, politica,
       facilidad15: true, totalCombustibleEjercicio: 10000, efectivoPrevEjercicio: 2000,
+      anioEjercicio: '2026',
       gastos: [g15({ id: 'g15g', monto: 1000 })],
     });
     expect(excede.estatus).toBe('revisar');
@@ -1626,6 +1640,7 @@ describe('RFA 2026 regla 2.9 — la matriz del 15% de combustible en efectivo', 
     const r = cuadrarViaje({
       viajeId: 'v15e', anticipo: 3000, politica,
       facilidad15: true, totalCombustibleEjercicio: 10000, efectivoPrevEjercicio: 0,
+      anioEjercicio: '2026',
       gastos: [g15({ id: 'g15e', monto: 1000, ivaTraslado: 160 })],
     });
     expect(r.ivaAcreditable ?? 0).toBe(0);

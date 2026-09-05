@@ -1,0 +1,5 @@
+Contact: mailto:likida.ai@gmail.com
+Canonical: https://app.likida.ai/.well-known/security.txt
+Preferred-Languages: es, en
+Policy: https://app.likida.ai/privacidad
+Expires: 2027-09-03T00:00:00Z

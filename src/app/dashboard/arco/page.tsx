@@ -22,6 +22,7 @@ const ETIQUETA_TIPO: Record<string, string> = {
 
 type Params = { tenant?: string; vista?: string; rol?: string };
 const RUTA = '/dashboard/arco';
+const ALCANCE_CANCELACION = 'Se sustituyeron el nombre y el teléfono del registro operativo y se eliminaron sus conversaciones. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud y la documentación fiscal. Requieren revisión de privacidad para determinar los pasos pendientes.';
 
 /**
  * AUDITORÍA 24 — las tres acciones de esta pantalla se gateaban con
@@ -29,7 +30,7 @@ const RUTA = '/dashboard/arco';
  * sí gatea (`resolverTenantEfectivo` corre `puedeVerRuta`), pero una server
  * action es un endpoint POST que no hereda esa puerta, y un encargado —que ve
  * el área `operacion`, y por tanto esta ruta— podía resolver una solicitud
- * ARCO, anonimizar al titular en la base y borrar sus conversaciones con un
+ * ARCO, sustituir datos del registro operativo y borrar conversaciones con un
  * POST a mano. Contestarle a un titular en nombre del responsable obligado
  * (LFPDPPP art. 31) es CONTROL de la cuenta: `puedeAdministrar`.
  */
@@ -86,7 +87,7 @@ export default async function ArcoPage({ searchParams }: { searchParams: Promise
   // AUDITORÍA 19 (legal, reincidente #5): `ejecutar_arco_cancelacion` (0178)
   // existía sin un solo llamador — una cancelación se "resolvía" escribiendo
   // prosa sin que la base cambiara. Este botón la ejecuta DE VERDAD:
-  // anonimiza nombre y teléfono del titular, borra sus conversaciones, y la
+  // sustituye nombre y teléfono del registro operativo, borra conversaciones y la
   // RPC misma deja la solicitud resuelta con la evidencia de qué tocó. El
   // humano firma (aprieta el botón); el sistema ejecuta — en ese orden.
   async function accionEjecutarCancelacion(_previo: ResultadoAccion, fd: FormData): Promise<ResultadoAccion> {
@@ -106,8 +107,8 @@ export default async function ArcoPage({ searchParams }: { searchParams: Promise
       revalidatePath(RUTA);
       if (!r.ok) return { error: `No se ejecutó la cancelación: ${r.motivo}` };
       return r.avisada
-        ? { ok: 'Cancelación ejecutada: el titular quedó anonimizado en la base —incluido el texto libre que escribió por el chat— y se le confirmó por WhatsApp. La documentación fiscal se conserva por el CFF art. 30, desligada de su persona.' }
-        : { ok: `Cancelación ejecutada: el titular quedó anonimizado en la base, incluido el texto libre que escribió por el chat. La confirmación NO salió por WhatsApp${r.errorAviso ? ` (${r.errorAviso})` : ''} — entrégasela por otro canal.` };
+        ? { ok: `${ALCANCE_CANCELACION} Se confirmó por WhatsApp.` }
+        : { ok: `${ALCANCE_CANCELACION} La confirmación NO salió por WhatsApp${r.errorAviso ? ` (${r.errorAviso})` : ''} — entrégasela por otro canal.` };
     } catch (e) {
       return { error: mensajeParaPantalla(e, 'ejecutar la cancelación') };
     }
@@ -241,14 +242,16 @@ export default async function ArcoPage({ searchParams }: { searchParams: Promise
                         ) : s.tipo === 'cancelacion' ? (
                           <div className="flex flex-col gap-2">
                             {/* La cancelación NO se resuelve con prosa: se
-                                EJECUTA (anonimiza al titular). El botón dice
+                                EJECUTA sobre datos concretos. El botón dice
                                 lo que hace antes de que alguien lo apriete. */}
                             <FormaConAviso accion={accionEjecutarCancelacion} boton="Ejecutar cancelación" columnas="auto">
                               <input type="hidden" name="solicitudId" value={s.id} />
                             </FormaConAviso>
                             <span className="text-xs" style={{ color: 'var(--muted)' }}>
-                              Anonimiza nombre y teléfono del titular y borra sus conversaciones. Los comprobantes
-                              fiscales se conservan por ley (CFF art. 30), desligados de su persona. No se puede deshacer.
+                              Sustituye nombre y teléfono del registro operativo y elimina conversaciones. Se conservan
+                              el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud
+                              y la documentación fiscal; requieren revisión de privacidad para determinar los pasos pendientes.
+                              No se puede deshacer la eliminación de conversaciones.
                             </span>
                           </div>
                         ) : (

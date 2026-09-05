@@ -174,26 +174,27 @@ function reportarAlServidor(level: Level, msg: string, meta?: Record<string, unk
 }
 
 function emit(level: Level, msg: string, meta?: Record<string, unknown>) {
+  const mensaje = redactarTexto(msg);
   const redactado = meta ? redactMeta(meta) : undefined;
   // `t` iba vacío "para no romper determinismo de tests" y ninguna prueba lo
   // usaba: lo que sí pasaba es que dos líneas idénticas tampoco se podían
   // ordenar en el tiempo. Se emite ISO-8601 porque es lo primero que se mira
   // cuando hay que cruzar un log con la hora de un mensaje de WhatsApp.
-  const line = { t: new Date().toISOString(), level, msg, ...(redactado ? { meta: redactado } : {}) };
+  const line = { t: new Date().toISOString(), level, msg: mensaje, ...(redactado ? { meta: redactado } : {}) };
   const out = level === 'error' || level === 'warn' ? console.error : console.log;
   out(JSON.stringify(line));
 
   // A Sentry solo lo que merece atención humana, y ya redactado. El import es
   // perezoso para no arrastrar el paquete en tests ni en el cliente.
   if ((level === 'error' || level === 'warn') && process.env.SENTRY_DSN) {
-    void import('./observability/sentry').then((s) => s.reportar(level, msg, redactado));
+    void import('./observability/sentry').then((s) => s.reportar(level, mensaje, redactado));
   }
 
   // Y del cliente al servidor, para que un fallo solo-de-cliente deje rastro
   // en alguna parte además de la consola del contralor (ver la cabecera de
   // `reportarAlServidor`). Ya redactado — el POST nunca lleva PII cruda.
   if (level === 'error' || level === 'warn') {
-    reportarAlServidor(level, msg, redactado);
+    reportarAlServidor(level, mensaje, redactado);
   }
 }
 

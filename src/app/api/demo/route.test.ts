@@ -1,11 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 13, seguridad — verificación: /api/demo es la ÚNICA de las tres
-// rutas que usan `bodyExcede` que llamaba `req.json()` directo, sin la
-// segunda medición sobre el texto REAL. `bodyExcede` solo mira
-// `content-length`, que una petición `Transfer-Encoding: chunked` no declara
-// — con esa cabecera ausente, un POST sin sesión (esta ruta es pública)
-// materializaba el cuerpo entero en memoria sin ningún tope. `_escritura.ts`
-// ya documentaba la doctrina ("se mide dos veces"); esta ruta no la seguía.
+// rutas públicas que materializaba el cuerpo completo antes de medirlo.
+// `leerTextoAcotado` corta durante la lectura aunque una petición chunked no
+// declare `content-length`.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -15,8 +12,7 @@ const { POST, GET } = await import('./route');
 
 function peticion(init: { crudo: string; conLargo?: boolean }): Request {
   const headers = new Headers({ 'content-type': 'application/json' });
-  // Sin `content-length`: es justo el caso `Transfer-Encoding: chunked` que
-  // `bodyExcede` no puede medir — la primera comprobación pasa siempre.
+  // Sin `content-length`: el lector streaming sigue imponiendo el tope real.
   if (init.conLargo) headers.set('content-length', String(init.crudo.length));
   return new Request('https://x/api/demo', { method: 'POST', headers, body: init.crudo });
 }

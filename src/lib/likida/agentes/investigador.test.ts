@@ -92,6 +92,36 @@ describe('textoVisible y enlacesInstitucionales — el rastreo mínimo', () => {
       .toBe('Hola mundo');
   });
 
+  it.each(['</script >', '</ScRiPt\t>', '</script\r\n>', '</script\f>'])('omite contenido de script con cierre HTML %s antes de verificar correos', (cierre) => {
+    const texto = textoVisible(`<p>ventas@empresa.example</p><script>const x="interno@empresa.example";${cierre}<p>Fin</p>`);
+    expect(texto).toBe('ventas@empresa.example Fin');
+    const correos = ['ventas@empresa.example', 'interno@empresa.example'].map(correo => ({ correo, contacto_nombre: null, puesto: null, fuente: 'https://empresa.example' }));
+    expect(correosVerificados(correos, [{ url: 'https://empresa.example', texto }], null).map(c => c.correo)).toEqual(['ventas@empresa.example']);
+  });
+
+  it.each(['</style >', '</STYLE\n>'])('omite estilos con cierre HTML %s', (cierre) => {
+    expect(textoVisible(`<p>Contacto</p><style>.x{content:"oculto"}${cierre}<p>Fin</p>`)).toBe('Contacto Fin');
+  });
+
+  it.each(['script', 'style'])('respeta comillas en la apertura de %s antes de buscar el cierre', tag => {
+    const html = `<p>visible</p><${tag} data-x="> </${tag} >">interno@empresa.example</${tag}><p>Fin</p>`;
+    expect(textoVisible(html)).toBe('visible Fin');
+  });
+
+  it('las etiquetas dentro de un comentario no se comen el contenido visible posterior', () => {
+    const html = '<p>Uno</p><!-- <script>no es una apertura real --><p>Dos</p><script>oculto</script><p>Tres</p>';
+    expect(textoVisible(html)).toBe('Uno Dos Tres');
+  });
+
+  it('un bloque sin cierre sigue siendo contenido no visible hasta EOF', () => {
+    expect(textoVisible('<p>Contacto</p><script>oculto')).toBe('Contacto');
+    expect(textoVisible('<p>Contacto</p><style>oculto')).toBe('Contacto');
+  });
+
+  it('no confunde nombres de otras etiquetas con script o style', () => {
+    expect(textoVisible('<scripture>visible</scripture><script>oculto</script><stylesheet>también</stylesheet><style>oculto</style>')).toBe('visible también');
+  });
+
   it('solo sigue enlaces del MISMO dominio que huelen a contacto/nosotros', () => {
     const html = `
       <a href="/contacto">Contacto</a>

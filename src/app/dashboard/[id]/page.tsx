@@ -19,6 +19,7 @@ import {
   type AccionRevision, type RevisionDetalle,
 } from '@/lib/likida/revision';
 import { mxn } from '@/lib/formato';
+import { reintentarPdfAjustado } from '@/lib/likida/revision_recalculo';
 
 export const dynamic = 'force-dynamic';
 
@@ -243,13 +244,30 @@ export default async function Detalle({
         const cuantos = r.ajustes.length;
         return {
           ok: `${r.folio}: ${cuantos === 1 ? 'se corrigió 1 comprobante' : `se corrigieron ${cuantos} comprobantes`}. `
-            + `El comprobado quedó en ${mxn(r.totalComprobado)} y la diferencia en ${mxn(r.diferencia)}.`,
+            + `El comprobado quedó en ${mxn(r.totalComprobado)} y la diferencia en ${mxn(r.diferencia)}.`
+            + (r.pdfPendiente ? ' El ajuste y tu firma se guardaron; el PDF sigue pendiente. Usa Reintentar PDF para generarlo sin volver a ajustar.' : ''),
         };
       }
       return { ok: `${r.folio} quedó aprobada con tu firma.` };
     } catch (err) {
       return { error: mensajeParaPantalla(err, 'firmar la liquidación') };
     }
+  }
+
+  async function reintentarPdf(_previo: ResultadoAccion, _fd: FormData): Promise<ResultadoAccion> {
+    'use server';
+    const s = await requireSessionTenant(`/dashboard/${id}`, sp);
+    if (!puedeVerArea(s.rol, 'dinero') || !puedeFirmarLiquidacion(s.rol)) {
+      return { error: 'Tu rol no puede regenerar el PDF de una liquidación firmada.' };
+    }
+    let t = s.tenantId;
+    if (s.rol === 'superadmin' && sp?.tenant) t = await resolverTenantPedido(supabaseAdmin(), t, sp.tenant);
+    try {
+      const r = await reintentarPdfAjustado(t, id);
+      revalidatePath(`/dashboard/${id}`);
+      return r.regenerado ? { ok: 'Los dos PDF ya están disponibles. Tu firma y las cifras se conservaron.' }
+        : { error: 'El PDF sigue pendiente. Tu firma y las cifras se conservaron; vuelve a intentarlo o avisa a soporte.' };
+    } catch (error) { return { error: mensajeParaPantalla(error, 'regenerar el PDF') }; }
   }
 
   // Cuántos choferes activos hay — `count exact, head`, cero filas de vuelta.
@@ -265,6 +283,7 @@ export default async function Detalle({
       estatus={{ label: e.label, estado: estadoDeColor(e.color) }}
       etiqueta={etiquetaGasto}
       pdfHref={d.pdfPath && puedeExportar(rol) ? `/api/export/pdf/${d.id}` : null}
+      reintentarPdf={!d.pdfPath && revisionEstado?.revision === 'ajustada' && puedeFirmar ? reintentarPdf : null}
       wa={hrefWhatsApp(d.viaje.operadorTelefono)}
       reasignar={puedeReasignar && totalOperadores !== 0
         ? {

@@ -32,6 +32,7 @@ let credenciales: Array<Record<string, unknown>> = [];
 let filtroProveedores: string[] | null = null;
 let errorUnidades: { message: string } | null = null;
 let errorInsert: { message: string } | null = null;
+let insertarComoDuplicados = false;
 let errorCredenciales: { message: string } | null = null;
 
 vi.mock('@/lib/supabase/admin', () => ({
@@ -56,7 +57,8 @@ vi.mock('@/lib/supabase/admin', () => ({
         if (modo === 'upsert') {
           if (errorInsert) return { data: null, error: errorInsert };
           escrituras.push({ tabla, filas: payload, opciones });
-          return { data: null, error: null };
+          const filas = Array.isArray(payload) ? payload : [payload];
+          return { data: insertarComoDuplicados ? [] : filas.map((_, i) => ({ id: `p-${i}` })), error: null };
         }
         if (tabla === 'unidad') {
           if (errorUnidades) return { data: null, error: errorUnidades };
@@ -114,6 +116,7 @@ const httpQue = (estado: number, cuerpo: string): Http => async () => ({ estado,
 beforeEach(() => {
   escrituras = []; sellos = []; credenciales = []; filtroProveedores = null;
   errorUnidades = null; errorInsert = null; errorCredenciales = null;
+  insertarComoDuplicados = false;
 });
 
 describe('la posición aterriza en la unidad correcta, o en ninguna', () => {
@@ -162,6 +165,23 @@ describe('la idempotencia y el sello', () => {
     expect(escrituras[0].opciones).toEqual({
       onConflict: 'tenant_id,unidad_id,medida_en', ignoreDuplicates: true,
     });
+  });
+
+  it('cuenta inserts reales: un duplicado ignorado no se reporta como guardado', async () => {
+    insertarComoDuplicados = true;
+    const http = httpQue(200, cuerpoSamsara([{ id: '1234', lat: 20.9, lng: -89.5, t: '2026-08-23T18:00:00Z' }]));
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, http);
+    expect(r.leidas).toBe(1);
+    expect(r.guardadas).toBe(0);
+  });
+
+  it('una lectura inválida deja el poll parcial y visible', async () => {
+    const r = await sincronizarGpsDeFlota(
+      't-1', 'samsara', CRED,
+      httpQue(200, cuerpoSamsara([{ id: '1234', lat: 999, lng: -89.5, t: '2026-08-23T18:00:00Z' }])),
+    );
+    expect(r).toMatchObject({ descartadas: 1, backlog: true, guardadas: 0 });
+    expect(r.error).toMatch(/inválida/);
   });
 
   it('sella `gps_visto_en` SOLO de las unidades que llegaron, y dentro de la flota', async () => {
@@ -278,7 +298,7 @@ describe('el reloj duro corta ANTES de despachar, nunca a media flota', () => {
     expect(logger.warn).toHaveBeenCalledWith('gps.corte_por_reloj', { sinTurno: 2, flotas: 2 });
   });
 
-  it('el reloj vence a MEDIA corrida: la flota en vuelo TERMINA y las siguientes quedan sin turno', async () => {
+  it('el reloj vence a MEDIA corrida: corta antes de Postgres, declara backlog y las siguientes quedan sin turno', async () => {
     credenciales = [
       { tenant_id: 't-1', conector_id: 'samsara', valores_cifrados: CRED },
       { tenant_id: 't-2', conector_id: 'samsara', valores_cifrados: CRED },
@@ -293,10 +313,13 @@ describe('el reloj duro corta ANTES de despachar, nunca a media flota', () => {
     });
     const r = await sincronizarGpsTodas(http, { venceEn: 500, ahora: () => reloj });
 
-    // La flota que YA estaba en vuelo no se corta a medias: termina completa.
+    // La lectura HTTP terminó, pero el deadline se vuelve a aplicar ANTES de
+    // tocar Postgres. No se abre una cadena de operaciones fuera de tiempo.
     expect(r[0].sinTurno).toBeUndefined();
-    expect(r[0].guardadas).toBe(1);
-    expect(escrituras).toHaveLength(1);
+    expect(r[0].guardadas).toBe(0);
+    expect(r[0].backlog).toBe(true);
+    expect(r[0].error).toMatch(/presupuesto/);
+    expect(escrituras).toHaveLength(0);
     // Las que no habían arrancado NO arrancan — y salen nombradas, sin error.
     expect(r[1].sinTurno).toBe(true);
     expect(r[2].sinTurno).toBe(true);

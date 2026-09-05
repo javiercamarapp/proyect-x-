@@ -113,6 +113,14 @@ describe('scoreCierre — alcanzabilidad + fit + embudo', () => {
     expect(scoreCierre({ ...base, estado: 'cerrado' })).toBe(100);
     expect(scoreCierre({ ...base, telefono: '55', correo: 'a@b.mx', estado: 'perdido' })).toBe(0);
   });
+  it.each([
+    ['negociacion', 'proposal'],
+    ['cerrado', 'won'],
+    ['perdido', 'lost'],
+  ])('el alias %s puntúa exactamente igual que %s', (alias, canonico) => {
+    expect(scoreCierre({ ...base, estado: alias }))
+      .toBe(scoreCierre({ ...base, estado: canonico }));
+  });
 });
 
 describe('la paleta del embudo cubre el dominio completo del CHECK 0105', () => {

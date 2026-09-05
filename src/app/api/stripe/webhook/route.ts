@@ -4,7 +4,7 @@ import {
   marcarEvento, sellarEventoAplicado, aplicarSuscripcion, aplicarFactura, estadoDesdeStripe,
   tenantDeCustomer, planDePrice, cancelarFacturaDeStripe,
 } from '@/lib/saas/suscripcion';
-import { bodyExcede } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 import { registrarEventoSeguridad } from '@/lib/seguridad/eventos';
 import { hoyMx } from '@/lib/formato';
@@ -55,9 +55,14 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Stripe webhook no configurado', { status: 503 });
   }
 
-  if (bodyExcede(req, MAX_BODY)) return new NextResponse('Payload too large', { status: 413 });
-  const crudo = await req.text();
-  if (crudo.length > MAX_BODY) return new NextResponse('Payload too large', { status: 413 });
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return new NextResponse(
+      lectura.motivo === 'demasiado_grande' ? 'Payload too large' : 'Could not read payload',
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400 },
+    );
+  }
+  const crudo = lectura.texto;
 
   // La firma va sobre el cuerpo EXACTO como llegó. Cualquier `JSON.parse` +
   // `stringify` antes de esto cambia bytes y la firma deja de validar.

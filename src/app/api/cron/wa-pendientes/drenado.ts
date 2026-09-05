@@ -8,13 +8,13 @@
 // importables desde otro módulo.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { NextResponse } from 'next/server';
 import { Client as QstashClient } from '@upstash/qstash';
 import { processInbound, type ResultadoInbound } from '@/lib/likida/processor';
 import {
   pendientesPorDrenar, reclamarPendiente, marcarPendienteProcesado,
   anotarFalloPendiente, devolverIntentoPendiente, cartasMuertas,
-  crearLeaseOwner, iniciarRenovacionLease,
+  crearLeaseOwner, iniciarRenovacionLease, iniciarCadenaWa, renovarCadenaWa,
+  finalizarCadenaWa,
 } from '@/lib/likida/wa_pendientes';
 import { conPool } from '@/lib/likida/lotes';
 import { logger } from '@/lib/logger';
@@ -28,8 +28,9 @@ export const LOTE = 40;
 /** Cuántos mensajes se procesan a la vez. Cinco: el techo lo pone el pool de
  *  PostgREST y el rate limit de Meta, no el CPU. */
 export const ANCHO_POOL = 5;
-/** Techo de vueltas encadenadas por QStash en un mismo minuto (40 × 20 = 800
- *  mensajes). Sin techo, una bandeja envenenada se reencolaría para siempre. */
+/** Techo de generaciones QStash por cadena (hasta 40 × 20 = 800 mensajes
+ * listados). No promete un minuto: cada generación espera el procesamiento de
+ * la anterior y su duración depende del OCR/proveedor. */
 export const MAX_VUELTAS_QSTASH = 20;
 
 /** Los resultados de `processInbound` que dejan la fila SIN sellar. Local a
@@ -43,6 +44,15 @@ export interface ResultadoDrenado {
   procesados: number;
   fallidos: number;
   pospuestos: number;
+  /** Claims que ESTA invocación ganó. A diferencia de `tomados`, no cuenta
+   * filas que otro cron ya tenía arrendadas. */
+  reclamados: number;
+  /** Hay por lo menos una fila elegible DESPUÉS de terminar esta vuelta. */
+  backlogDespues: boolean;
+  /** Quién conserva la responsabilidad de continuar. Evita que `false`
+   * disfrace como bandeja vacía la falta de token o el tope de generación. */
+  continuacion: 'sin_claims' | 'sin_backlog' | 'cron' | 'tope' | 'encolada' |
+    'cadena_activa' | 'cadena_obsoleta' | 'publicacion_fallida';
   cartasMuertas: number;
   /** El messageId de la vuelta que quedó encolada en QStash, si la hubo. */
   encolado?: string;
@@ -58,15 +68,35 @@ export interface ResultadoDrenado {
  * cadena: al llegar a `MAX_VUELTAS_QSTASH` deja de reencolar y el cron del
  * minuto siguiente retoma.
  */
-export async function drenarBandeja(inicioInvocacion: number, req: Request, vuelta = 0): Promise<ResultadoDrenado> {
+export async function drenarBandeja(
+  inicioInvocacion: number,
+  req: Request,
+  vuelta = 0,
+  cadenaId?: string,
+): Promise<ResultadoDrenado> {
   let procesados = 0;
   let fallidos = 0;
   let pospuestos = 0;
   let huboFalloDeCron = false;
   let tomados = 0;
+  let reclamados = 0;
+  let backlogDespues = false;
   let encolado: string | undefined;
+  let continuacion: ResultadoDrenado['continuacion'] = 'sin_claims';
   const leaseOwner = crearLeaseOwner('wa-cron');
   try {
+    // Un callback sólo puede trabajar mientras conserve el fence de SU cadena.
+    // Si el lease venció y otro cron abrió una nueva, este callback es viejo:
+    // 200 sin efectos para que QStash no lo insista.
+    if (vuelta > 0 && (!cadenaId || !(await renovarCadenaWa(cadenaId)))) {
+      logger.warn('cron.wa_pendientes.cadena_obsoleta', { vuelta, cadenaId: cadenaId ?? null });
+      await registrarLatido('wa-pendientes', 'parcial', { vuelta, continuacion: 'cadena_obsoleta' });
+      return {
+        procesados, fallidos, pospuestos, reclamados, backlogDespues,
+        cartasMuertas: 0, continuacion: 'cadena_obsoleta',
+      };
+    }
+
     const lote = await pendientesPorDrenar(LOTE);
     tomados = lote.length;
 
@@ -101,6 +131,7 @@ export async function drenarBandeja(inicioInvocacion: number, req: Request, vuel
           // completa en la siguiente vuelta; otros choferes siguen en paralelo.
           break;
         }
+        reclamados++;
         const detenerRenovacion = claim.leaseToken && claim.leaseOwner
           ? iniciarRenovacionLease(claim.id, claim.leaseToken, claim.leaseOwner)
           : () => {};
@@ -159,14 +190,49 @@ export async function drenarBandeja(inicioInvocacion: number, req: Request, vuel
       }
     });
 
-    // ── EL AUTO-REENCOLADO (ESC-1) ────────────────────────────────────────
-    // Lote lleno = hay más esperando. En vez de dejarlo para el minuto
-    // siguiente —que a 1,100 mensajes/hora es cómo la bandeja se vuelve
-    // permanente—, se encola otra vuelta con su propio presupuesto. Mismo
-    // patrón que `facturar` (ronda 16); sin QStash configurado, el cron del
-    // minuto siguiente hace de reencolado y nada se pierde.
-    if (tomados >= LOTE && vuelta < MAX_VUELTAS_QSTASH) {
-      encolado = await encolarOtraVuelta(req, vuelta + 1);
+    // ── EL AUTO-REENCOLADO (capacidad 800) ────────────────────────────────
+    // La longitud del LISTADO no demuestra backlog: dos crons superpuestos
+    // pueden ver las mismas 40 filas, uno gana los claims y el perdedor veía
+    // igualmente `tomados = 40`. Antes, cada perdedor publicaba otra cadena y
+    // multiplicaba callbacks sin haber hecho trabajo. Solo quien ganó por lo
+    // menos un claim puede encadenar, y antes vuelve a preguntar por trabajo
+    // ELEGIBLE. El cron del minuto siguiente sigue siendo el fallback durable.
+    if (reclamados > 0) {
+      backlogDespues = (await pendientesPorDrenar(1)).length > 0;
+      if (backlogDespues) {
+        if (!process.env.UPSTASH_QSTASH_TOKEN) {
+          continuacion = 'cron';
+          if (cadenaId) await finalizarCadenaWa(cadenaId);
+        } else if (vuelta >= MAX_VUELTAS_QSTASH) {
+          continuacion = 'tope';
+          logger.error('cron.wa_pendientes.tope_con_backlog', { vuelta, reclamados });
+          await alertarOperador('cron.wa_pendientes', {
+            error: `La cadena alcanzó ${MAX_VUELTAS_QSTASH} vueltas y todavía hay mensajes elegibles`,
+            codigo: 'tope_cadena_con_backlog',
+          });
+          if (cadenaId) await finalizarCadenaWa(cadenaId);
+        } else {
+          let cadenaParaPublicar = cadenaId;
+          if (vuelta === 0) {
+            cadenaParaPublicar = await iniciarCadenaWa() ?? undefined;
+            if (!cadenaParaPublicar) continuacion = 'cadena_activa';
+          }
+          if (cadenaParaPublicar) {
+            encolado = await encolarOtraVuelta(req, vuelta + 1, cadenaParaPublicar);
+            continuacion = encolado ? 'encolada' : 'publicacion_fallida';
+            // Un timeout es ambiguo: QStash pudo aceptar antes de perderse la
+            // respuesta. Conservar el lease evita que el cron siguiente abra
+            // otra generación mientras aquel callback puede estar en vuelo.
+            // Si de verdad no se publicó, la recuperación queda acotada al
+            // vencimiento del lease; nunca se pierde el backlog durable.
+          }
+        }
+      } else {
+        continuacion = 'sin_backlog';
+        if (cadenaId) await finalizarCadenaWa(cadenaId);
+      }
+    } else if (cadenaId) {
+      await finalizarCadenaWa(cadenaId);
     }
 
     // Las cartas muertas se GRITAN al operador: un mensaje de un chofer que
@@ -182,8 +248,11 @@ export async function drenarBandeja(inicioInvocacion: number, req: Request, vuel
     // `ok` (procesados=0, fallidos=0) y la bandeja crecía minuto a minuto con
     // el tablero en verde. Lo pospuesto es trabajo que quedó: `parcial`,
     // como gps/jornada/facturar/runner en su corte.
-    await registrarLatido('wa-pendientes', fallidos > 0 ? 'fallo' : pospuestos > 0 ? 'parcial' : 'ok', { procesados, fallidos, pospuestos, vuelta });
-    return { procesados, fallidos, pospuestos, cartasMuertas: muertas, encolado };
+    const estado = fallidos > 0 ? 'fallo'
+      : muertas > 0 || pospuestos > 0 || (backlogDespues && continuacion !== 'encolada') ? 'parcial'
+        : 'ok';
+    await registrarLatido('wa-pendientes', estado, { procesados, fallidos, pospuestos, cartasMuertas: muertas, vuelta, backlogDespues, continuacion });
+    return { procesados, fallidos, pospuestos, reclamados, backlogDespues, cartasMuertas: muertas, continuacion, encolado };
   } catch (e) {
     huboFalloDeCron = true;
     const error = e instanceof Error ? e.message : String(e);
@@ -191,7 +260,7 @@ export async function drenarBandeja(inicioInvocacion: number, req: Request, vuel
     logger.error('cron.wa_pendientes.falló', { error, codigo });
     await alertarOperador('cron.wa_pendientes', { error, codigo });
     await registrarLatido('wa-pendientes', 'fallo', { codigo });
-    return { procesados, fallidos, pospuestos, cartasMuertas: 0, error };
+    return { procesados, fallidos, pospuestos, reclamados, backlogDespues, cartasMuertas: 0, continuacion, error };
   } finally {
     if (!huboFalloDeCron && (procesados > 0 || fallidos > 0 || pospuestos > 0)) {
       logger.info('cron.wa_pendientes.ok', { procesados, fallidos, pospuestos, tomados, vuelta });
@@ -205,7 +274,7 @@ export async function drenarBandeja(inicioInvocacion: number, req: Request, vuel
  * (nada se marcó de más), así que un QStash caído baja el caudal pero no
  * pierde un solo mensaje. Por eso no lanza ni cuenta como fallo.
  */
-async function encolarOtraVuelta(req: Request, vuelta: number): Promise<string | undefined> {
+async function encolarOtraVuelta(req: Request, vuelta: number, cadenaId: string): Promise<string | undefined> {
   const token = process.env.UPSTASH_QSTASH_TOKEN;
   if (!token) return undefined;
   try {
@@ -215,11 +284,15 @@ async function encolarOtraVuelta(req: Request, vuelta: number): Promise<string |
     const base = appUrl() || `https://${req.headers.get('host')}`;
     const { messageId } = await q.publishJSON({
       url: `${base}/api/cron/wa-pendientes/cola`,
-      body: { vuelta },
+      body: { vuelta, cadenaId },
       // Sin reintentos: la bandeja es durable y el cron del minuto siguiente
       // ES el reintento. Insistir aquí solo duplicaría trabajo en vuelo.
       retries: 0,
       timeout: 120,
+      // Vercel Cron y QStash son at-least-once. Todas las invocaciones del
+      // mismo minuto comparten cadena; dos ganadores concurrentes pueden ver
+      // backlog, pero QStash conserva una sola generación.
+      deduplicationId: `wa-pendientes-${cadenaId}-${vuelta}`,
     });
     logger.info('cron.wa_pendientes.encolado', { messageId, vuelta });
     return messageId;

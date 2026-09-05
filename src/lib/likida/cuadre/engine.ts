@@ -192,6 +192,32 @@ export const LEYENDA_PAGO_PENDIENTE =
  *   en el motor — ver el seguimiento interno de auditorías, no se resuelve
  *   en esta función.
  */
+/**
+ * La forma de pago que se puede JUZGAR, que no siempre es la del comprobante.
+ * `'99 Por definir'` no es un medio de pago sino la ausencia de uno (RMF
+ * 2.7.1.29 fr. II): con su complemento de pago ingerido (FASE 7, mig. 0199) el
+ * medio real es el `FormaDePagoP` del REP; sin él todavía no hay nada que
+ * juzgar y devuelve `undefined` («no opino»), que es como esta familia de
+ * funciones trata una forma de pago ausente.
+ *
+ * AUDITORÍA 26, FIS-C2 (CRÍTICO, reincidente de la 23, la 24 y la 25). Vivía
+ * como constante local dentro del recorrido de `cuadrarViaje` (`:682`), así
+ * que el OTRO término del cubo del 15% —`efectivoDeEsteViaje` en
+ * `desde_db.ts`, que se le RESTA al acumulado de `sumar_combustible_ejercicio`
+ * (mig. 0305)— no podía usarla y seguía juzgando la forma CRUDA. Los dos
+ * términos de una resta juzgando con criterios distintos es exactamente cómo
+ * un comprobante consume su propio cupo antes de evaluarse. Es la MISMA regla
+ * que la 0305 escribió en SQL, y por eso se exporta en vez de reimplementarse:
+ * la tercera copia es la que diverge.
+ */
+export function formaPagoJuzgableDe(
+  g: Pick<Gasto, 'formaPago' | 'pagadoEn' | 'pagadoForma'>,
+): string | undefined {
+  return g.formaPago === FORMA_PAGO_SIN_PAGAR
+    ? (g.pagadoEn ? g.pagadoForma : undefined)
+    : g.formaPago;
+}
+
 export function medioNoAdmitidoCombustible(formaPago: string | null | undefined): boolean {
   if (!formaPago) return false;
   if (formaPago === FORMA_PAGO_SIN_PAGAR) return false;
@@ -679,9 +705,7 @@ export function cuadrarViaje(input: CuadreInput): Omit<Liquidacion, 'id' | 'crea
     // Es la misma idea que `formaPagoEfectiva` (`:1397`) ya aplica al IVA, al
     // peaje electrónico y al IEPS del diésel; se calcula aquí porque aquella
     // vive en otro recorrido, 800 líneas más abajo.
-    const formaPagoJuzgable = g.formaPago === FORMA_PAGO_SIN_PAGAR
-      ? (g.pagadoEn ? g.pagadoForma : undefined)
-      : g.formaPago;
+    const formaPagoJuzgable = formaPagoJuzgableDe(g);
 
     // FASE 2 · RMF 3.3.1.7 — ticket de monedero no es factura de estación.
     // Solo con evidencia (padrón o línea ECC día/estación/monto). Sin
@@ -739,12 +763,24 @@ export function cuadrarViaje(input: CuadreInput): Omit<Liquidacion, 'id' | 'crea
         // que no se midió". Ese gasto va a revisión con nota honesta; la
         // facilidad solo aplica con la base medida.
         const anioComprobante = g.fecha ? g.fecha.slice(0, 4) : null;
-        const mismoEjercicio = !anioComprobante || anioComprobante === input.anioEjercicio;
+        // AUDITORÍA 26 · continuación, FIS-C2c (CRÍTICO): «sin año» NO es «de
+        // este año». El numerador y el denominador del 15% son el mismo
+        // universo, y el denominador lo mide la RPC de la 0305, cuyo `where`
+        // acota `fecha` entre el 1-ene y el 31-dic: una `fecha` NULL falla las
+        // DOS comparaciones y queda fuera de `total`. Contarlo aquí arriba
+        // producía una razón que no se puede reconstruir con el total que el
+        // propio renglón imprime ($261,000 sobre $1,000,000 = 26.1%). El
+        // comprobante de OTRO ejercicio ya se abstenía; el que no trae año, del
+        // que se sabe MENOS, recibía el veredicto más tajante.
+        const mismoEjercicio = anioComprobante != null && anioComprobante === input.anioEjercicio;
         const total = input.totalCombustibleEjercicio ?? 0;
         if (!mismoEjercicio || !(total > 0)) {
           const motivo = !(total > 0)
             ? 'no se pudo calcular el total de combustible del ejercicio (el contador no respondió) — la facilidad del 15% (RFA 2026 regla 2.9) no se evaluó'
-            : `este comprobante es de ${anioComprobante} y la facilidad se mide contra el ejercicio ${input.anioEjercicio} — se revisa aparte`;
+            : anioComprobante == null
+              // El rótulo tiene que ser verdad: sin año no se puede decir «es de».
+              ? `este comprobante no trae fecha legible y la facilidad del 15% (RFA 2026 regla 2.9) se mide contra el ejercicio ${input.anioEjercicio} — se revisa aparte`
+              : `este comprobante es de ${anioComprobante} y la facilidad se mide contra el ejercicio ${input.anioEjercicio} — se revisa aparte`;
           diferencias.push({
             tipo: 'combustible_efectivo', concepto: g.concepto, monto: 0,
             nota: `${etiqueta} ${medio} — ${motivo}. No se afirma deducible ni no deducible; no acredita IEPS.`,
@@ -771,7 +807,7 @@ export function cuadrarViaje(input: CuadreInput): Omit<Liquidacion, 'id' | 'crea
         const excedenteDeEste = Math.max(0, g.monto - dentro);
         if (g.monto > 0) proporcionDeducible.set(g.id, dentro / g.monto);
         if (excedenteDeEste === 0) {
-          const pct = total > 0 ? Math.round((acumulado / total) * 100) : 0;
+          const pct = Math.round((acumulado / total) * 100);
           diferencias.push({
             tipo: 'combustible_efectivo_dentro15', concepto: g.concepto, monto: 0,
             // FISCAL-19C2-4: `esperado` es lo que `derivoLaConfig` (analytics.ts)

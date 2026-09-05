@@ -20,6 +20,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { pantallaDesdeRuta } from '@/app/dashboard/pantalla-evento';
 import { logger } from '@/lib/logger';
 import { vieneDeNuestroSitio } from '@/lib/auth/csrf';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,9 +43,11 @@ export async function POST(req: Request) {
     return new Response(null, { status: 204 });
   }
 
+  const lectura = await leerTextoAcotado(req, 1_000);
+  if (!lectura.ok) return new Response(null, { status: 204 });
   let ruta: unknown = null;
   try {
-    const c = (await req.json()) as { ruta?: unknown };
+    const c = JSON.parse(lectura.texto) as { ruta?: unknown };
     ruta = c.ruta;
   } catch {
     return new Response(null, { status: 204 });

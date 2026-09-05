@@ -26,9 +26,52 @@ import type { InboundMessage } from './processor';
 export const MAX_INTENTOS_PENDIENTE = 5;
 export const WA_LEASE_SECONDS = 180;
 export const WA_LEASE_RENEW_EVERY_MS = 60_000;
+export const WA_CADENA_LEASE_SECONDS = 180;
 
 export function crearLeaseOwner(prefijo: string): string {
   return `${prefijo}:${randomUUID()}`;
+}
+
+/** Abre la única cadena de fan-out WA. `null` significa que otro cron ya
+ * mantiene una cadena viva; es control de concurrencia, no un error. */
+export async function iniciarCadenaWa(): Promise<string | null> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('iniciar_cadena_wa', {
+    p_lease_seconds: WA_CADENA_LEASE_SECONDS,
+  }), 'iniciarCadenaWa');
+  if (error) throw new Error(`iniciarCadenaWa: ${error.message}`);
+  const valor = Array.isArray(data) ? data[0] : data;
+  return typeof valor === 'string' && valor.length > 0 ? valor : null;
+}
+
+/** Renueva y valida el fence de una cadena recibida de QStash. */
+export async function renovarCadenaWa(cadenaId: string): Promise<boolean> {
+  try {
+    const { data, error } = await acotada(supabaseAdmin().rpc('renovar_cadena_wa', {
+      p_cadena_id: cadenaId,
+      p_lease_seconds: WA_CADENA_LEASE_SECONDS,
+    }), 'renovarCadenaWa');
+    if (error) throw error;
+    return data === true || (Array.isArray(data) && data[0] === true);
+  } catch (e) {
+    logger.warn('wa.cadena_no_renovada', { cadenaId, err: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
+}
+
+/** Libera la cadena sólo si el UUID sigue siendo el vigente (fencing). */
+export async function finalizarCadenaWa(cadenaId: string): Promise<boolean> {
+  try {
+    const { data, error } = await acotada(supabaseAdmin().rpc('finalizar_cadena_wa', {
+      p_cadena_id: cadenaId,
+    }), 'finalizarCadenaWa');
+    if (error) throw error;
+    const ok = data === true || (Array.isArray(data) && data[0] === true);
+    if (!ok) logger.warn('wa.cadena_final_fenced', { cadenaId });
+    return ok;
+  } catch (e) {
+    logger.warn('wa.cadena_no_finalizada', { cadenaId, err: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
 }
 
 /**

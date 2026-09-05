@@ -26,6 +26,7 @@ import { proyectar } from '../../dashboard/mapa/mexico-geo';
 import { ESTADOS_GEO, VIEWBOX_ESTADOS, type EstadoGeo } from './mexico-estados-geo';
 import {
   COLOR_EMBUDO, NOMBRE_GIRO, CRITERIO_SCORES, TAMANOS, desempacar,
+  esProspectoTerminal,
   type DatosMapa, type Giro, type ProspectoMapa, type Tamano, type TextosProspecto,
 } from '@/lib/admin/prospectos-mapa-client';
 import { fechaHoraMx, numero, hoyMx } from '@/lib/formato';
@@ -316,7 +317,7 @@ export function TarjetaProspecto({ p, t, nuevo, afinando, onAfinar, onToque, pla
               Cómo llegar
             </a>
           )}
-          {onAfinar && (p.telefono || p.correo) && (
+          {onAfinar && !esProspectoTerminal(p.estado) && (p.telefono || p.correo) && (
             <button onClick={() => onAfinar(p.id)} disabled={afinando}
               title="El agente experto redacta el primer toque con toda la info de este prospecto"
               className="px-2.5 py-1 rounded-lg text-[11px]"

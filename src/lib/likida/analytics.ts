@@ -211,7 +211,8 @@ export async function getSeriesKpiCards(
  * y sumar el dinero observado de `diferencias` (jsonb) en JavaScript — se lee
  * en CADA carga de /dashboard y /dashboard/contador, y caduca ~mes 8.3 con
  * 15,000 viajes/mes (docs/escala-15k.md §6). `kpis_liquidacion_tenant` hace
- * el MISMO conteo/suma en SQL: UN viaje de red, sin techo de páginas. La
+ * el conteo/suma en SQL: UN viaje de red, sin techo de páginas. Desde 0344
+ * excluye rechazadas; las pendientes siguen siendo resultados operativos. La
  * prueba de equivalencia (`analytics_kpis_acreditables.test.ts`) compara la
  * reducción JS vieja contra la forma nueva sobre el mismo dataset sintético.
  */
@@ -291,31 +292,34 @@ export interface HechoSolo {
  * renglón sale de un sello real en `viaje`, no de un log decorativo.
  */
 export async function getHechosSolos(tenantId: string, limite = 8): Promise<HechoSolo[]> {
-  const { data, error } = await acotada(
-    supabaseAdmin()
-    .from('viaje')
-    .select('folio, escalado_en, recordatorio_comprobacion_en, operador:operador_id(nombre)')
-    .eq('tenant_id', tenantId)
-    .or('escalado_en.not.is.null,recordatorio_comprobacion_en.not.is.null')
-    .order('id', { ascending: false })
-    .limit(60),
-    'getHechosSolos',
-  );
-  if (error) throw new Error(`getHechosSolos: ${error.message}`);
-  const hechos: HechoSolo[] = [];
-  for (const v of data ?? []) {
-    const operador = ((v.operador as { nombre?: string } | null)?.nombre) ?? null;
-    const folio = (v.folio as string) ?? '—';
-    if (v.recordatorio_comprobacion_en) {
-      hechos.push({ tipo: 'recordatorio', folio, operador, cuando: v.recordatorio_comprobacion_en as string });
-    }
-    if (v.escalado_en) {
-      hechos.push({ tipo: 'escalado', folio, operador, cuando: v.escalado_en as string });
-    }
-  }
-  // Los 60 viajes más recientes pueden traer hasta 120 hechos: se ordenan por
-  // fecha del sello y se recortan — el feed enseña lo último, no un archivo.
-  return hechos.sort((a, b) => b.cuando.localeCompare(a.cuando)).slice(0, limite);
+  if (limite <= 0) return [];
+  const leer = async (campo: 'escalado_en' | 'recordatorio_comprobacion_en', tipo: HechoSolo['tipo']): Promise<HechoSolo[]> => {
+    const { data, error } = await acotada(
+      supabaseAdmin()
+        .from('viaje')
+        .select('folio, escalado_en, recordatorio_comprobacion_en, operador:operador_id(nombre)')
+        .eq('tenant_id', tenantId)
+        .not(campo, 'is', null)
+        .order(campo, { ascending: false })
+        .order('id', { ascending: false })
+        .limit(limite),
+      `getHechosSolos.${tipo}`,
+    );
+    if (error) throw new Error(`getHechosSolos.${tipo}: ${error.message}`);
+    return (data ?? []).map((v) => ({
+      tipo,
+      folio: (v.folio as string) ?? '—',
+      operador: ((v.operador as { nombre?: string } | null)?.nombre) ?? null,
+      cuando: v[campo] as string,
+    }));
+  };
+  // Los N hechos más recientes están entre los N últimos de cada tipo.
+  // Ordenar viajes por UUID antes del límite puede omitir actividad nueva.
+  const grupos = await Promise.all([
+    leer('escalado_en', 'escalado'),
+    leer('recordatorio_comprobacion_en', 'recordatorio'),
+  ]);
+  return grupos.flat().sort((a, b) => b.cuando.localeCompare(a.cuando)).slice(0, limite);
 }
 
 export interface DineroObservadoTipo { tipo: string; monto: number; n: number }
@@ -323,7 +327,8 @@ export interface DineroObservadoTipo { tipo: string; monto: number; n: number }
 /**
  * El dinero observado, DESGLOSADO por tipo de diferencia (sobre política,
  * duplicado, …). `getKpis` suma el total; esta lo abre para la dona del
- * agente — misma fuente (`liquidacion.diferencias`), mismo valor absoluto.
+ * agente — misma fuente (`liquidacion.diferencias`), mismo valor absoluto,
+ * excluyendo revisiones rechazadas igual que los KPI (0344).
  */
 export async function getDineroObservadoPorTipo(tenantId: string): Promise<DineroObservadoTipo[]> {
   // AGREGADO EN SQL (mig. 0150): traía TODA `liquidacion` del tenant para
@@ -1033,19 +1038,21 @@ export async function getViajes(tenantId: string, limite = 100): Promise<ViajeRo
 export type FiltroRegistro = 'todos' | 'abiertos' | 'en_cuadre' | 'liquidados' | 'escalados';
 
 export interface LiquidacionDeViaje {
-  id: string; viajeId: string; estatus: string; comprobado: number; diferencia: number;
+  id: string; viajeId: string; estatus: string; comprobado: number | null; diferencia: number | null;
 }
 
 /** Las liquidaciones de ESTOS viajes (por `viaje_id`, no por folio: el folio
  *  es texto libre del TMS y puede repetirse). Para la página del registro:
  *  comprobado, diferencia y el link al detalle. Un viaje sin fila aquí no
- *  tiene liquidación todavía y la tabla lo dice con un guion. */
+ *  tiene liquidación todavía y la tabla lo dice con un guion. Una rechazada
+ *  conserva el enlace al historial, pero sus importes invalidados son null
+ *  (no cero): el detalle auditable sigue mostrando el cálculo y la revisión. */
 export async function getLiquidacionesDeViajes(tenantId: string, viajeIds: string[]): Promise<LiquidacionDeViaje[]> {
   if (viajeIds.length === 0) return [];
   const res = await acotada(
     supabaseAdmin()
     .from('liquidacion')
-    .select('id, viaje_id, estatus, total_comprobado, diferencia')
+    .select('id, viaje_id, estatus, revision, total_comprobado, diferencia')
     .eq('tenant_id', tenantId)
     .in('viaje_id', viajeIds),
     'getLiquidacionesDeViajes',
@@ -1054,9 +1061,9 @@ export async function getLiquidacionesDeViajes(tenantId: string, viajeIds: strin
   return filas.map((l) => ({
     id: l.id as string,
     viajeId: l.viaje_id as string,
-    estatus: (l.estatus as string) || 'cuadrada',
-    comprobado: Number(l.total_comprobado ?? 0),
-    diferencia: Number(l.diferencia ?? 0),
+    estatus: l.revision === 'rechazada' ? 'rechazada' : (l.estatus as string) || 'cuadrada',
+    comprobado: l.revision === 'rechazada' ? null : Number(l.total_comprobado ?? 0),
+    diferencia: l.revision === 'rechazada' ? null : Number(l.diferencia ?? 0),
   }));
 }
 
@@ -1295,10 +1302,15 @@ export interface LiquidacionDetalle {
    *  `id` cruza el renglón con sus `diferencias` (por `gastoId`) para pintar
    *  su estado; `fecha`, `formaPago`, `cfdiUuid` y `estadoSat` son las
    *  columnas de la tabla del detalle v2. Todo opcional: un gasto viejo sin
-   *  XML no trae forma de pago y la celda dice "—", no "Efectivo". */
+   *  XML no trae forma de pago y la celda dice "—", no "Efectivo".
+   *
+   *  `pagadoEn` es opcional pero NO prescindible (auditoría 26, FE-1): es la
+   *  segunda mitad de `pagoPendiente`, el predicado que `estadoRenglon` importa
+   *  del motor. Sin él la pregunta «¿este crédito ya se pagó?» solo tiene una
+   *  respuesta posible, y es la equivocada. */
   gastos: Array<{
     id?: string; concepto: string; monto: number; folio?: string; fecha?: string;
-    formaPago?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
+    formaPago?: string; pagadoEn?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
     ocrExtra?: Record<string, unknown>; imagenUrl?: string;
   }>;
   /** La ficha del viaje que se liquidó (22-ago-2026, detalle v2): ruta,
@@ -1436,7 +1448,13 @@ async function leerGastos(
   const res = await acotada(
     admin
     .from('gasto')
-    .select('id, concepto, monto, folio, fecha, forma_pago, cfdi_uuid, estado_sat, cfdi_valido, ocr_extra, imagen_url')
+    // AUDITORÍA 26, FE-1 (ALTO): `pagado_en` NO es opcional aquí. `74109dd` le
+    // enseñó a `estadoRenglon` a preguntar `pagoPendiente(g)` —el predicado del
+    // motor, `formaPago === '99' && !pagadoEn`— y esta consulta no traía el
+    // campo, así que la respuesta era siempre «no pagado»: todo CFDI a crédito
+    // con su REP ya ingerido salía «Por confirmar» mientras el bloque de
+    // Deducibilidad de la misma pantalla lo contaba como deducible.
+    .select('id, concepto, monto, folio, fecha, forma_pago, pagado_en, cfdi_uuid, estado_sat, cfdi_valido, ocr_extra, imagen_url')
     .eq('tenant_id', tenantId)
     .eq('viaje_id', viajeId)
     .order('fecha', { ascending: true, nullsFirst: false })
@@ -1451,6 +1469,7 @@ async function leerGastos(
     folio: (g.folio as string) || undefined,
     fecha: (g.fecha as string) || undefined,
     formaPago: (g.forma_pago as string) || undefined,
+    pagadoEn: (g.pagado_en as string) || undefined,
     cfdiUuid: (g.cfdi_uuid as string) || undefined,
     estadoSat: (g.estado_sat as string) || undefined,
     cfdiValido: g.cfdi_valido != null ? Boolean(g.cfdi_valido) : undefined,
@@ -1532,7 +1551,7 @@ async function ventanaComprobantes(
  * `filasDeducibilidad`, y por la misma razón.
  */
 type FilaImprimibleConFiscal = {
-  formaPago?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
+  formaPago?: string; pagadoEn?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
 };
 
 async function reconstruir(
@@ -1625,6 +1644,11 @@ async function reconstruir(
             folio: g.folio || undefined,
             fecha: g.fecha || undefined,
             formaPago: x.formaPago || undefined,
+            // Segunda mitad de `pagoPendiente`, igual que en `leerGastos`. Los
+            // dos caminos llenan esta misma tabla: si uno trae el campo y el
+            // otro no, la misma liquidación pinta el renglón de dos colores
+            // según un portón que el contralor no ve (auditoría 26, FE-1b).
+            pagadoEn: x.pagadoEn || undefined,
             cfdiUuid: x.cfdiUuid || undefined,
             estadoSat: x.estadoSat || undefined,
             cfdiValido: x.cfdiValido,
@@ -1945,12 +1969,15 @@ export async function getLineasPorConciliar(tenantId: string): Promise<ColaPorCo
 
 export interface LiqRow { id: string; folio: string; creadoEn: string; comprobado: number; diferencia: number; estatus: string }
 
+/** Últimos cierres vigentes: excluye rechazadas antes del límite. El historial
+ *  rechazado sigue accesible por registro/detalle y exportación explícita. */
 export async function getLiquidaciones(tenantId: string): Promise<LiqRow[]> {
   const { data, error } = await acotada(
     supabaseAdmin()
     .from('liquidacion')
     .select('id, estatus, total_comprobado, diferencia, created_at, viaje:viaje_id(folio)')
     .eq('tenant_id', tenantId)
+    .neq('revision', 'rechazada')
     .order('created_at', { ascending: false })
     .limit(50),
     'getLiquidaciones',

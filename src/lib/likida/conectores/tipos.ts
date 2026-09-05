@@ -1,3 +1,5 @@
+import { httpsPublico } from '@/lib/http/https_publico';
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CONTRATO QUE CUMPLE TODO CONECTOR — ERP, GPS, TAG y monedero.
 //
@@ -324,6 +326,9 @@ export interface PeticionHttp {
 export interface RespuestaHttp {
   estado: number;
   cuerpo: string;
+  /** Cabeceras normalizadas a minúsculas. Los pollers usan `retry-after` para
+   *  no convertir un 429 del proveedor en una tormenta de reintentos. */
+  encabezados?: Record<string, string>;
 }
 
 /** Lo que un conector necesita del mundo. En producción, `httpReal()`. */
@@ -349,16 +354,7 @@ export const TIMEOUT_PRUEBA_MS = 15_000;
  * credencial buena — el falso positivo más caro que puede tener esta capa.
  */
 export function httpReal(): Http {
-  return async ({ url, metodo, encabezados, cuerpo }: PeticionHttp): Promise<RespuestaHttp> => {
-    const r = await fetch(url, {
-      method: metodo,
-      headers: encabezados,
-      body: cuerpo,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(TIMEOUT_PRUEBA_MS),
-    });
-    return { estado: r.status, cuerpo: await r.text() };
-  };
+  return (peticion) => httpsPublico(peticion, TIMEOUT_PRUEBA_MS);
 }
 
 // ── El resultado de probar ─────────────────────────────────────────────────

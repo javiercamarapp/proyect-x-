@@ -87,7 +87,7 @@ vi.mock('@/lib/correo/enviar', () => ({ enviarCorreo: (...a: unknown[]) => envia
 const mod = await import('./reportes');
 const {
   partesMx, lunesDe, diaAnterior, lineaNorte, armarKpiDiario, armarDiagnostico,
-  armarSeccionesCiclo, detectarAnomalias, correrAgenteDireccion,
+  armarSeccionesCiclo, detectarAnomalias, correrAgenteDireccion, contarProspectosPorEstado,
 } = mod;
 
 // Lunes 24-ago-2026: 16:00Z = 10:00 de México. Martes 25, misma hora.
@@ -252,6 +252,25 @@ describe('las 6 secciones del ciclo', () => {
     pendientesCola: fuente(1),
     conteos: fuente({ liquidaciones: 11 }),
     revisar: fuente(3),
+  });
+
+  it('consulta los 14 valores persistidos y entrega 11 etapas canónicas', async () => {
+    respuestas.set('prospecto', Array.from({ length: 14 }, () => ({ count: 1, error: null })));
+    expect(await contarProspectosPorEstado()).toEqual({
+      nuevo: 1, contactado: 1, appointment: 1, rescheduled: 1,
+      cancelled: 1, 'no-show': 1, demo: 1, proposal: 2, pilot: 1,
+      won: 2, lost: 2,
+    });
+  });
+
+  it('normaliza también el resumen histórico al calcular deltas', () => {
+    const texto = armarSeccionesCiclo({
+      ...datos({ cerrado: 2, perdido: 1, negociacion: 3 }),
+      prospectos: fuente({ won: 3, lost: 1, proposal: 4 }),
+    } as never);
+    expect(texto).toContain('proposal 4 (+1)');
+    expect(texto).toContain('won 3 (+1)');
+    expect(texto).not.toContain('cerrado ');
   });
 
   it('sin semana anterior NO hay delta, y se dice que empiezan la próxima', () => {

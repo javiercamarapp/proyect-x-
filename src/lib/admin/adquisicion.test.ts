@@ -13,7 +13,10 @@ const AHORA = Date.parse('2026-08-16T18:00:00Z');
 const hace = (horas: number) => new Date(AHORA - horas * 3_600_000).toISOString();
 
 let prospectos: Array<Record<string, unknown>> = [];
-vi.mock('@/lib/likida/vendedores', () => ({ listarProspectos: async () => prospectos }));
+vi.mock('@/lib/likida/vendedores', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/likida/vendedores')>(),
+  listarProspectos: async () => prospectos,
+}));
 
 let contactos: Array<{ prospecto_id: string }> | 'error' = [];
 vi.mock('@/lib/likida/pg', () => ({
@@ -68,7 +71,7 @@ describe('alertas con umbral heredado', () => {
   it('quemados: sobre el umbral del 10%, con el absoluto al lado', async () => {
     prospectos = [
       ...Array.from({ length: 8 }, (_, i) => p({ id: `c${i}`, estado: 'contactado' })),
-      p({ id: 'p1', estado: 'perdido' }), p({ id: 'p2', estado: 'perdido' }),
+      p({ id: 'p1', estado: 'perdido' }), p({ id: 'p2', estado: 'lost' }),
     ];
     const r = await getAdquisicion(AHORA);
     const a = r.alertas.find((x) => x.id === 'leads_quemados');

@@ -98,17 +98,19 @@ export const MSG_MFA_NO_VERIFICABLE =
 // es un enlace mágico al correo: un phishing que consiga que Javier pegue un
 // código de seis dígitos entrega la base de todos los clientes.
 //
-// La palanca (`LIKIDA_SUPERADMIN_MFA=obligatorio`) existe porque encender esto
-// sin haber inscrito el factor deja a Javier fuera de su propia consola. Con
-// la palanca APAGADA (default) el comportamiento es EXACTAMENTE el de antes.
-// La secuencia de encendido está en DEPLOY.md, sección Auth.
+// En producción la exigencia está encendida por defecto. Mi perfil queda
+// exento, así que una cuenta sin factor puede inscribirlo sin abrir antes datos
+// de ninguna flota. `desactivado-temporal` es solo una válvula documentada de
+// recuperación; fuera de producción se conserva la palanca explícita para no
+// estorbar desarrollo y pruebas.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** ¿Está encendida la exigencia? Solo el valor exacto `obligatorio` la prende
- *  — un `true`, un `1` o una errata NO encienden algo que puede dejar fuera
- *  al dueño del sistema. */
+/** En producción falla cerrado por defecto. La única excepción es el valor
+ * exacto `desactivado-temporal`, pensado para recuperación y redespliegue. */
 export function mfaSuperadminObligatorio(): boolean {
-  return (process.env.LIKIDA_SUPERADMIN_MFA ?? '').trim().toLowerCase() === 'obligatorio';
+  const valor = (process.env.LIKIDA_SUPERADMIN_MFA ?? '').trim().toLowerCase();
+  if (process.env.NODE_ENV === 'production') return valor !== 'desactivado-temporal';
+  return valor === 'obligatorio';
 }
 
 export type VeredictoMfaSuperadmin =

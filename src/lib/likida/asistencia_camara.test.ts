@@ -23,8 +23,11 @@ const telefonoJefeDe = vi.hoisted(() => vi.fn(async () => '+5215512345678'));
 vi.mock('./contactos', () => ({ telefonoJefeDe }));
 
 const sendButtons = vi.hoisted(() => vi.fn(async () => 'wamid.1'));
+const encolarBotonesWhatsApp = vi.hoisted(() => vi.fn(async () => ({
+  id: 'outbox-camara-1', estado: 'pending' as const, providerMessageId: null,
+})));
 vi.mock('@/lib/meta/client', () => ({
-  MAX_CUERPO_BOTONES: 1024, sendButtons }));
+  MAX_CUERPO_BOTONES: 1024, sendButtons, encolarBotonesWhatsApp }));
 
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./presupuesto', () => ({ acotada: (q: unknown) => q }));
@@ -91,6 +94,10 @@ const EVENTO = {
   ocurridoEn: '2026-08-26T18:00:00.000Z',
   urlEvento: 'https://cloud.samsara.com/x/evt-1',
   maxG: 2.4,
+  viajeId: null,
+  operadorId: null,
+  viajeFolio: null,
+  reintento: false,
 };
 
 describe('dispararAsistenciaPorEventoCamara', () => {
@@ -104,8 +111,10 @@ describe('dispararAsistenciaPorEventoCamara', () => {
   });
 
   it('abre siniestro crítico con lesionados NULL — la cámara no da partes médicos', async () => {
-    viajes.filas = [{ id: 'v-9', operador_id: 'op-9', folio: 'F-104', estatus: 'abierto' }];
-    const r = await dispararAsistenciaPorEventoCamara(EVENTO);
+    viajes.filas = [{ id: 'v-equivocado', operador_id: 'op-equivocado', folio: 'F-MAL', estatus: 'abierto' }];
+    const r = await dispararAsistenciaPorEventoCamara({
+      ...EVENTO, viajeId: 'v-9', operadorId: 'op-9', viajeFolio: 'F-104',
+    });
     expect(r.resultado).toBe('abierta');
     expect(crearIncidencia).toHaveBeenCalledWith('t-1', expect.objectContaining({
       tipo: 'siniestro',
@@ -117,19 +126,21 @@ describe('dispararAsistenciaPorEventoCamara', () => {
       lat: 20.97,
       lng: -89.62,
     }));
+    expect(r).toMatchObject({ avisoEstado: 'encolado', avisoOutboxId: 'outbox-camara-1' });
+    expect(sendButtons).not.toHaveBeenCalled();
   });
 
   it('el aviso al jefe dice la FUENTE y que el chofer NO ha reportado', async () => {
-    viajes.filas = [{ id: 'v-9', operador_id: 'op-9', folio: 'F-104', estatus: 'abierto' }];
-    await dispararAsistenciaPorEventoCamara(EVENTO);
-    expect(sendButtons).toHaveBeenCalledTimes(1);
-    const [tel, cuerpo, botones] = sendButtons.mock.calls[0] as unknown as [string, string, Array<{ id: string }>];
+    await dispararAsistenciaPorEventoCamara({ ...EVENTO, viajeId: 'v-9', operadorId: 'op-9', viajeFolio: 'F-104' });
+    expect(encolarBotonesWhatsApp).toHaveBeenCalledTimes(1);
+    const [tel, cuerpo, botones, dedupe] = encolarBotonesWhatsApp.mock.calls[0] as unknown as [string, string, Array<{ id: string }>, string];
     expect(tel).toBe('+5215512345678');
     expect(cuerpo).toContain('cámara');
     expect(cuerpo).toContain('T-12');
     expect(cuerpo).toContain('NO ha reportado');
     expect(cuerpo).toContain('viaje F-104');
     expect(botones[0].id).toBe('asi_ok:inc-1');
+    expect(dedupe).toBe('gps:samsara:t-1:evt-1');
   });
 
   it('con expediente YA abierto e YA crítico, la detección se anota como evidencia — sin segundo 🚨', async () => {
@@ -138,7 +149,7 @@ describe('dispararAsistenciaPorEventoCamara', () => {
     const r = await dispararAsistenciaPorEventoCamara(EVENTO);
     expect(r).toMatchObject({ resultado: 'anotada_en_existente', incidenciaId: 'inc-previa' });
     expect(crearIncidencia).not.toHaveBeenCalled();
-    expect(sendButtons).not.toHaveBeenCalled();
+    expect(encolarBotonesWhatsApp).not.toHaveBeenCalled();
     expect(anotarEventoIncidencia).toHaveBeenCalledWith('t-1', 'inc-previa', 'deteccion_camara', expect.objectContaining({
       evento: 'evt-1', proveedor: 'samsara',
     }));
@@ -172,9 +183,9 @@ describe('dispararAsistenciaPorEventoCamara', () => {
 
   it('si el aviso al jefe falla, se dice en la bitácora — no se finge', async () => {
     viajes.filas = [{ id: 'v-9', operador_id: 'op-9', folio: null, estatus: 'abierto' }];
-    sendButtons.mockResolvedValueOnce('' as never);
+    encolarBotonesWhatsApp.mockResolvedValueOnce(null as never);
     const r = await dispararAsistenciaPorEventoCamara(EVENTO);
-    expect(r).toMatchObject({ resultado: 'abierta', avisado: false });
+    expect(r.resultado).toBe('fallo');
     expect(anotarEventoIncidencia).toHaveBeenCalledWith('t-1', 'inc-1', 'aviso_jefe_fallido', expect.anything());
   });
 
@@ -184,14 +195,17 @@ describe('dispararAsistenciaPorEventoCamara', () => {
     viajes.filas = [{ id: 'v-9', operador_id: 'op-9', folio: 'F-104', estatus: 'abierto' }];
     abierta.v = { id: 'inc-varado', tipo: 'varado', prioridad: 'alta' };
     const r = await dispararAsistenciaPorEventoCamara(EVENTO);
-    expect(r).toMatchObject({ resultado: 'anotada_en_existente', incidenciaId: 'inc-varado', avisado: true });
+    expect(r).toMatchObject({
+      resultado: 'anotada_en_existente', incidenciaId: 'inc-varado',
+      avisoEstado: 'encolado', avisoOutboxId: 'outbox-camara-1',
+    });
     expect(crearIncidencia).not.toHaveBeenCalled();
     // La fila se actualizó: siniestro crítico, reconocimiento borrado.
     expect(updates.incidencia[0]).toMatchObject({
       tipo: 'siniestro', prioridad: 'critica', reconocida_en: null, reconocida_por: null,
     });
     // Y el 🚨 salió — anotar en silencio era el bug.
-    expect(sendButtons).toHaveBeenCalledTimes(1);
+    expect(encolarBotonesWhatsApp).toHaveBeenCalledTimes(1);
     expect(anotarEventoIncidencia).toHaveBeenCalledWith('t-1', 'inc-varado', 'escalada', expect.objectContaining({
       de: 'varado', a: 'siniestro', fuente: 'camara',
     }));
@@ -203,7 +217,7 @@ describe('dispararAsistenciaPorEventoCamara', () => {
     const r = await dispararAsistenciaPorEventoCamara(EVENTO);
     expect(r).toMatchObject({ resultado: 'anotada_en_existente', incidenciaId: 'inc-robo' });
     expect(updates.incidencia).toHaveLength(0);
-    expect(sendButtons).not.toHaveBeenCalled();
+    expect(encolarBotonesWhatsApp).not.toHaveBeenCalled();
   });
 
   it('c2-3: si la escalada no se pudo escribir, el resultado es FALLO — el barrido lo reintenta', async () => {
@@ -212,7 +226,7 @@ describe('dispararAsistenciaPorEventoCamara', () => {
     updates.fallaProximo = true;
     const r = await dispararAsistenciaPorEventoCamara(EVENTO);
     expect(r.resultado).toBe('fallo');
-    expect(sendButtons).not.toHaveBeenCalled();
+    expect(encolarBotonesWhatsApp).not.toHaveBeenCalled();
   });
 
   it('c2-6: dos viajes con choferes DISTINTOS cubriendo el instante = ambiguo — expediente por unidad, no se adivina chofer', async () => {
@@ -229,7 +243,9 @@ describe('dispararAsistenciaPorEventoCamara', () => {
 
   it('c2-6: el viaje recién cerrado (en_cuadre) del MISMO chofer sigue siendo la ruta al operador', async () => {
     viajes.filas = [{ id: 'v-a', operador_id: 'op-a', folio: 'F-1', estatus: 'en_cuadre' }];
-    const r = await dispararAsistenciaPorEventoCamara(EVENTO);
+    const r = await dispararAsistenciaPorEventoCamara({
+      ...EVENTO, viajeId: 'v-a', operadorId: 'op-a', viajeFolio: 'F-1',
+    });
     expect(r.resultado).toBe('abierta');
     expect(crearIncidencia).toHaveBeenCalledWith('t-1', expect.objectContaining({
       viajeId: 'v-a', operadorId: 'op-a', unidadId: 'u-1',

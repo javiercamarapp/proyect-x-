@@ -94,6 +94,7 @@ import { atenderConfirmacion, aceptarPorActividad } from './confirmar_viaje';
 import { enviarBriefingInicio } from './briefing_inicio_wa';
 import { transcribirNotaDeVoz, RESPUESTA_NO_ENTENDI, RESPUESTA_SIN_PRESUPUESTO } from './voz_transcrita';
 import { avisarCierreAlJefe } from './avisar_cierre';
+import { rutaPdfOperador } from './liquidacion/rutas_pdf';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { alertarOperador } from '@/lib/observability/alerta';
@@ -143,6 +144,18 @@ export interface InboundMessage {
    *  00-PANEL-DE-QA.md §3 (carril rápido): vi.mock cubre al ejército bajo
    *  vitest, pero no existe dentro del runtime de Next/Vercel. */
   mediaDataUrlQA?: string;
+}
+
+/** La misma conservación y el mismo acuse para oficina, con y sin viaje. */
+async function conservarNotaCredito(tenantId: string, uuid: string, xmlText: string): Promise<string> {
+  let guardado = false;
+  try {
+    guardado = await saveCfdiXmlRaw(tenantId, uuid, null, xmlText);
+  } catch (e) {
+    logger.warn('xml.nota_credito_no_guardada', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+  }
+  if (!guardado) return 'Ese XML es una *nota de crédito*, no un gasto. No pude guardar el archivo; reenvíalo para conservarlo. No registré ni concilié sus conceptos como gastos.';
+  return 'Ese XML es una *nota de crédito* (comprobante de egreso), no un gasto 🧾. No la registro como deducible — es una devolución o bonificación sobre otra factura. Guardé el archivo; si el gasto original no está registrado, mándame su ticket o su XML de ingreso.';
 }
 
 /**
@@ -788,8 +801,9 @@ async function atenderTextoOficina(
  *   · 'duplicado'   — YA se había procesado (claim completado): sellar.
  *   · 'en_curso'    — otra invocación lo tiene en vuelo: ni sellar ni contar
  *                     como fallo; la siguiente vuelta del cron decide.
- *   · 'sin_tiempo'  — la invocación ya no tiene presupuesto para empezarlo:
- *                     no se tocó nada, que lo recupere el cron.
+ *   · 'sin_tiempo'  — la invocación no tiene presupuesto, o una barrera de
+ *                     cierre no pudo confirmar que los insumos estén completos:
+ *                     no consumir el intento durable; que lo recupere el cron.
  *   · 'reintentable'— se abandonó a medias por un fallo NUESTRO y transitorio
  *                     (mutex ocupado, +1 de la barrera, aviso caído, crash):
  *                     el claim se soltó, la fila durable debe reintentar.
@@ -1053,7 +1067,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
   } else {
     try {
       // El ejemplar del OPERADOR (`tools.ts`), igual que el camino feliz.
-      const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${liq.viajeId}-operador.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.reentrega');
+      const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(rutaPdfOperador(liq.pdfUrl, op.tenantId, liq.viajeId), TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.reentrega');
       if (firma.error || !firma.data?.signedUrl) throw new Error(firma.error?.message ?? 'storage no devolvió URL firmada');
       const r = await sendDocument(telefono, firma.data.signedUrl, 'liquidacion.pdf', 'Aquí está tu liquidación 📄');
       if (!r.ok) {
@@ -1062,7 +1076,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
         pdf = 'fallo';
       } else {
         await registrarCostoWhatsApp(op.tenantId, liq.viajeId);
-        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en');
+        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en', liq.pdfUrl);
         pdf = 'mandado';
       }
     } catch (e) {
@@ -1079,7 +1093,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
     try {
       let urlPdfJefe: string | null = null;
       if (liq.pdfUrl) {
-        const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${liq.viajeId}.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
+        const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(liq.pdfUrl, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
         if (firma.error || !firma.data?.signedUrl) logger.warn('cierre.pdf_jefe_sin_url', { ...ctx, err: firma.error?.message ?? 'storage no devolvió URL firmada' });
         else urlPdfJefe = firma.data.signedUrl;
       }
@@ -1090,7 +1104,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
       // el PDF, ya no queda ningún turno futuro que lo reintente.
       const pdfJefeOk = !liq.pdfUrl || rj.pdfEnviado === true;
       if (rj.enviado && pdfJefeOk) {
-        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'avisada_oficina_en');
+        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'avisada_oficina_en', liq.pdfUrl);
         jefe = 'avisado';
       } else {
         logger.warn('cierre.jefe_no_avisado', { ...ctx, motivo: rj.motivo, pdfJefeOk });
@@ -1165,22 +1179,41 @@ const TTL_FIRMA_PDF_SEGUNDOS = 900;
  * Tres respuestas, nunca dos: si la lectura truena, `no_verificable` — un
  * error de red no puede leerse como «no se cerró».
  */
+const RESPUESTA_CIERRE_RECHAZADO = 'Tu liquidación sigue rechazada y el viaje sigue abierto. Revisa con tu contralor el motivo y corrige o completa los comprobantes; después escribe *listo* para volver a cuadrar.';
+
 async function confirmarCierreEnBase(tenantId: string, viajeId: string): Promise<
   | { estado: 'cerrado'; liqId: string; registro: ToolCallRecord }
-  | { estado: 'abierto' }
+  | { estado: 'abierto'; rechazada?: boolean }
   | { estado: 'no_verificable'; err: string }
 > {
   try {
-    const liq = await getLiquidacionDeViaje(tenantId, viajeId);
-    if (!liq) return { estado: 'abierto' };
-    const hayPdf = liq.pdfUrl != null;
+    // Una fila histórica rechazada sigue existiendo mientras el viaje vuelve
+    // a cuadre. Leer ambos estados y el puntero en UN snapshot evita tomarla
+    // por un commit nuevo después de que guardar_liquidacion_tx falló.
+    const { data, error } = await acotada(supabaseAdmin().from('liquidacion')
+      .select('id,pdf_url,revision,viaje:viaje_id(estatus)')
+      .eq('tenant_id', tenantId).eq('viaje_id', viajeId).maybeSingle(), 'confirmarCierreEnBase');
+    if (error) throw new Error(`confirmarCierreEnBase: ${error.message}`);
+    if (!data) return { estado: 'abierto' };
+    const liq = data as unknown as { id: string; pdf_url: string | null; revision: string; viaje: { estatus: string } | null };
+    const estadoViaje = liq.viaje?.estatus;
+    if (typeof liq.id !== 'string' || !liq.id || (liq.pdf_url !== null && typeof liq.pdf_url !== 'string')) {
+      return { estado: 'no_verificable', err: 'La lectura del cierre está incompleta' };
+    }
+    if (liq.revision === 'rechazada' && (estadoViaje === 'abierto' || estadoViaje === 'en_cuadre')) {
+      return { estado: 'abierto', rechazada: true };
+    }
+    if (estadoViaje !== 'liquidado' || !['pendiente', 'aprobada', 'ajustada'].includes(liq.revision)) {
+      return { estado: 'no_verificable', err: 'La liquidación y el viaje no confirman un cierre vigente coherente' };
+    }
+    const hayPdf = liq.pdf_url != null;
     return {
       estado: 'cerrado',
       liqId: liq.id,
       registro: {
         toolName: 'guardar_liquidacion',
         args: {},
-        result: { liquidacion_id: liq.id, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
+        result: { liquidacion_id: liq.id, pdf_url: liq.pdf_url, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
         durationMs: 0,
       } as ToolCallRecord,
     };
@@ -1286,8 +1319,10 @@ export async function processInbound(msg: InboundMessage, opts: OpcionesInbound 
   // El claim se suelta SOLO por aquí, para saber al salir si el turno se
   // abandonó (→ 'reintentable') o llegó al final (→ se sella como completado).
   let claimLiberado = false;
-  const soltarClaim = async (): Promise<void> => {
+  let pospuestoSinConsumirIntento = false;
+  const soltarClaim = async (sinConsumirIntento = false): Promise<void> => {
     claimLiberado = true;
+    pospuestoSinConsumirIntento ||= sinConsumirIntento;
     if (msg.waMessageId) {
       if (messageClaim.token) await releaseMessageClaim(msg.waMessageId, messageClaim.token, messageClaim.owner);
       else await releaseMessageClaim(msg.waMessageId);
@@ -1303,7 +1338,7 @@ export async function processInbound(msg: InboundMessage, opts: OpcionesInbound 
     detenerRenovacionMessage();
   }
 
-  if (claimLiberado) return 'reintentable';
+  if (claimLiberado) return pospuestoSinConsumirIntento ? 'sin_tiempo' : 'reintentable';
   if (msg.waMessageId) {
     if (messageClaim.token) await completarMessageClaim(msg.waMessageId, messageClaim.token, messageClaim.owner);
     else await completarMessageClaim(msg.waMessageId);
@@ -1313,7 +1348,7 @@ export async function processInbound(msg: InboundMessage, opts: OpcionesInbound 
 
 /** El turno propiamente: todo lo que había en `processInbound` menos el
  *  claim y el reloj. Nunca lanza (el `catch` general vive aquí). */
-async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClaim: () => Promise<void>, opts: OpcionesInbound): Promise<void> {
+async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClaim: (sinConsumirIntento?: boolean) => Promise<void>, opts: OpcionesInbound): Promise<void> {
   let lockedViaje: string | null = null;
   /** BE-11: la firma del lease que TOMÓ este turno; solo con ella se suelta. */
   let tokenViaje: string | undefined;
@@ -1412,6 +1447,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
                 await sendText(msg.from, mensajeRepRecibido(resumen));
                 return;
               }
+            }
+            if (xml?.uuid && xml.tipoComprobante === 'E') {
+              await sendText(msg.from, await conservarNotaCredito(cuenta.tenantId, xml.uuid, xmlText!));
+              return;
             }
             if (xml?.uuid && esConsolidado(xml)) {
               logger.info('oficina.xml_consolidado', { tenant: cuenta.tenantId, user: cuenta.userId, uuid: xml.uuid, lineas: xml.lineas.length });
@@ -1767,6 +1806,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // natural para recibirlo: no hace falta viaje de contexto porque el
         // consolidado nunca lo usó. Va ANTES del camino de ticket 1:1 de
         // abajo, que asume 1 CFDI = 1 gasto.
+        if (xml?.uuid && xml.tipoComprobante === 'E') {
+          await sendText(msg.from, await conservarNotaCredito(op.tenantId, xml.uuid, xmlText!));
+          return;
+        }
         if (xml?.uuid && esConsolidado(xml)) {
           const resumen = await guardarYConciliarConsolidado(op.tenantId, xml, xmlText!);
           logger.info('xml.consolidado_sin_viaje', { tenant: op.tenantId, operador: op.operadorId, uuid: xml.uuid, ...resumen });
@@ -2172,8 +2215,31 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // Cuesta un SHA-256 sobre los bytes que ya están en memoria, al lado de
         // una llamada de visión de ~$0.015. No es una decisión de costo.
         const imgHash = await hashImagen(dataUrl);
+        const resolverIncidenteOcrDeEstaFoto = async (): Promise<void> => {
+          try {
+            const incidentes = await getHuerfanos(op.tenantId, op.operadorId, {
+              viajeId, soloFalloOcr: true, fallarCerrado: true,
+            });
+            const ids = incidentes
+              .filter((h) => h.gasto.imgHash === imgHash)
+              .map((h) => h.id);
+            if (ids.length) {
+              const sellados = await resolverHuerfanos(op.tenantId, ids, 'adjuntado', viajeId);
+              if (!sellados) logger.error('foto.fallo_ocr_no_resuelto', { viaje: viajeId, tenant: op.tenantId, ids });
+            }
+          } catch (e) {
+            // El gasto válido ya está (o ya estaba) en la base. No se revierte;
+            // el incidente queda abierto y, por diseño, seguirá bloqueando el
+            // cierre hasta que esta resolución durable se pueda escribir.
+            logger.error('foto.fallo_ocr_resolucion_ilegible', {
+              viaje: viajeId, tenant: op.tenantId,
+              err: e instanceof Error ? e.message : String(e),
+            });
+          }
+        };
         if (await gastoExistePorHash(viajeId, imgHash, op.tenantId)) {
           logger.info('foto.dedup', { viaje: viajeId });
+          await resolverIncidenteOcrDeEstaFoto();
           // EL SILENCIO ES CORRECTO… SALVO CUANDO ESA FOTO ES LA QUE SE PIDIÓ.
           //
           // Fallo del ensayo del 1-ago: se le pidió otra foto de un ticket con
@@ -2195,7 +2261,6 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           // anota en la libreta (no se manda nada por sí sola: para una foto
           // suelta el silencio SIGUE siendo lo correcto) y el resumen de la
           // ráfaga dice «*1* venía repetida (ya la tenía)».
-          let avisadaPorFecha = false;
           try {
             const [previo, v] = await Promise.all([
               gastoPorHash(viajeId, imgHash, op.tenantId),
@@ -2203,14 +2268,14 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             ]);
             if (previo && v && fechaDudosa(previo.fecha, v)) {
               await say(`Esa es la *misma foto* que ya me habías mandado 🔁, así que la fecha sigue igual. Necesito una foto *nueva* de ese ticket de ${mxn(previo.monto)} —tomada otra vez, no reenviada— enfocando la parte donde viene la fecha. 📸`);
-              avisadaPorFecha = true;
+            } else {
+              anotarIncidencia(viajeId, { tipo: 'repetida', monto: previo?.monto ?? null });
             }
-            if (!avisadaPorFecha) anotarIncidencia(viajeId, { tipo: 'repetida', monto: previo?.monto ?? null });
           } catch (e) {
             // Best-effort: el dedup ya hizo su trabajo. Fallar aquí no puede
             // costar un gasto, solo un aviso.
             logger.warn('foto.dedup_aviso_falló', { err: e instanceof Error ? e.message : String(e) });
-            if (!avisadaPorFecha) anotarIncidencia(viajeId, { tipo: 'repetida' });
+            anotarIncidencia(viajeId, { tipo: 'repetida' });
           }
           return; // ya la teníamos: no re-OCR, no duplicar gasto
         }
@@ -2341,7 +2406,11 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           // congelaba antes de que resolviera, no quedaba ni la imagen.
           const ruta = await subida;
           const guardado = await guardarHuerfano(op.tenantId, op.operadorId, {
-            gasto: ruta ? { ...gasto, imagenUrl: ruta } : gasto,
+            gasto: {
+              ...gasto,
+              imgHash,
+              ...(ruta ? { imagenUrl: ruta } : {}),
+            },
             // `fallo_ocr` y ya no `sin_viaje` (4-ago-2026). La nota anterior
             // decía que el motivo real era éste y que se dejaba pendiente por
             // no tocar `repo.ts`; se tocó, y la columna es `text` a secas sin
@@ -2349,7 +2418,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             // `sin_viaje` describía el efecto y escondía la causa: la foto no
             // se quedó fuera por no haber viaje —lo hay—, sino porque se cayó
             // NUESTRO OCR.
-            motivo: 'fallo_ocr', rutaImagen: ruta,
+            motivo: 'fallo_ocr', rutaImagen: ruta, viajeId,
           });
           logger.warn('foto.fallo_tecnico_guardado', { viaje: viajeId, tenant: op.tenantId, guardado, conImagen: Boolean(ruta) });
           // SE ANOTA SIEMPRE, y con ella el texto que le tocaría si resultara
@@ -2517,6 +2586,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             ...(msg.waMessageId ? { waMessageId: msg.waMessageId } : {}),
             ...(imagenUrl ? { imagenUrl } : {}),
           });
+          await resolverIncidenteOcrDeEstaFoto();
         } catch (e) {
           // R1: dos fotos IDÉNTICAS en el mismo lote pasan el pre-check antes de
           // que cualquiera inserte; el índice único (mig. 0015) atrapa la 2ª con
@@ -3049,8 +3119,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // XML sí se conserva (CFF 30); lo que no se hace es contarlo como gasto.
         if (xml.tipoComprobante === 'E') {
           logger.warn('xml.nota_credito', { tenant: op.tenantId, viaje: viajeId, uuid: xml.uuid });
-          await saveCfdiXmlRaw(op.tenantId, xml.uuid, null, xmlText!);
-          await say('Ese XML es una *nota de crédito* (comprobante de egreso), no un gasto 🧾. No la registro como deducible — es una devolución o bonificación sobre otra factura. Guardé el archivo; si el gasto original no está registrado, mándame su ticket o su XML de ingreso.');
+          await say(await conservarNotaCredito(op.tenantId, xml.uuid, xmlText!));
           return;
         }
 
@@ -3613,13 +3682,29 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // SÓLO SE DESCARTA LO QUE PARECE UN CIERRE, y sólo eso. Un "¿cuánto llevo?"
     // viejo contestado contra el viaje nuevo es una respuesta rara; un "listo"
     // viejo es una liquidación en ceros. Y hace falta la hora de Meta: sin ella
-    // (QA, simulador, un timestamp ilegible) no se descarta nada — no se
-    // adivina, se sigue como siempre.
+    // (QA, simulador, un timestamp ilegible) no se puede demostrar causalidad
+    // y el cierre se aplaza sin consumir el intento.
     //
+    const cierreSolicitado = pidioCerrar(msg.text);
+    const timestampCierreMs = typeof msg.timestampMs === 'number'
+      && Number.isFinite(msg.timestampMs) && msg.timestampMs > 0
+      ? msg.timestampMs
+      : null;
+
+    // Sin una hora válida de Meta no se puede demostrar qué fotos precedían al
+    // «listo». Es incertidumbre causal, no permiso para cerrar: se conserva la
+    // fila durable y el cron vuelve a intentar sin consumir el intento.
+    if (cierreSolicitado && timestampCierreMs === null) {
+      logger.warn('cierre.timestamp_indeterminado', {
+        viaje: viajeId, tenant: op.tenantId, timestamp: msg.timestampMs ?? null,
+      });
+      await soltarClaim(true);
+      return;
+    }
+
     // La consulta corre SÓLO en este caso —texto que parece cierre y con hora
-    // de Meta—, no en cada mensaje, y es FAIL-OPEN (`null` = no se supo → no se
-    // descarta): tirar un "listo" bueno deja al chofer sin cerrar y sin
-    // entender por qué, que es peor que dejar pasar uno viejo.
+    // de Meta—, no en cada mensaje. Esta guardia distingue un cierre atrasado;
+    // las barreras posteriores siguen siendo fail-closed ante lecturas dudosas.
     if (msg.timestampMs && pareceCierre(msg.text)) {
       const abiertoDesde = await viajeAbiertoDesdeMs(op.tenantId, viajeId);
       if (abiertoDesde != null && msg.timestampMs < abiertoDesde) {
@@ -3633,10 +3718,18 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     }
 
     // BARRERA DE RÁFAGA: espera a que terminen los OCR de fotos en vuelo antes de
-    // cuadrar — así "listo" nunca cierra sobre datos parciales. NUNCA es infinito:
-    // si vence, se cuadra con lo que haya y se avisa al operador.
+    // cuadrar. El timeout o una lectura indeterminada NO autorizan el cierre:
+    // se libera el claim y la fila durable conserva su intento para que el cron
+    // vuelva a ejecutar el mismo "listo". Dormir unos segundos no es la garantía;
+    // la garantía es que nunca se llama al agente mientras la barrera no diga sí.
     const intakeOk = await esperarIntake(viajeId, reloj.acotar(20_000));
-    if (!intakeOk) logger.warn('intake.barrera_timeout', { viaje: viajeId, restanteMs: reloj.restante() });
+    if (!intakeOk) {
+      logger.warn('intake.barrera_timeout', { viaje: viajeId, restanteMs: reloj.restante(), cierreSolicitado });
+      if (cierreSolicitado) {
+        await soltarClaim(true);
+        return;
+      }
+    }
 
     // ── AUDITORÍA 24 · AGEN-6 (MEDIO): EL «LISTO» ADELANTADO ────────────────
     //
@@ -3650,11 +3743,44 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // Se pregunta aquí y no antes a propósito: después de la barrera la foto
     // ya tuvo su ventana para llegar a la tabla. Y solo para un «listo» con
     // hora de Meta — sin ella no se adivina, igual que la guardia de arriba.
-    if (msg.timestampMs && pareceCierre(msg.text) && await fotoAnteriorSinProcesar(msg.from, msg.timestampMs)) {
-      logger.warn('cierre.foto_anterior_pendiente', { viaje: viajeId, tenant: op.tenantId, mensajeMs: msg.timestampMs });
-      await say('Todavía me falta leer una foto que mandaste *antes* de este *listo* 📸. Dame un momento y cierro tu liquidación con ella adentro — no la vuelvas a mandar.');
-      await soltarClaim();
-      return;
+    if (cierreSolicitado) {
+      const fotoAnterior = await fotoAnteriorSinProcesar(msg.from, timestampCierreMs!);
+      if (fotoAnterior !== false) {
+        logger.warn(fotoAnterior
+          ? 'cierre.foto_anterior_pendiente'
+          : 'cierre.foto_anterior_indeterminada', {
+          viaje: viajeId, tenant: op.tenantId, mensajeMs: timestampCierreMs,
+        });
+        await soltarClaim(true);
+        return;
+      }
+    }
+
+    // Una imagen que sí llegó pero cuyo OCR falló es también un insumo causal
+    // pendiente. La fila huérfana conserva la evidencia y ahora lleva viaje_id;
+    // hasta que se resuelva, el cierre queda aplazado. La consulta es
+    // deliberadamente fail-closed: `[]` solo significa vacío si Postgres lo
+    // confirmó, no si la lectura se cayó.
+    if (cierreSolicitado) {
+      try {
+        const incidentes = await getHuerfanos(op.tenantId, op.operadorId, {
+          viajeId,
+          soloFalloOcr: true,
+          fallarCerrado: true,
+        });
+        if (incidentes.length > 0) {
+          logger.warn('cierre.ocr_pendiente', { viaje: viajeId, tenant: op.tenantId, n: incidentes.length });
+          await soltarClaim(true);
+          return;
+        }
+      } catch (e) {
+        logger.error('cierre.ocr_pendiente_ilegible', {
+          viaje: viajeId, tenant: op.tenantId,
+          err: e instanceof Error ? e.message : String(e),
+        });
+        await soltarClaim(true);
+        return;
+      }
     }
 
     // Mutex para serializar cierres concurrentes (dos "listo" a la vez).
@@ -3874,7 +4000,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           reply = 'No pude confirmar cómo va tu liquidación. En un minuto escríbeme *listo* otra vez y te lo digo. 🙏';
         } else {
           logger.warn('agent.cierre_fallido_viaje_sigue_abierto', { tenant: op.tenantId, viaje: viajeId });
-          colofon = 'Tu viaje sigue abierto (todavía *NO* cerré tu liquidación).';
+          if (enBase.rechazada) {
+            reply = RESPUESTA_CIERRE_RECHAZADO;
+            colofon = '';
+          } else colofon = 'Tu viaje sigue abierto (todavía *NO* cerré tu liquidación).';
         }
       }
       ctxCerro = closed;
@@ -3955,6 +4084,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       // error de red no puede leerse como «no se cerró».
       let cierreParcial: ToolCallRecord | undefined =
         recuperar ? parcial?.find((t) => t.toolName === 'guardar_liquidacion' && !t.error) : undefined;
+      let cierreRechazado = false;
+      let cierreNoVerificable = false;
       if (recuperar && !cierreParcial && parcial?.some((t) => t.toolName === 'guardar_liquidacion')) {
         // AGEN-A1/BE-1: el MISMO registro sintético que el camino feliz, con
         // el vocabulario de la tool (`pdf_generado`), que es lo que leen los
@@ -3965,6 +4096,9 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           cierreParcial = enBase.registro;
         } else if (enBase.estado === 'no_verificable') {
           logger.error('agent.cierre_no_verificable', { viaje: viajeId, err: enBase.err });
+          cierreNoVerificable = true;
+        } else {
+          cierreRechazado = enBase.rechazada === true;
         }
       }
       if (cierreParcial) {
@@ -4047,6 +4181,13 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             // Si NI ESO se puede, se queda el mensaje de arriba: es la verdad.
             logger.error('agent.degradado_fallo', { viaje: viajeId, err: eDeg instanceof Error ? eDeg.message : String(eDeg) });
           }
+        }
+        if (cierreRechazado) {
+          reply = RESPUESTA_CIERRE_RECHAZADO;
+          colofon = '';
+        } else if (cierreNoVerificable) {
+          reply = 'No pude confirmar cómo va tu liquidación. En un minuto escríbeme *listo* otra vez y te lo digo. 🙏';
+          colofon = '';
         }
       }
     }
@@ -4247,13 +4388,20 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       // del operador.
       const pdfContralorGenerado = Boolean((guardado?.result as { pdf_contralor_generado?: boolean } | undefined)?.pdf_contralor_generado);
       const liqIdCerrada = (guardado?.result as { liquidacion_id?: string } | undefined)?.liquidacion_id;
+      const resultadoPdf = guardado?.result as { pdf_url?: string | null } | undefined;
+      let pdfPathCerrado = resultadoPdf?.pdf_url ?? null;
+      if (!resultadoPdf || !('pdf_url' in resultadoPdf)) {
+        try { pdfPathCerrado = (await getLiquidacionDeViaje(op.tenantId, viajeId))?.pdfUrl ?? null; }
+        catch { logger.warn('cierre.pdf_puntero_no_leido', { tenant: op.tenantId, viaje: viajeId }); }
+      }
       if (!pdfContralorGenerado) {
         logger.error('pdf.contralor_no_generado', { tenant: op.tenantId, viaje: viajeId, liqId: liqIdCerrada });
       }
       try {
         if (!pdfGenerado) throw new Error('la tool reportó pdf_generado=false');
         // El ejemplar del OPERADOR, no el completo: ver `tools.ts`.
-        const path = `${op.tenantId}/${viajeId}-operador.pdf`;
+        if (!pdfPathCerrado) throw new Error('El cierre no tiene pareja PDF publicada');
+        const path = rutaPdfOperador(pdfPathCerrado, op.tenantId, viajeId);
         // AUDITORÍA 8, ALTO REINCIDENTE: `createSignedUrl` seguía crudo, sin
         // `acotada` — el único de los 13 pasos del cierre que faltaba en este
         // archivo. Ya está dentro de un try/catch que lo maneja bien; lo que
@@ -4300,7 +4448,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           await registrarCostoWhatsApp(op.tenantId, viajeId);
           // AGEN-4: sello de entrega — el reintento de un «listo» no vuelve a
           // mandar este PDF.
-          await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'entregada_operador_en');
+          await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'entregada_operador_en', pdfPathCerrado);
         }
 
       } catch (e) {
@@ -4366,8 +4514,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         logger.warn('cierre.jefe_omitido_sin_margen', { tenant: op.tenantId, viaje: viajeId, margenRealMs });
       } else try {
         let urlPdfJefe: string | null = null;
-        if (pdfContralorGenerado) {
-          const firma = await acotada(supabaseAdmin().storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${viajeId}.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
+        if (pdfContralorGenerado && pdfPathCerrado) {
+          const firma = await acotada(supabaseAdmin().storage.from('liquidaciones').createSignedUrl(pdfPathCerrado, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
           if (firma.error || !firma.data?.signedUrl) {
             logger.warn('cierre.pdf_jefe_sin_url', { viaje: viajeId, err: firma.error?.message ?? 'storage no devolvió URL firmada' });
           } else {
@@ -4387,7 +4535,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         if (!rj.enviado) logger.warn('cierre.jefe_no_avisado', { viaje: viajeId, motivo: rj.motivo });
         else if (!pdfJefeOk) logger.warn('cierre.jefe_avisado_sin_pdf', { viaje: viajeId, teniaUrlFirmada: urlPdfJefe != null });
         // AGEN-4: sello — el reintento de un «listo» no vuelve a avisar.
-        else await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en');
+        else await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en', pdfPathCerrado);
       } catch (e) {
         logger.error('cierre.aviso_jefe_falló', { viaje: viajeId, err: e instanceof Error ? e.message : String(e) });
       }

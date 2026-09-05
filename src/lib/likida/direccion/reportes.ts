@@ -42,6 +42,11 @@ import {
 import { getBandejaEscalaciones, NOMBRE_FUENTE, type BandejaEscalaciones } from '@/lib/admin/escalaciones';
 import { estadoLatidos, type CronId, type SaludCron } from '@/lib/admin/salud';
 import { enviarCorreo } from '@/lib/correo/enviar';
+import {
+  ESTADOS_PROSPECTO,
+  ESTADOS_PROSPECTO_PERSISTIDOS,
+  normalizarConteosProspecto,
+} from '@/lib/likida/vendedores';
 
 export const AGENTES_DIRECCION = ['kpi_whatsapp', 'desempeno_startup', 'orquestador', 'orquestador_semanal'] as const;
 export type AgenteDireccion = (typeof AGENTES_DIRECCION)[number];
@@ -106,7 +111,6 @@ async function contarExacto(tabla: string, etiqueta: string, filtro: (b: unknown
   return count;
 }
 
-const ESTADOS_PROSPECTO = ['nuevo', 'contactado', 'demo', 'negociacion', 'cerrado', 'perdido'] as const;
 const ESTADOS_FACTURA_SAAS = ['pendiente', 'pagada', 'fallida', 'cancelada'] as const;
 /** Los cuatro estados "vivos" de `suscripcion` (0052) — cancelada no cuenta. */
 const ESTADOS_SUSCRIPCION_VIVA = ['prueba', 'activa', 'morosa', 'pausada'];
@@ -122,6 +126,15 @@ async function contarPorEstado(tabla: string, estados: readonly string[], etique
     await contarExacto(tabla, `${etiqueta}/${e}`, (b) => (b as { eq: (c: string, v: string) => unknown }).eq('estado', e)),
   ] as const));
   return Object.fromEntries(pares);
+}
+
+/** Lee los 14 valores aceptados por el CHECK y devuelve los 11 significados
+ * canónicos. Exportada para fijar con prueba el contrato del reporte. */
+export async function contarProspectosPorEstado(): Promise<Record<string, number>> {
+  const crudos = await contarPorEstado('prospecto', ESTADOS_PROSPECTO_PERSISTIDOS, 'direccion.prospectos');
+  return normalizarConteosProspecto(
+    Object.entries(crudos).map(([estado, n]) => ({ estado, n })),
+  );
 }
 
 // ── El estado reciente de TODOS los agentes con corrida ────────────────────
@@ -427,10 +440,15 @@ export function armarSeccionesCiclo(d: DatosCiclo): string {
   if (d.prospectos.error || !d.prospectos.valor) {
     s.push(`1. VENTAS — ${SIN_DATO('no se pudo leer el kanban de prospectos')}`);
   } else {
-    const p = d.prospectos.valor;
-    const renglon = ESTADOS_PROSPECTO.map((e) => {
-      const n = p[e] ?? 0;
-      const prev = d.prospectosPrev?.[e];
+    const p = normalizarConteosProspecto(
+      Object.entries(d.prospectos.valor).map(([estado, n]) => ({ estado, n })),
+    );
+    const previos = d.prospectosPrev === null ? null : normalizarConteosProspecto(
+      Object.entries(d.prospectosPrev).map(([estado, n]) => ({ estado, n })),
+    );
+    const renglon = ESTADOS_PROSPECTO.map(({ valor: e }) => {
+      const n = p[e];
+      const prev = previos?.[e];
       const delta = typeof prev === 'number' && n !== prev ? ` (${n > prev ? '+' : ''}${n - prev})` : '';
       return `${e} ${n}${delta}`;
     }).join(' · ');
@@ -623,7 +641,7 @@ async function leerDatosDiagnostico(dia: string): Promise<{ datos: DatosDiagnost
 async function leerDatosCiclo(lunes: string): Promise<{ datos: DatosCiclo; ciegas: string[] }> {
   const inicioSemana = inicioDiaMx(lunes);
   const [prospectos, facturas, piezas, pendientes, conteos, revisar, prev] = await Promise.all([
-    porValor('prospectos por estado', () => contarPorEstado('prospecto', ESTADOS_PROSPECTO, 'direccion.prospectos')),
+    porValor('prospectos por estado', () => contarProspectosPorEstado()),
     porValor('facturas SaaS por estado', () => contarPorEstado('factura_saas', ESTADOS_FACTURA_SAAS, 'direccion.factura_saas')),
     // c5-9: la columna de cola_aprobacion es `creado_en` (0117) — con
     // `created_at` PostgREST devolvía 42703 y esta fuente nacía MUERTA: el

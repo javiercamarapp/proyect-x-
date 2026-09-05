@@ -46,6 +46,11 @@ import { encolarPieza } from './cola';
 import { registrarCorrida, type DisparoCorrida } from './corridas';
 import { insumosPendientes, marcarInsumosProcesados, type InsumoAgente } from './insumos';
 import { logger } from '@/lib/logger';
+import {
+  ESTADOS_PROSPECTO,
+  ESTADOS_PROSPECTO_PERSISTIDOS,
+  normalizarConteosProspecto,
+} from '@/lib/likida/vendedores';
 
 export const AGENTES_FINANCIEROS = ['analista_metricas', 'control_costos', 'tesoreria', 'cierre_mensual'] as const;
 export type AgenteFinanciero = (typeof AGENTES_FINANCIEROS)[number];
@@ -433,12 +438,10 @@ async function leerSuscripcionesActivas(): Promise<SuscripcionActiva[]> {
   return (data ?? []) as SuscripcionActiva[];
 }
 
-const ESTADOS_PROSPECTO = ['nuevo', 'contactado', 'demo', 'negociacion', 'cerrado', 'perdido'] as const;
-
 /** El embudo por estado — conteos EN LA BASE (head+exact), jamás el largo de
  *  una lista con ventana (la trampa §6.2 del diccionario de KPIs). */
-async function contarPipeline(): Promise<Array<{ estado: string; n: number }>> {
-  return Promise.all(ESTADOS_PROSPECTO.map(async (estado) => {
+export async function contarPipeline(): Promise<Array<{ estado: string; n: number }>> {
+  const crudos = await Promise.all(ESTADOS_PROSPECTO_PERSISTIDOS.map(async (estado) => {
     const { count, error } = await acotada(supabaseAdmin()
       .from('prospecto')
       .select('id', { count: 'exact', head: true })
@@ -448,6 +451,8 @@ async function contarPipeline(): Promise<Array<{ estado: string; n: number }>> {
     if (typeof count !== 'number') throw new Error(`contarPipeline(${estado}): sin conteo — no se afirma un 0 que nadie midió.`);
     return { estado, n: count };
   }));
+  const canonicos = normalizarConteosProspecto(crudos);
+  return ESTADOS_PROSPECTO.map(({ valor: estado }) => ({ estado, n: canonicos[estado] }));
 }
 
 export interface CifrasMetricas {
@@ -473,8 +478,12 @@ export function armarParteMetricas(c: CifrasMetricas, lunes: string): string {
   const churn = c.activas === 0
     ? 'Churn: SIN DATO — bajas/mes ÷ base activa; base activa = 0 (dividir entre cero no da 0%, no da nada)'
     : `Churn: se reportan bajas ABSOLUTAS con base < 10 clientes (base activa: ${numero(c.activas)})`;
-  const embudo = c.pipeline.map((p) => `${p.estado} ${numero(p.n)}`).join(' · ');
-  const cerrados = c.pipeline.find((p) => p.estado === 'cerrado')?.n ?? 0;
+  // Acepta partes históricos que aún traían aliases, pero el texto nuevo
+  // siempre usa las 11 etapas canónicas y suma cerrado→won.
+  const pipelineNormalizado = normalizarConteosProspecto(c.pipeline);
+  const embudo = ESTADOS_PROSPECTO
+    .map(({ valor: estado }) => `${estado} ${numero(pipelineNormalizado[estado])}`).join(' · ');
+  const cerrados = pipelineNormalizado.won;
   return [
     `MÉTRICAS — semana del ${lunes}`,
     '',

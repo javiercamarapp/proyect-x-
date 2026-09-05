@@ -22,6 +22,10 @@ const RAIZ = process.cwd();
 // Las pone la plataforma o el arnés de pruebas: no van en `.env.example`.
 const DE_LA_PLATAFORMA = new Set([
   'NODE_ENV', 'VERCEL_ENV', 'NEXT_RUNTIME',
+  // Inyectada por Vercel al ejecutar la función; identifica al worker y tiene
+  // fallback local. No es un secreto ni configuración manual del operador.
+  // https://vercel.com/docs/environment-variables/system-environment-variables#vercel_region
+  'VERCEL_REGION',
   // El sha del deploy, inyectado por Vercel en build (lo leen /api/health y el
   // agente `releases`, 0234).
   'VERCEL_GIT_COMMIT_SHA',
@@ -162,9 +166,8 @@ describe('DEPLOY.md pide lo que hace falta para que el sistema no arranque ciego
     // convierte ese modo de falla en una alerta de minutos» y dos rondas
     // después nadie la consumía ni el runbook la nombraba.
     expect(deploy()).toContain('/api/health');
-    const flujo = join(RAIZ, '.github/workflows/salud-produccion.yml');
-    expect(statSync(flujo).isFile(), 'falta el monitor de /api/health').toBe(true);
-    expect(readFileSync(flujo, 'utf8')).toContain('/api/health');
+    // Leer directamente comprueba existencia y contenido, sin stat separado.
+    expect(readFileSync(join(RAIZ, '.github/workflows/salud-produccion.yml'), 'utf8')).toContain('/api/health');
   });
 
   it('dice dónde se miran los logs cuando algo falla', () => {

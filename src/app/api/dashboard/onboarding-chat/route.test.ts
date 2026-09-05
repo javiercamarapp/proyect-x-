@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BACKEND-19C2-2 — el chat de onboarding gastaba presupuesto de IA sin límite
@@ -45,6 +46,20 @@ beforeEach(() => {
   sesion = { userId: 'u-1', tenantId: 't-1', rol: 'dueno', nombre: 'D' };
   permitido = true;
   rateLimit.mockClear(); responderEntrevista.mockClear(); getPerfilCrudo.mockClear();
+});
+
+it.each([true, false])('stream excesivo con cuota permitida=%s conserva el orden de cuotas', async (cuota) => {
+  permitido = cuota;
+  const p = peticionStream('https://likida.test/api/dashboard/onboarding-chat', JSON.stringify({
+    mensajes: [{ rol: 'usuario', texto: 'hola' }], ignorado: 'x'.repeat(500_000),
+  }));
+  expect((await POST(p.req as never)).status).toBe(cuota ? 413 : 429);
+  expect(responderEntrevista).not.toHaveBeenCalled();
+  expect(getPerfilCrudo).not.toHaveBeenCalled();
+  expect(rateLimit).toHaveBeenCalledTimes(1);
+  expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  if (cuota) expect(p.estado().cancelado).toBe(true);
+  else expect(p.estado().leidos).toBe(0);
 });
 
 describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {

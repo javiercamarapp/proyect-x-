@@ -219,19 +219,21 @@ export type SelloEntrega = 'entregada_operador_en' | 'avisada_oficina_en';
  * primera. Best-effort y nunca lanza: la liquidación ya está cerrada y el PDF
  * ya salió; perder el sello cuesta a lo sumo un reenvío, no un cierre.
  */
-export async function sellarEntregaLiquidacion(tenantId: string, liquidacionId: string | null | undefined, sello: SelloEntrega): Promise<boolean> {
+export async function sellarEntregaLiquidacion(tenantId: string, liquidacionId: string | null | undefined, sello: SelloEntrega, pdfEsperado: string | null): Promise<boolean> {
   if (!liquidacionId) return false;
   try {
-    const { error } = await acotada(supabaseAdmin()
+    let q = supabaseAdmin()
       .from('liquidacion')
       .update({ [sello]: new Date().toISOString() })
       .eq('tenant_id', tenantId).eq('id', liquidacionId)
-      .is(sello, null), 'sellarEntregaLiquidacion');
+      .is(sello, null);
+    q = pdfEsperado === null ? q.is('pdf_url', null) : q.eq('pdf_url', pdfEsperado);
+    const { data, error } = await acotada(q.select('id').maybeSingle(), 'sellarEntregaLiquidacion');
     if (error) {
       logger.warn('liquidacion.sello_entrega', { tenant: tenantId, liq: liquidacionId, sello, err: error.message });
       return false;
     }
-    return true;
+    return data != null;
   } catch (e) {
     logger.warn('liquidacion.sello_entrega', { tenant: tenantId, liq: liquidacionId, sello, err: e instanceof Error ? e.message : String(e) });
     return false;
@@ -932,28 +934,26 @@ export async function intentarLockViaje(viajeId: string, opts?: { ttlMs?: number
  * tuvo tiempo de llegar a la tabla: si está ahí, el «listo» se aplaza y el
  * cron lo vuelve a tomar, ahora sí después de ella.
  *
- * FAIL-OPEN (`false` si no se supo): aplazar el cierre de un chofer cada vez
- * que la base tosa es peor que el caso que esto cubre, y el aplazamiento no es
- * gratis — se le pide que espere.
+ * TRES estados: `true` = existe una foto anterior pendiente (incluidas las que
+ * agotaron intentos), `false` = la lectura completa confirma que no existe,
+ * `null` = no se pudo saber. Quien pretende CERRAR debe tratar `null` igual que
+ * `true`: una falla de infraestructura no es evidencia de que el fajo terminó.
  */
-export async function fotoAnteriorSinProcesar(telefono: string, mensajeMs: number): Promise<boolean> {
+export async function fotoAnteriorSinProcesar(telefono: string, mensajeMs: number): Promise<boolean | null> {
   if (!telefono || !Number.isFinite(mensajeMs) || mensajeMs <= 0) return false;
   try {
     return await consultarFotoAnterior(telefono, mensajeMs);
   } catch (e) {
-    // FAIL-OPEN también ante excepción, por lo mismo: lo caro es dejar a todos
-    // los choferes sin poder cerrar.
     logger.warn('inbox.foto_anterior_ilegible', { err: e instanceof Error ? e.message : String(e) });
-    return false;
+    return null;
   }
 }
 
-async function consultarFotoAnterior(telefono: string, mensajeMs: number): Promise<boolean> {
+async function consultarFotoAnterior(telefono: string, mensajeMs: number): Promise<boolean | null> {
   const { data, error } = await acotada(supabaseAdmin()
     .from('wa_evento_pendiente')
     .select('id')
     .is('procesado_en', null)
-    .lt('intentos', 5)
     .in('evento->>from', variantesTelefono(telefono))
     .eq('evento->>type', 'image')
     // `->` (jsonb) y no `->>`: con texto, «999…» compararía como cadena.
@@ -964,7 +964,7 @@ async function consultarFotoAnterior(telefono: string, mensajeMs: number): Promi
     .limit(1), 'fotoAnteriorSinProcesar');
   if (error) {
     logger.warn('inbox.foto_anterior_ilegible', { err: error.message });
-    return false;
+    return null;
   }
   return (data?.length ?? 0) > 0;
 }

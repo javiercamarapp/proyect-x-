@@ -145,10 +145,23 @@ export const TOPE_FILAS_IMPORT = 2_000;
  * importar. PURA: la detección de columnas es por nombre de encabezado, y
  * sin columna de folio no hay importación — el dedup depende de él.
  */
-export function interpretarFilasViajes(matriz: unknown[][]): LecturaImportacion {
+export function interpretarFilasViajes(
+  matriz: unknown[][],
+  opciones: { permitirFinanzas?: boolean } = {},
+): LecturaImportacion {
   if (!matriz.length) return { viajes: [], descartadas: [], error: 'El archivo está vacío.' };
 
   const encabezados = matriz[0].map(normalizarEncabezado);
+  // El mismo catálogo que interpreta el archivo determina qué campos requieren
+  // dinero. Se rechaza el archivo entero antes de descartar filas o importar,
+  // incluso con celdas vacías o columnas repetidas.
+  if (opciones.permitirFinanzas === false
+    && encabezados.some((e) => [...COLUMNAS.anticipo, ...COLUMNAS.cliente, ...COLUMNAS.ingreso].includes(e))) {
+    return {
+      viajes: [], descartadas: [],
+      error: 'Tu rol sólo puede importar datos operativos. Quita las columnas de anticipo, cliente e ingreso del archivo y vuelve a subirlo.',
+    };
+  }
   const indice: Partial<Record<keyof typeof COLUMNAS, number>> = {};
   for (const clave of Object.keys(COLUMNAS) as Array<keyof typeof COLUMNAS>) {
     const i = encabezados.findIndex((e) => COLUMNAS[clave].includes(e));

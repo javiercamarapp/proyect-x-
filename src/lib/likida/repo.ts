@@ -39,13 +39,15 @@ function uuidCfdi(u: string | null | undefined): string | null {
 
 /**
  * Conserva el XML CRUDO del CFDI (CFF art. 30). Best-effort: un fallo aquí NO
- * tumba la liquidación (el gasto ya está capturado). 1.8.
+ * tumba la liquidación (el gasto ya está capturado). Devuelve si se conservó
+ * para que un acuse explícito no prometa persistencia cuando falló.
  */
-export async function saveCfdiXmlRaw(tenantId: string, cfdiUuid: string, gastoId: string | null, xml: string): Promise<void> {
+export async function saveCfdiXmlRaw(tenantId: string, cfdiUuid: string, gastoId: string | null, xml: string): Promise<boolean> {
   const { error } = await acotada(supabaseAdmin()
     .from('cfdi_xml')
     .upsert({ tenant_id: tenantId, cfdi_uuid: uuidCfdi(cfdiUuid), gasto_id: gastoId, xml }, { onConflict: 'tenant_id,cfdi_uuid' }), 'saveCfdiXmlRaw');
   if (error) logger.warn('cfdi_xml.save', { err: error.message });
+  return !error;
 }
 
 // `getPolitica` VIVÍA AQUÍ y no la llamaba nadie. Leía `politica_gasto`, una
@@ -506,19 +508,34 @@ export interface Huerfano {
  * Best-effort: si esto falla, se le dice al operador que no se pudo guardar.
  *
  * DAT-01 — EL DUPLICADO CUENTA COMO GUARDADO. `uq_huerfano_img_hash` (0164)
- * impide que el MISMO papel ocupe dos filas en la sala de espera; ese 23505 no
- * es un fallo: significa que el comprobante ya está esperando, que es
- * exactamente lo que el llamador necesita saber para decirle al operador que no
- * se perdió. Tratarlo como error le pediría reenviar una foto que ya está
- * guardada — y cada reenvío que entra es otra oportunidad de duplicar el gasto.
+ * impide que el MISMO papel ocupe dos filas. Para comprobantes con hash, la
+ * RPC 0322 registra o vincula bajo lock y devuelve la fila existente: así el
+ * cliente no interpreta un 23505 sin saber si también quedó ligado al viaje.
  */
 export async function guardarHuerfano(
   tenantId: string, operadorId: string,
-  h: { gasto: Gasto; motivo: MotivoHuerfano; rutaImagen?: string },
+  h: { gasto: Gasto; motivo: MotivoHuerfano; rutaImagen?: string; viajeId?: string },
 ): Promise<boolean> {
+  // Con hash, registrar y vincular son UNA operación en Postgres. Un 23505
+  // manejado sólo en el cliente podía afirmar «ya estaba» dejando la fila
+  // previa con viaje_id NULL; la 0322 bloquea la fila y permite vincularla una
+  // sola vez, sin que otro viaje u operador pueda apropiársela después.
+  if (h.gasto.imgHash) {
+    const { error } = await acotada(supabaseAdmin().rpc('guardar_comprobante_huerfano_tx', {
+      p_tenant: tenantId,
+      p_operador: operadorId,
+      p_gasto: h.gasto,
+      p_motivo: h.motivo,
+      p_ruta_imagen: h.rutaImagen ?? null,
+      p_viaje: h.viajeId ?? null,
+    }), 'guardarHuerfano');
+    if (error) logger.error('huerfano.guardar_error', { err: error.message });
+    return !error;
+  }
   const { error } = await acotada(supabaseAdmin().from('comprobante_huerfano').insert({
     tenant_id: tenantId, operador_id: operadorId,
     gasto: h.gasto, motivo: h.motivo, ruta_imagen: h.rutaImagen ?? null,
+    ...(h.viajeId ? { viaje_id: h.viajeId } : {}),
   }), 'guardarHuerfano');
   if (violaIndice(error, 'uq_huerfano_img_hash')) {
     logger.info('huerfano.ya_estaba', { tenant: tenantId, operador: operadorId });
@@ -529,10 +546,10 @@ export async function guardarHuerfano(
 }
 
 /**
- * Los que siguen esperando. Devuelve `[]` ante un error de lectura, y eso es
- * deliberado: no poder leer la sala de espera no puede impedirle al operador
- * cerrar el viaje que sí tiene. Se pierde el ofrecimiento, no el comprobante —
- * las filas siguen ahí para el mensaje siguiente.
+ * Los que siguen esperando. El modo normal conserva el comportamiento
+ * best-effort de los ofrecimientos. El cierre usa `fallarCerrado`: no poder
+ * comprobar si hay una foto con OCR roto NO se puede interpretar como una sala
+ * vacía y convertir en liquidación irreversible.
  */
 export async function getHuerfanos(
   tenantId: string, operadorId: string,
@@ -542,6 +559,12 @@ export async function getHuerfanos(
      *  y a partir del 50º el chofer dejaba de ver los que SÍ tienen monto.
      *  Con esto el filtro va en la base, ANTES del `limit`. */
     soloConMonto?: boolean;
+    /** Restringe el incidente al viaje al que pertenecía la foto. */
+    viajeId?: string;
+    /** Solo las imágenes cuyo OCR falló y todavía no fueron resueltas. */
+    soloFalloOcr?: boolean;
+    /** En caminos irreversibles, propaga una lectura fallida en vez de `[]`. */
+    fallarCerrado?: boolean;
   } = {},
 ): Promise<Huerfano[]> {
   let q = supabaseAdmin()
@@ -551,10 +574,16 @@ export async function getHuerfanos(
     .is('resuelto_en', null);
   // `->` (jsonb) y no `->>` (texto): PostgREST compara el número como número.
   if (opciones.soloConMonto) q = q.gt('gasto->monto', 0);
+  if (opciones.viajeId) q = q.eq('viaje_id', opciones.viajeId);
+  if (opciones.soloFalloOcr) q = q.eq('motivo', 'fallo_ocr');
   const { data, error } = await acotada(q
     .order('creado_en', { ascending: true })
     .limit(50), 'getHuerfanos');
-  if (error || !data) return [];
+  if (error) {
+    if (opciones.fallarCerrado) throw new Error(`getHuerfanos: ${error.message}`);
+    return [];
+  }
+  if (!data) return [];
   return data.map((r) => ({
     id: r.id as string,
     gasto: r.gasto as Gasto,
@@ -1015,10 +1044,44 @@ export async function getGastos(viajeId: string, tenantId: string): Promise<Gast
  * emitir esa liquidación, y quien la llamó tiene que volver a fotografiar.
  */
 export const CIERRE_CONTEO_CAMBIO = 'CU003';
+/** La cantidad sigue igual, pero cambió algún insumo económico/fiscal. */
+export const CIERRE_SNAPSHOT_CAMBIO = 'CU006';
+
+export interface SnapshotInsumosCierre {
+  version: 1;
+  hash: string;
+}
 
 /** ¿El cierre rebotó porque entró un gasto entre el cuadre y el guardado? */
 export function conteoDeGastosCambio(e: unknown): boolean {
   return !!e && typeof e === 'object' && (e as { code?: string }).code === CIERRE_CONTEO_CAMBIO;
+}
+
+/** ¿Hay que volver a calcular porque la fotografía económica cambió? */
+export function insumosDeCierreCambiaron(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const code = (e as { code?: string }).code;
+  return code === CIERRE_CONTEO_CAMBIO || code === CIERRE_SNAPSHOT_CAMBIO;
+}
+
+/**
+ * Sello emitido por Postgres ANTES del cálculo. No es una autorización: la RPC
+ * de guardado recalcula el hash bajo sus locks y solo entonces lo compara.
+ */
+export async function leerSnapshotInsumosCierre(
+  tenantId: string,
+  viajeId: string,
+): Promise<SnapshotInsumosCierre> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('cierre_insumos_snapshot', {
+    p_tenant: tenantId,
+    p_viaje: viajeId,
+  }), 'leerSnapshotInsumosCierre');
+  if (error) throw new Error(`leerSnapshotInsumosCierre: ${error.message}`);
+  const snapshot = data as Partial<SnapshotInsumosCierre> | null;
+  if (snapshot?.version !== 1 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
+    throw new Error('leerSnapshotInsumosCierre: respuesta inválida de cierre_insumos_snapshot');
+  }
+  return { version: 1, hash: snapshot.hash };
 }
 
 /**
@@ -1070,6 +1133,8 @@ export async function saveLiquidacion(
    * lo que necesitan los llamadores que no fotografiaron gastos.
    */
   nGastos?: number,
+  /** Sello v1 que la RPC vuelve a calcular bajo lock. Opcional por compatibilidad. */
+  snapshot?: SnapshotInsumosCierre,
 ): Promise<string> {
   const admin = supabaseAdmin();
   // CR-1 / AUDIT_V3 money-path CRÍTICO: cierre ATÓMICO e idempotente. Antes eran
@@ -1092,6 +1157,8 @@ export async function saveLiquidacion(
     p_peaje: liq.peajeAcreditable,
     p_pdf_url: pdfUrl ?? null,
     p_n_gastos: nGastos ?? null,
+    p_insumos_hash: snapshot?.hash ?? null,
+    p_insumos_hash_version: snapshot?.version ?? null,
   }), 'saveLiquidacion');
   if (error) {
     // SE PRESERVA `code`, como en `addGasto` y `updateGastoCfdiXml`: sin él,
@@ -1622,10 +1689,114 @@ export async function ejecutarCancelacionArco(
     const { enviarRespuestaArco } = await import('@/lib/meta/client');
     const aviso = await enviarRespuestaArco(
       telefono,
-      'Tu solicitud de cancelación de datos quedó ejecutada: tu nombre y tu teléfono ya no están ligados a tu información en el sistema. Los comprobantes fiscales se conservan el tiempo que la ley obliga (CFF art. 30), sin vincularse a tu persona.',
+      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud y la documentación fiscal. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
     );
     return aviso.ok ? { ok: true, avisada: true } : { ok: true, avisada: false, errorAviso: aviso.error };
   } catch (e) {
     return { ok: true, avisada: false, errorAviso: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// Persistencia de polls: claims, traducción de filas y fencing se resuelven
+// en la frontera de datos. El llamador sólo decide worker y lote.
+export type RecursoPoll = 'posiciones' | 'eventos';
+
+export interface PollReclamado {
+  tenantId: string;
+  proveedor: string;
+  valoresCifrados: string;
+  claimToken: string | null;
+  watermarkEn: string | null;
+  /** Cursor independiente del carril reciente. Nunca espera al backfill. */
+  tailWatermarkEn: string | null;
+}
+
+
+export async function reclamarPollsConector(
+  recurso: RecursoPoll,
+  proveedores: string[],
+  limite: number,
+  worker: string,
+): Promise<PollReclamado[]> {
+  const admin = supabaseAdmin();
+  const etiqueta = recurso === 'posiciones' ? 'gps' : 'eventos';
+  const rpc = (admin as unknown as { rpc?: (nombre: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: { message: string } | null }> }).rpc;
+  if (!rpc) {
+    if (process.env.NODE_ENV !== 'test') throw new Error(`${recurso}.claims: el cliente Supabase no expone rpc`);
+    const { data, error } = await acotada(
+      admin.from('conector_credencial')
+        .select('tenant_id, conector_id, valores_cifrados')
+        .eq('activo', true)
+        .in('conector_id', proveedores),
+      `${etiqueta}.credenciales`,
+    );
+    if (error) throw new Error(`${etiqueta}.credenciales: ${error.message}`);
+    return (data ?? []).map((c) => ({
+      tenantId: String(c.tenant_id), proveedor: String(c.conector_id),
+      valoresCifrados: String(c.valores_cifrados), claimToken: null,
+      watermarkEn: null, tailWatermarkEn: null,
+    }));
+  }
+
+  const { data, error } = await acotada(rpc.call(admin, 'reclamar_polls_conector', {
+    p_recurso: recurso,
+    p_proveedores: proveedores,
+    p_limite: limite,
+    p_worker: worker,
+    // La ruta tiene maxDuration=300 s. 360 s deja un minuto de margen para
+    // finalizar y recupera un worker muerto antes de la siguiente decena de
+    // minutos, sin permitir que B robe trabajo legalmente en vuelo.
+    p_lease_segundos: 360,
+  }), `${recurso}.claims`);
+  if (error) throw new Error(`${recurso}.claims: ${error.message}`);
+  if (!Array.isArray(data)) throw new Error(`${recurso}.claims: respuesta inválida`);
+  return data.map((fila) => {
+    const f = fila as Record<string, unknown>;
+    if (!f.tenant_id || !f.proveedor || !f.valores_cifrados || !f.claim_token) {
+      throw new Error(`${recurso}.claims: fila incompleta`);
+    }
+    return {
+      tenantId: String(f.tenant_id), proveedor: String(f.proveedor),
+      valoresCifrados: String(f.valores_cifrados), claimToken: String(f.claim_token),
+      watermarkEn: typeof f.watermark_en === 'string' ? f.watermark_en : null,
+      tailWatermarkEn: typeof f.tail_watermark_en === 'string' ? f.tail_watermark_en : null,
+    };
+  });
+}
+
+export async function finalizarPollConector(
+  recurso: RecursoPoll,
+  claim: PollReclamado,
+  resultado: {
+    completo: boolean;
+    watermarkEn?: string | null;
+    tailCompleto?: boolean;
+    tailWatermarkEn?: string | null;
+    ultimaMedidaEn?: string | null;
+    paginas?: number;
+    elementos?: number;
+    invalidos?: number;
+    error?: string;
+  },
+): Promise<void> {
+  // Los tests legacy que pasaron por el fallback no tienen un lease real.
+  if (!claim.claimToken) return;
+  const admin = supabaseAdmin();
+  const { data, error } = await acotada(admin.rpc('finalizar_poll_conector', {
+    p_tenant: claim.tenantId,
+    p_proveedor: claim.proveedor,
+    p_recurso: recurso,
+    p_claim_token: claim.claimToken,
+    p_completo: resultado.completo,
+    p_watermark_en: resultado.watermarkEn ?? null,
+    p_tail_completo: resultado.tailCompleto ?? false,
+    p_tail_watermark_en: resultado.tailWatermarkEn ?? null,
+    p_ultima_medida_en: resultado.ultimaMedidaEn ?? null,
+    p_paginas: resultado.paginas ?? 0,
+    p_elementos: resultado.elementos ?? 0,
+    p_invalidos: resultado.invalidos ?? 0,
+    p_error: resultado.error?.slice(0, 1000) ?? null,
+  }), `${recurso}.finalizar`);
+  if (error) throw new Error(`${recurso}.finalizar: ${error.message}`);
+  if (data !== true) throw new Error(`${recurso}.finalizar: lease vencido o ajeno`);
 }

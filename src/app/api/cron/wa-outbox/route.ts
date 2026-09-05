@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { puertaCron, registrarLatido } from '@/lib/admin/salud';
-import { reclamarSalidasWhatsApp, finalizarSalidaWhatsApp } from '@/lib/likida/wa_outbox';
+import { reclamarSalidasWhatsApp, finalizarSalidaWhatsApp, reconciliarReceiptsWhatsApp, purgarReceiptsWhatsApp } from '@/lib/likida/wa_outbox';
 import { conPool } from '@/lib/likida/lotes';
 import { leerInterruptor } from '@/lib/likida/interruptores';
 import { logger } from '@/lib/logger';
 import { alertarOperador } from '@/lib/observability/alerta';
+import { esReintentableMeta } from '@/lib/meta/client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,14 +30,22 @@ const GRAPH = 'https://graph.facebook.com/v21.0';
  * resultado fue enterrarla. Mismo patrón que los otros cinco crons
  * (gps/escalar/purgar/facturar/wa-pendientes), que sí avisan.
  */
-async function finalizarYAvisarSiMurio(s: Awaited<ReturnType<typeof reclamarSalidasWhatsApp>>[number], messageId?: string, error?: string): Promise<void> {
-  const { muerta } = await finalizarSalidaWhatsApp(s, messageId, error);
-  if (muerta) {
+async function finalizarYAvisarSiMurio(
+  s: Awaited<ReturnType<typeof reclamarSalidasWhatsApp>>[number],
+  messageId?: string,
+  error?: string,
+): Promise<{ ok: boolean; muerta: boolean }> {
+  const finalizacion = await finalizarSalidaWhatsApp(s, messageId, error);
+  if (finalizacion.ok && finalizacion.muerta) {
+    const motivo = messageId && !error
+      ? `Meta ya había reportado un fallo terminal para ${messageId}; la salida quedó muerta al vincular el receipt.`
+      : `Un mensaje de WhatsApp agotó sus reintentos y no se va a volver a enviar: ${error ?? 'sin detalle'}`;
     await alertarOperador('cron.wa_outbox', {
-      error: `Un mensaje de WhatsApp agotó sus reintentos y no se va a volver a enviar: ${error ?? 'sin detalle'}`,
+      error: motivo,
       codigo: 'salida_muerta',
     });
   }
+  return finalizacion;
 }
 
 /** Drena el outbox durable. Solo reintenta la misma carga serializada; el
@@ -98,6 +107,21 @@ export async function GET(req: Request) {
   }
 
   try {
+    const fallosBackstop: string[] = [];
+    try {
+      await reconciliarReceiptsWhatsApp();
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      fallosBackstop.push(`reconciliacion: ${error}`);
+      logger.warn('wa.receipts.reconciliacion_fallo', { error });
+    }
+    try {
+      await purgarReceiptsWhatsApp();
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      fallosBackstop.push(`purga: ${error}`);
+      logger.warn('wa.receipts.purga_fallo', { error });
+    }
     const salidas = await reclamarSalidasWhatsApp();
     let enviadas = 0;
     let fallidas = 0;
@@ -110,34 +134,46 @@ export async function GET(req: Request) {
         const body = await r.text();
         if (!r.ok) {
           fallidas++;
-          await finalizarYAvisarSiMurio(s, undefined, `HTTP ${r.status}: ${body.slice(0, 300)}`);
+          let metaCodigo: number | undefined;
+          try { metaCodigo = Number((JSON.parse(body) as { error?: { code?: number } }).error?.code); } catch { /* cuerpo no JSON */ }
+          const retryable = esReintentableMeta(Number.isFinite(metaCodigo) ? metaCodigo : undefined, r.status);
+          const codigo = retryable ? 'retryable:' : 'terminal:';
+          await finalizarYAvisarSiMurio(s, undefined, `${codigo}HTTP ${r.status}: ${body.slice(0, 300)}`);
           return;
         }
         let id: string | undefined;
         try { id = (JSON.parse(body) as { messages?: Array<{ id?: string }> }).messages?.[0]?.id; } catch { /* no wamid */ }
         if (!id) {
-          // MEDIO (auditoría 25, REINCIDENTE): `r.ok` YA es Meta ACEPTANDO —
-          // menos ambiguo que el `catch` de red de abajo, que sí razona la
-          // ambigüedad. Tratar esto como fallo reencolaba un mensaje que YA
-          // SALIÓ: el chofer/jefe lo recibía otra vez cada 15·2^intentos
-          // segundos hasta 8 veces. Se marca 'sent' con un marcador que NO
-          // puede confundirse con un wamid real (los de Meta empiezan por
-          // "wamid.") — queda visible en la fila que Meta no devolvió id,
-          // sin reencolar un mensaje que sí se entregó.
+          // `r.ok` prueba aceptación HTTP, pero sin wamid no existe una
+          // identidad que el webhook pueda reconciliar. Reenviar duplicaría un
+          // mensaje posiblemente aceptado y marcarlo sent inventaría entrega:
+          // queda dead/manual-review y alerta al operador.
           logger.warn('wa.outbox_sin_wamid', { id: s.id, cuerpo: body.slice(0, 300) });
-          enviadas++;
-          await finalizarSalidaWhatsApp(s, `sin_wamid:${s.id}`);
+          // Un 200 sin wamid confirma aceptación HTTP pero no deja una
+          // identidad reconciliable. No se puede marcar sent: queda dead para
+          // revisión manual y se alerta, evitando retry infinito o silencio.
+          fallidas++;
+          await finalizarYAvisarSiMurio(s, undefined, `sin_wamid:${s.id}`);
           return;
         }
-        enviadas++;
-        await finalizarSalidaWhatsApp(s, id);
+        // Puede existir ya un receipt terminal para este wamid. El trigger lo
+        // aplica al crear el vínculo y la RPC devuelve muerta=true: eso es una
+        // fallida observable, aunque el POST de Meta haya sido 200.
+        const finalizacion = await finalizarYAvisarSiMurio(s, id);
+        if (!finalizacion.ok || finalizacion.muerta) fallidas++;
+        else enviadas++;
       } catch (e) {
         fallidas++;
         await finalizarYAvisarSiMurio(s, undefined, e instanceof Error ? e.message : String(e));
       }
     });
-    await registrarLatido('wa-outbox', fallidas ? 'parcial' : 'ok', { enviadas, fallidas });
-    return NextResponse.json({ corrio: true, tomadas: salidas.length, enviadas, fallidas }, { status: fallidas ? 500 : 200 });
+    const parcial = fallidas > 0 || fallosBackstop.length > 0;
+    const detalleLatido = { enviadas, fallidas, ...(fallosBackstop.length ? { fallosBackstop } : {}) };
+    await registrarLatido('wa-outbox', parcial ? 'parcial' : 'ok', detalleLatido);
+    return NextResponse.json(
+      { corrio: true, tomadas: salidas.length, enviadas, fallidas, ...(fallosBackstop.length ? { fallosBackstop } : {}) },
+      { status: parcial ? 500 : 200 },
+    );
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     logger.error('cron.wa_outbox.fallo', { error });

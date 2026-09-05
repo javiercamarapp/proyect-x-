@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "claude/auditoria-25-resolucion-integrada": false
+    }
+  },
   "ignoreCommand": "node scripts/ci/compuerta-deploy.mjs && exit 1 || exit 0",
   "crons": [
     {

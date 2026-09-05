@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "total": 195,
+  "total": 190,
   "porArchivo": {
     "src/app/admin/agentes/contenido.tsx": 1,
     "src/app/admin/evals/page.tsx": 1,
@@ -44,7 +44,7 @@
     "src/lib/likida/agentes/sdr.ts": 4,
     "src/lib/likida/analytics.ts": 4,
     "src/lib/likida/asignar_wa.ts": 1,
-    "src/lib/likida/asistencia_camara.ts": 2,
+    "src/lib/likida/asistencia_camara.ts": 1,
     "src/lib/likida/asistencia_coordinacion.ts": 3,
     "src/lib/likida/asistencia_escalamiento.ts": 1,
     "src/lib/likida/asistencia_proveedor.ts": 1,
@@ -67,7 +67,6 @@
     "src/lib/likida/intake/consolidado.ts": 1,
     "src/lib/likida/intake/desglose_peaje.ts": 2,
     "src/lib/likida/intake/rep.ts": 1,
-    "src/lib/likida/jornada/derivar.ts": 3,
     "src/lib/likida/jornada/repo.ts": 1,
     "src/lib/likida/mesa_control.ts": 2,
     "src/lib/likida/portal_pago_escritura.ts": 1,
@@ -79,7 +78,7 @@
     "src/lib/likida/repo.ts": 6,
     "src/lib/likida/sat_descarga/ciclo.ts": 2,
     "src/lib/likida/sat_descarga/lectura.ts": 1,
-    "src/lib/likida/startup.ts": 2,
+    "src/lib/likida/startup.ts": 1,
     "src/lib/likida/storage_borrado.ts": 1,
     "src/lib/likida/talacha_wa.ts": 2,
     "src/lib/likida/vendedores.ts": 2,

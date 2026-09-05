@@ -84,7 +84,11 @@ const dec = (n: number): string => {
  * salida legible, Origen/Destino con distancia) porque NINGÚN camino debe
  * poder armarlo a medias.
  */
-export function nodoComplementoCcp(v: ViajeCcp, idCcp: string):
+export function nodoComplementoCcp(
+  v: ViajeCcp,
+  idCcp: string,
+  opciones?: { fechaLlegadaSat?: string },
+):
   | { ok: true; lineas: string[] }
   | { ok: false; motivos: string[] } {
   const b = v.borrador.borrador;
@@ -118,6 +122,15 @@ export function nodoComplementoCcp(v: ViajeCcp, idCcp: string):
   if (!origen || !destino || destino.distanciaRecorrida == null) {
     return { ok: false, motivos: ['El borrador no trae Origen y Destino con distancia — vuelve a armar el borrador.'] };
   }
+  const llegada = opciones?.fechaLlegadaSat;
+  if (llegada !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(llegada)) {
+      return { ok: false, motivos: ['La fecha estimada de llegada no tiene el formato requerido por Carta Porte.'] };
+    }
+    if (llegada <= salida) {
+      return { ok: false, motivos: ['La fecha estimada de llegada debe ser posterior a la salida.'] };
+    }
+  }
 
   const lineas: string[] = [];
   const abre = (s: string) => lineas.push(s);
@@ -133,8 +146,9 @@ export function nodoComplementoCcp(v: ViajeCcp, idCcp: string):
   abre(`        <cartaporte31:Ubicacion TipoUbicacion="Origen" IDUbicacion="OR000001" RFCRemitenteDestinatario="${escaparXml(origen.rfc)}" FechaHoraSalidaLlegada="${salida}">`);
   abre(domicilio(cc.origenCp, cc.origenEstado, cc.transpInternac));
   abre('        </cartaporte31:Ubicacion>');
-  abre(`        <cartaporte31:Ubicacion TipoUbicacion="Destino" IDUbicacion="DE000001" RFCRemitenteDestinatario="${escaparXml(destino.rfc)}" DistanciaRecorrida="${dec(destino.distanciaRecorrida)}">`);
-  abre('          <!-- FechaHoraSalidaLlegada: estimada — se declara al emitir -->');
+  const fechaDestino = llegada === undefined ? '' : ` FechaHoraSalidaLlegada="${llegada}"`;
+  abre(`        <cartaporte31:Ubicacion TipoUbicacion="Destino" IDUbicacion="DE000001" RFCRemitenteDestinatario="${escaparXml(destino.rfc)}" DistanciaRecorrida="${dec(destino.distanciaRecorrida)}"${fechaDestino}>`);
+  if (llegada === undefined) abre('          <!-- FechaHoraSalidaLlegada: estimada — se declara al emitir -->');
   abre(domicilio(cc.destinoCp, cc.destinoEstado, cc.transpInternac));
   abre('        </cartaporte31:Ubicacion>');
   abre('      </cartaporte31:Ubicaciones>');

@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // ═══════════════════════════════════════════════════════════════════════════
 // EL AGENTE EXPERTO EN MENSAJES — POST /api/admin/mapa-prospectos/mensaje
 //
@@ -20,6 +21,7 @@ import { generateStructured } from '@/lib/llm/openrouter';
 import { createLlmBudget } from '@/lib/llm/budget';
 import { giroDe, NOMBRE_GIRO } from '@/lib/admin/prospectos-mapa';
 import { pieAvisoProspectos } from '@/lib/likida/privacidad';
+import { normalizarEstadoProspecto } from '@/lib/likida/vendedores';
 // La PUERTA ÚNICA de datos de persona hacia el modelo (auditoría 19, legal
 // C2 / C.18): vive en lib/likida/prospectos para que TODO camino que arme un
 // prompt con datos de un prospecto pase por la misma puerta — este y el
@@ -74,9 +76,20 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Tope de generación por hora alcanzado — respira y vuelve.' }, { status: 429 });
   }
 
-  const cuerpo = (await req.json().catch(() => null)) as { id?: string } | null;
+  // Un UUID y envoltura; el mensaje se construye en el servidor.
+  const lecturaCuerpo = await leerTextoAcotado(req, 8 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
+  try {
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
   const id = cuerpo?.id;
-  if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+  if (typeof id !== 'string' || !id || !/^[0-9a-f-]{36}$/.test(id)) {
     return NextResponse.json({ error: 'Falta el id del prospecto.' }, { status: 400 });
   }
 
@@ -89,6 +102,16 @@ export async function POST(req: Request) {
     : lectura;
   const { data: p, error: errLeer } = await lecturaViva.single();
   if (errLeer || !p) return NextResponse.json({ error: 'Ese prospecto no existe.' }, { status: 404 });
+
+  // Ganado/perdido es un desenlace, no otra oportunidad de gastar modelo.
+  // Los aliases históricos reciben el mismo trato que los estados canónicos.
+  const estado = normalizarEstadoProspecto(p.estado);
+  if (estado === 'won' || estado === 'lost') {
+    return NextResponse.json({
+      error: 'Ese prospecto ya está cerrado; no se genera otro primer toque.',
+      codigo: 'prospecto_terminal',
+    }, { status: 409 });
+  }
 
   const giro = giroDe(p.empresa, p.vacante, p.notas);
   // AUDITORÍA 18 (C2): a OpenRouter sale la EMPRESA, no la PERSONA. El nombre

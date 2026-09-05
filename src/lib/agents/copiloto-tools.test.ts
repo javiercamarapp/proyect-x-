@@ -72,7 +72,11 @@ vi.mock('@/lib/likida/interruptores', () => ({
 vi.mock('@/lib/likida/vendedores', () => ({
   listarProspectos: async () => ([{ id: 'p1', empresa: 'ACME', estado: 'nuevo', vendedorId: null }]),
   listarVendedores: async () => ([{ id: 'v1', nombre: 'Rodrigo' }]),
-  conteosVacios: () => ({ nuevo: 0, contactado: 0, demo: 0, negociacion: 0, cerrado: 0, perdido: 0 }),
+  conteosVacios: () => ({
+    nuevo: 0, contactado: 0, appointment: 0, rescheduled: 0, cancelled: 0,
+    'no-show': 0, demo: 0, proposal: 0, pilot: 0, won: 0, lost: 0,
+  }),
+  normalizarEstadoProspecto: (estado: string) => estado,
 }));
 vi.mock('@/lib/saas/transferencia', () => ({ getPorCobrar: async () => ([]) }));
 vi.mock('@/lib/admin/ficha-cliente', () => ({
@@ -96,7 +100,7 @@ vi.mock('@/lib/likida/agentes/cola', () => ({
 const { TOOLS_COPILOTO_LECTURA, PANTALLA_POR_TOOL } = await import('./copiloto-tools');
 const { executeTool, toolSchemas } = await import('@/lib/llm/tool-executor');
 
-import { readdirSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('el contrato de las 14 tools del copiloto', () => {

@@ -70,6 +70,7 @@ export async function SeccionTimbrado({ v, searchParams }: {
     const metodo = String(fd.get('metodoPago')) === 'PUE' ? 'PUE' as const : 'PPD' as const;
     // Con PPD la forma ES 99 (Anexo 20) — el selector de forma solo aplica a PUE.
     const forma = metodo === 'PPD' ? '99' : (t(fd.get('formaPago')) ?? '');
+    const fechaLlegadaEstimada = t(fd.get('fechaLlegadaEstimada'));
     // AUDITORÍA 24, FE-24 (MEDIO): esto NO estaba en try/catch. Un fallo de
     // red con el PAC lanzaba dentro de la server action, tiraba la página
     // entera al `error.tsx` y —peor— se saltaba el `revalidatePath`: el
@@ -79,7 +80,11 @@ export async function SeccionTimbrado({ v, searchParams }: {
     // El `finally` revalida SIEMPRE, también cuando lanzó: si el timbre salió
     // y la respuesta se perdió, la pantalla recargada lo enseña.
     try {
-      const r = await timbrarViaje(s.tenantId, v.viajeId, { metodoPago: metodo, formaPago: forma }, { id: s.userId });
+      const r = await timbrarViaje(s.tenantId, v.viajeId, {
+        metodoPago: metodo,
+        formaPago: forma,
+        fechaLlegadaEstimada,
+      }, { id: s.userId });
       if (!r.ok) {
         const detalle = r.faltantes && r.faltantes.length > 0 ? ` · ${r.faltantes.join(' · ')}` : '';
         return { error: `${r.motivo}${detalle}` };
@@ -180,7 +185,9 @@ export async function SeccionTimbrado({ v, searchParams }: {
   }
 
   // ── El ensayo en seco: la MISMA función que arma el CFDI dice qué falta ──
-  const ensayo = armarCfdiTimbrable(v, generarIdCcp(), ctx.emisor, ctx.receptor, ctx.ingresoFlete, { metodoPago: 'PPD', formaPago: '99' });
+  const ensayo = armarCfdiTimbrable(v, generarIdCcp(), ctx.emisor, ctx.receptor, ctx.ingresoFlete, {
+    metodoPago: 'PPD', formaPago: '99', fechaLlegadaEstimada: null,
+  });
 
   return (
     <section className="space-y-3 print:hidden">
@@ -221,13 +228,15 @@ export async function SeccionTimbrado({ v, searchParams }: {
         </p>
       )}
 
-      {ensayo.ok && puedeEmitir && (
+      {puedeEmitir && (
         <div className="space-y-1">
-          <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
-            Flete {mxn(ensayo.subTotal)} + IVA 16% {mxn(ensayo.iva)}
-            {ensayo.retencionIva !== null ? ` − retención IVA 4% ${mxn(ensayo.retencionIva)} (receptor persona moral, LIVA 1-A II c)` : ''}
-            {' '}= <span className="font-medium">Total {mxn(ensayo.total)}</span>.
-          </p>
+          {ensayo.ok && (
+            <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
+              Flete {mxn(ensayo.subTotal)} + IVA 16% {mxn(ensayo.iva)}
+              {ensayo.retencionIva !== null ? ` − retención IVA 4% ${mxn(ensayo.retencionIva)} (receptor persona moral, LIVA 1-A II c)` : ''}
+              {' '}= <span className="font-medium">Total {mxn(ensayo.total)}</span>.
+            </p>
+          )}
           <FormaConAviso accion={timbrar} boton={ctx.emisor.modo === 'sandbox' ? 'Timbrar (PRUEBA)' : 'Timbrar'} columnas="md:grid-cols-2">
             {/* AUDITORÍA 24, FIS-8 (MEDIO): el valor por defecto era PPD, y un
                 CFDI PPD OBLIGA a emitir después un complemento de pago (CFDI
@@ -243,6 +252,7 @@ export async function SeccionTimbrado({ v, searchParams }: {
               { valor: 'PPD', texto: 'PPD — pago en parcialidades/diferido (forma 99)' },
             ]} />
             <Campo nombre="formaPago" etiqueta="Forma de pago (obligatoria con PUE)" placeholder="03 transferencia · 01 efectivo" ayuda="Con PPD se envía 99 «Por definir» (Anexo 20) y este campo se ignora. PUE con 99 se rechaza aquí mismo: se contradicen." />
+            <Campo nombre="fechaLlegadaEstimada" etiqueta="Llegada estimada (hora local de México)" tipo="datetime-local" requerido ayuda="Debe ser posterior a la salida; se escribe como FechaHoraSalidaLlegada del destino." />
           </FormaConAviso>
           <p className="text-[11.5px]" style={{ color: 'var(--warn)' }}>
             Si eliges PPD: ese CFDI te obliga a emitir un complemento de pago cuando cobres, y Likida

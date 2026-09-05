@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 21, BAJO-MEDIO — esta ruta no tenía ninguna prueba. Fija la
@@ -47,6 +48,61 @@ const UUID = '11111111-1111-1111-1111-111111111111';
 beforeEach(() => {
   sesion = { userId: 'u-1', tenantId: 't-1', rol: 'superadmin' };
   subirFotos.mockClear(); confirmarVerdadTerreno.mockClear();
+});
+
+it('cuenta también campos de texto multipart y cancela sin subir fotos', async () => {
+  const form = new FormData();
+  form.set('texto', 'x'.repeat(4 * 1024 * 1024 + 200_000));
+  form.set('archivo', new File(['abc'], 'foto.jpg', { type: 'image/jpeg' }));
+  const codificado = new Response(form);
+  const bytes = new Uint8Array(await codificado.arrayBuffer());
+  let leidos = 0;
+  let cancelado = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (leidos === bytes.length) { c.close(); return; }
+      const fin = Math.min(leidos + 65_536, bytes.length);
+      c.enqueue(bytes.slice(leidos, fin)); leidos = fin;
+    }, cancel() { cancelado = true; },
+  }, { highWaterMark: 0 });
+  const req = new Request('https://app.likida.ai/api/admin/qa/fotos', {
+    method: 'POST', headers: codificado.headers, body: stream, duplex: 'half',
+  } as RequestInit);
+  expect((await POST(req)).status).toBe(413);
+  expect(cancelado).toBe(true);
+  expect(leidos).toBeLessThan(bytes.length);
+  expect(subirFotos).not.toHaveBeenCalled();
+});
+
+it('un archivo binario conserva cada byte después del parser multipart', async () => {
+  const bytes = new Uint8Array([0, 255, 192, 128, 13, 10, 239, 0]);
+  const form = new FormData();
+  form.set('archivo', new File([bytes], 'foto.jpg', { type: 'image/jpeg' }));
+  expect((await POST(new Request('https://app.likida.ai/api/admin/qa/fotos', {
+    method: 'POST', body: form,
+  }))).status).toBe(200);
+  expect(subirFotos).toHaveBeenCalledWith(expect.anything(), [
+    { nombre: 'foto.jpg', mime: 'image/jpeg', bytes: Buffer.from(bytes) },
+  ]);
+});
+
+it.each([200, 201])('conserva el límite de cantidad: %s archivos', async (cantidad) => {
+  const form = new FormData();
+  for (let i = 0; i < cantidad; i++) form.append('archivo', new File(['x'], `f${i}.jpg`));
+  expect((await POST(new Request('https://app.likida.ai/api/admin/qa/fotos', {
+    method: 'POST', body: form,
+  }))).status).toBe(cantidad === 200 ? 200 : 413);
+  expect(subirFotos).toHaveBeenCalledTimes(cantidad === 200 ? 1 : 0);
+});
+
+it('PATCH chunked excesivo no firma verdad de terreno', async () => {
+  const p = peticionStream('https://app.likida.ai/api/admin/qa/fotos', JSON.stringify({
+    fotoId: UUID, verdad: {}, ignorado: 'x'.repeat(50_000),
+  }), 17_000);
+  expect((await PATCH(p.req)).status).toBe(413);
+  expect(confirmarVerdadTerreno).not.toHaveBeenCalled();
+  expect(p.estado().cancelado).toBe(true);
+  expect(p.estado().leidos).toBe(17_000);
 });
 
 describe('POST — la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {

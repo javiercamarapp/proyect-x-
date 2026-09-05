@@ -1,3 +1,12 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('./liquidacion/rutas_pdf', async (original) => ({
+  ...await original<typeof import('./liquidacion/rutas_pdf')>(),
+  rutasPdfVersionadas: (tenant: string, viaje: string) => ({
+    contralor: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046.pdf`,
+    operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
+  }),
+}));
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 5 · ALTO — la cadena entera nunca corría en ninguna prueba.
 //
@@ -26,7 +35,6 @@
 // red, Supabase ni OpenRouter.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Gasto, Viaje, Operador } from '@/types/likida';
 import { hoyMx } from '@/lib/formato';
 
@@ -106,8 +114,10 @@ vi.mock('@/lib/likida/repo', () => ({
   getOperador: vi.fn(async () => OPERADOR),
   getGastos: vi.fn(async () => GASTOS),
   saveLiquidacion: (...a: unknown[]) => saveLiquidacion(...(a as [])),
-  getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
-  // FASE 3: perfil vacío = sin declarar; desde_db.ts lo envuelve en catch.
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: (e: unknown) => ['CU003', 'CU006'].includes(String((e as { code?: string } | null)?.code ?? '')),
+  getAcumuladoCombustible: vi.fn(async () => ({ efectivo: 0, totalCombustible: 0 })),
+  // FASE 3: perfil vacío = sin declarar; es una lectura válida, no un 503.
   getPerfilCrudo: vi.fn(async () => ({})),
   addGasto: vi.fn(), updateGastoCfdiXml: vi.fn(), saveCfdiXmlRaw: vi.fn(),
   gastoExistePorHash: vi.fn(async () => false), enriquecerGastoConCodigo: vi.fn(),
@@ -136,6 +146,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
 }));
 const registrarCosto = vi.fn();
 const registrarCostoWhatsApp = vi.fn();
@@ -165,7 +176,7 @@ vi.mock('@/lib/supabase/admin', () => ({
       // devuelve la config de prueba; para lo demás, vacío con error null.
       const b: Record<string, unknown> = {};
       const self = () => b;
-      for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'limit']) b[m] = self;
+      for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'not', 'limit']) b[m] = self;
       b.range = async () => ({ data: [], error: null, count: 0 });
       b.maybeSingle = async () => (tabla === 'tenant'
         ? { data: { rfc: 'CCO8605231N4', config: null }, error: null }
@@ -245,7 +256,10 @@ const final = (texto: string) => ({
 // alimentado por `engine.ts`.
 const NARRACION_INVENTADA = 'Listo, cerré tu viaje. Comprobaste $9,999.00 y te sobraron $1.00.';
 
-const listo = { from: DESDE_META, type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = {
+  from: DESDE_META, type: 'text' as const, text: 'listo', waMessageId: 'wa1',
+  timestampMs: 1_756_000_001_100,
+};
 
 beforeEach(() => {
   subidos.clear(); salientes.length = 0;
@@ -285,7 +299,7 @@ describe('la cadena entera: "listo" → tools → PDF → WhatsApp (solo el I/O 
   // ── M19 ───────────────────────────────────────────────────────────────────
   it('el PDF que se ENVÍA es el ejemplar del operador, y va firmado', async () => {
     await processInbound(listo);
-    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-operador.pdf`, `${TENANT}/v1.pdf`]);
+    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf`, `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`]);
     expect(documentos()[0].body.document).toEqual({
       link: URL_FIRMADA, filename: 'liquidacion.pdf', caption: 'Aquí está tu liquidación 📄',
     });
@@ -293,12 +307,12 @@ describe('la cadena entera: "listo" → tools → PDF → WhatsApp (solo el I/O 
 
   it('CONTROL de M19 — el ejemplar del CONTRALOR sí trae el veredicto fiscal', async () => {
     await processInbound(listo);
-    expect(await textoDelPdf(subidos.get(`${TENANT}/v1.pdf`)!)).toMatch(/lista negra|EFOS/);
+    expect(await textoDelPdf(subidos.get(`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`)!)).toMatch(/lista negra|EFOS/);
   });
 
   it('el PDF que recibe el chofer NO trae lo que él no puede arreglar (M19)', async () => {
     await processInbound(listo);
-    const t = await textoDelPdf(subidos.get(`${TENANT}/v1-operador.pdf`)!);
+    const t = await textoDelPdf(subidos.get(`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf`)!);
     expect(t, 'al chofer le llegó el ejemplar del contralor').not.toMatch(/lista negra|EFOS/);
     // Y sí trae su liquidación: "arreglar" M19 con un PDF vacío no vale.
     expect(t).toMatch(/Juan/);
@@ -323,7 +337,7 @@ describe('la cadena entera: "listo" → tools → PDF → WhatsApp (solo el I/O 
 
   it('el PDF imprime el mismo comprobado que el mensaje (M11)', async () => {
     await processInbound(listo);
-    const pdf = await textoDelPdf(subidos.get(`${TENANT}/v1.pdf`)!);
+    const pdf = await textoDelPdf(subidos.get(`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`)!);
     expect(pdf).toMatch(/\$5,500\.00/);
     expect(pdf, 'el PDF imprimió una cifra que no es la del motor').not.toMatch(/55,000\.00/);
   });
@@ -341,10 +355,11 @@ describe('la cadena entera: "listo" → tools → PDF → WhatsApp (solo el I/O 
     expect(saveLiquidacion).toHaveBeenCalledWith(
       TENANT,
       expect.objectContaining({ totalComprobado: 5500, totalDeducible: 4300, totalNoDeducible: 1200 }),
-      `${TENANT}/v1.pdf`,
+      `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`,
       // El conteo de comprobantes que la 0158 compara dentro del candado del
       // viaje (DAT-02): el papel archivado y la base cuentan lo mismo.
       expect.any(Number),
+      { version: 1, hash: 'a'.repeat(64) },
     );
   });
 });
@@ -361,7 +376,7 @@ describe('la cadena cuando el storage falla: ni se envía un PDF que no existe, 
     } finally {
       storage.rechazaEjemplarDelOperador = false;
     }
-    expect(subidos.has(`${TENANT}/v1.pdf`), 'el del contralor sí tenía que subir').toBe(true);
+    expect(subidos.has(`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`), 'el del contralor sí tenía que subir').toBe(true);
     expect(documentos(), 'se envió un PDF que no existe').toHaveLength(0);
     expect(logger.error).toHaveBeenCalledWith('pdf.no_entregado', expect.objectContaining({ viaje: 'v1', pdfGenerado: false }));
     const dicho = textos().map((t) => (t.body.text as { body: string }).body).join('\n');

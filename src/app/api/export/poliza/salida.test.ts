@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import filasSql342 from './fixtures/poliza342_rpc.json';
+import { parseCfdiXml } from '@/lib/likida/intake/cfdi_xml';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 22 · PRU-C1 (CRÍTICO) — la ruta que exporta el asiento contable no
@@ -95,7 +97,7 @@ const SANA = {
   porConcepto: [{ concepto: 'diesel', subtotal: 3000, baseConocida: true }],
   baseDesconocida: 0,
   // Forma de la RPC 0281 (auditoría 24): `version` y los insumos por comprobante.
-  version: 281,
+  version: 342, revision: 'aprobada',
   gastos: [{ id: 'g1', concepto: 'diesel', monto: 3480, subtotal: 3000, descuento: null, tieneCfdi: true, cfdiUuid: 'u-g1', formaPago: '03' }],
   diferencias: [],
   retenciones: 0,
@@ -106,6 +108,69 @@ beforeEach(() => {
   perfil = PERFIL_CONTPAQI;
   filas = [SANA];
   resolverTenantApi.mockResolvedValue({ ok: true as const, tenantId: 'tenant-1', rol: 'contador' });
+});
+
+describe('póliza y revisión humana: no inventar impuestos ni asentar sin firma', () => {
+  it('un periodo mixto no entrega un archivo parcial ni acredita una pendiente', async () => {
+    filas = [
+      { ...SANA, version: 342, revision: 'aprobada' },
+      { ...SANA, version: 342, liquidacionId: 'pendiente', folioViaje: 'SIN-FIRMA', revision: 'pendiente' },
+    ];
+    const r = await pedir();
+    expect(r.status).toBe(409);
+    const contenido = await r.text();
+    expect(contenido).toContain('SIN-FIRMA');
+    expect(contenido).toMatch(/firma|revis/i);
+    expect(r.headers.get('content-disposition')).toBeNull();
+  });
+
+  it.each([5480, 1480])('nombra el ajuste incompatible a %s sin inventar un impuesto ni llamarlo dato roto', async (monto) => {
+    filas = [{
+      ...SANA, version: 342, revision: 'ajustada',
+      comprobado: monto, diferencia: SANA.anticipo - monto,
+      gastos: [{ ...SANA.gastos[0], monto, ivaTraslado: 480, iepsTraslado: 0 }],
+    }];
+    const r = await pedir();
+    expect(r.status).toBe(409);
+    const contenido = await r.text();
+    expect(contenido).toMatch(/ajuste/i);
+    expect(contenido).toContain('g1');
+    expect(contenido).not.toContain('es menor que la base');
+  });
+
+  it.each([2000, 4000])('permite corregir un monto anterior de %s al desglose real 3000 + 480', async (montoAnterior) => {
+    filas = [{
+      ...SANA, revision: 'ajustada',
+      ajustes: [{ gasto_id: 'g1', monto_anterior: montoAnterior, monto_nuevo: 3480 }],
+      gastos: [{ ...SANA.gastos[0], ivaTraslado: 480, iepsTraslado: 0 }],
+    }];
+    const r = await pedir();
+    expect(r.status).toBe(200);
+    const contenido = await r.text();
+    expect(contenido).toContain('1180-001');
+    expect(contenido).not.toContain('1180-002');
+  });
+
+  it('el preflight tampoco llama listo a un periodo sin firma', async () => {
+    filas = [{ ...SANA, revision: 'pendiente' }];
+    const r = await GET(new Request(`${URL_POLIZA}&preflight=1`));
+    expect(r.status).toBe(409);
+    expect((await r.json()).error).toBe('liquidaciones_sin_firma');
+  });
+
+  it('una RPC sin revisión no se interpreta como aprobada', async () => {
+    filas = [{ ...SANA, revision: undefined }];
+    const r = await pedir();
+    expect(r.status).toBe(409);
+    expect((await r.json()).error).toBe('rpc_desactualizada');
+  });
+
+  it('no reconstruye impuestos ausentes de una liquidación ajustada', async () => {
+    filas = [{ ...SANA, revision: 'ajustada' }];
+    const r = await pedir();
+    expect(r.status).toBe(409);
+    expect(await r.text()).toContain('desglose fiscal completo');
+  });
 });
 
 describe('PRU-C1: el export de póliza, ejecutado de verdad', () => {
@@ -187,7 +252,7 @@ describe('FIS-4: sin la RPC correcta NO hay póliza — se dice qué migración 
     expect(r.status).toBe(409);
     const j = await r.json();
     expect(j.error).toBe('rpc_desactualizada');
-    expect(j.migracionEsperada).toContain('0281');
+    expect(j.migracionEsperada).toContain('0342');
   });
 
   it('la RPC 0272 (con `gastos` pero sin `version`) también: sin monto ni forma de pago no se clasifica', async () => {
@@ -396,4 +461,76 @@ describe('PRU-A2: `Line_ID` numera los renglones dentro de cada JdtNum', () => {
     // dos archivos no se importan juntos.
     expect(renglones(j.archivos['oJournalEntries.txt'] as string).map((f) => f[0])).toEqual(['1', '2']);
   });
+});
+
+// Captura sintética real de supabase/tests/0342_poliza_revision_y_desglose.sql.
+// Se crea por guardar_liquidacion_tx → revisar_liquidacion → poliza_datos_tenant.
+// El transporte devuelve esa captura; la clasificación y el archivo son reales.
+describe('contrato SQL 0342 hasta la salida contable', () => {
+  it('el periodo real con pendiente no genera archivo parcial', async () => {
+    filas = filasSql342;
+    const r = await pedir();
+    expect(r.status).toBe(409);
+    expect(await r.json()).toMatchObject({ error: 'liquidaciones_sin_firma', folios: ['PENDIENTE'] });
+    expect(r.headers.get('content-disposition')).toBeNull();
+  });
+
+  it.each(['AJUSTE-SUBE-INCOMPATIBLE', 'AJUSTE-BAJA-INCOMPATIBLE'])(
+    '%s conserva tributos del CFDI y bloquea el asiento', async (folio) => {
+      filas = filasSql342.filter((f) => f.folioViaje === folio);
+      expect(filas).toHaveLength(1);
+      const r = await pedir();
+      expect(r.status).toBe(409);
+      const body = JSON.stringify(await r.json());
+      expect(body).toContain(folio);
+      expect(body).toContain('no coincide con el desglose fiscal 3480.00');
+      expect(r.headers.get('content-disposition')).toBeNull();
+    },
+  );
+
+  it.each(['APROBADA', 'AJUSTE-SUBE-COHERENTE', 'AJUSTE-BAJA-COHERENTE'])(
+    '%s permite el asiento con los impuestos documentados', async (folio) => {
+      filas = filasSql342.filter((f) => f.folioViaje === folio);
+      expect(filas).toHaveLength(1);
+      const r = await pedir();
+      expect(r.status).toBe(200);
+      const archivo = await r.text();
+      expect(archivo).toContain('1180-001');
+      expect(archivo).not.toContain('1180-002');
+      expect(archivo).toContain('480.00');
+    },
+  );
+});
+
+
+it.each(['ivaTraslado', 'iepsTraslado'])('un traslado NULL (%s) no equivale a cero conocido', async (campo) => {
+  filas = [{ ...SANA, revision: 'ajustada', comprobado: 3000, diferencia: 2000, ivaAcreditable: 0,
+    gastos: [{ ...SANA.gastos[0], monto: 3000, ivaTraslado: 0, iepsTraslado: 0, [campo]: null }] }];
+  const r = await pedir();
+  expect(r.status).toBe(409);
+  expect(JSON.stringify(await r.json())).toContain('desglose fiscal completo');
+  expect(r.headers.get('content-disposition')).toBeNull();
+});
+
+
+it('XML sin traslado IEPS produce cero conocido, coincide con SQL y permite la corrección', async () => {
+  const xml = `<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" Version="4.0" TipoDeComprobante="I" SubTotal="3000" Total="3480" FormaPago="03">
+    <cfdi:Emisor Rfc="XAXX010101000"/><cfdi:Receptor Rfc="XEXX010101000"/>
+    <cfdi:Conceptos><cfdi:Concepto ClaveProdServ="15101505" Cantidad="1" ValorUnitario="3000" Importe="3000"/></cfdi:Conceptos>
+    <cfdi:Impuestos><cfdi:Traslados><cfdi:Traslado Impuesto="002" Importe="480" TipoFactor="Tasa" TasaOCuota="0.160000"/></cfdi:Traslados></cfdi:Impuestos>
+    <cfdi:Complemento><tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital" UUID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"/></cfdi:Complemento>
+  </cfdi:Comprobante>`;
+  const parsed = parseCfdiXml(xml)!;
+  expect(parsed).not.toBeNull();
+  expect(parsed.iepsTraslado).toBe(0);
+  expect(parsed.ivaTraslado).toBe(480);
+  // La captura SQL real ya recorrió la corrección 2000→3480 y conservó
+  // exactamente estos tributos (repo_escritura prueba que el cero no es NULL).
+  const sql = filasSql342.find((f) => f.folioViaje === 'AJUSTE-SUBE-COHERENTE')!;
+  expect(sql.gastos[0].iepsTraslado).toBe(parsed.iepsTraslado);
+  expect(sql.gastos[0].ivaTraslado).toBe(parsed.ivaTraslado);
+  filas = [sql];
+  const r = await pedir();
+  expect(r.status).toBe(200);
+  expect(await r.text()).not.toContain('1180-002');
 });

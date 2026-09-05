@@ -75,6 +75,29 @@ beforeEach(() => {
 });
 
 describe('POST /api/stripe/webhook — la puerta del plan', () => {
+  it('un body chunked excesivo se corta durante la lectura, antes de verificar firma', async () => {
+    let pedidos = 0;
+    const cuerpo = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 40) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(64 * 1024).fill(120));
+      },
+    });
+    const solicitud = new NextRequest('https://x/stripe/webhook', {
+      method: 'POST',
+      headers: { 'stripe-signature': 'firma', 'content-type': 'application/json' },
+      body: cuerpo,
+      duplex: 'half',
+    });
+
+    const r = await POST(solicitud);
+
+    expect(r.status).toBe(413);
+    expect(pedidos).toBeLessThanOrEqual(18);
+    expect(firmaValida).not.toHaveBeenCalled();
+  });
+
   it('sin secreto configurado contesta 503 y NO procesa', async () => {
     configurado.mockReturnValueOnce(false);
     const r = await POST(req({ id: 'evt-1', type: 'x', data: { object: {} } }));

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA PROD (22-ago-2026) · ESC-14 — 16 MB prometidos contra 4.5 reales.
@@ -37,6 +38,23 @@ function postear(cuerpo: unknown, cabeceras: Record<string, string> = {}) {
 beforeEach(() => {
   sesion = { userId: 'u-1', tenantId: 't-1', rol: 'contador', nombre: 'C' };
   leer.mockClear();
+});
+
+it('corta campos ignorados del JSON chunked antes de materializar el cuerpo', async () => {
+  sesion = { userId: 'u-stream', tenantId: 't-1', rol: 'contador', nombre: 'C' };
+  const p = peticionStream('https://app.likida.ai/api/dashboard/archivo', JSON.stringify({
+    nombre: 'a.csv', contenido: 'data:text/csv;base64,QUJD', ignorado: 'x'.repeat(MAX_BASE64 + 200_000),
+  }));
+  const res = await POST(p.req as never);
+  expect(res.status).toBe(413);
+  expect(leer).not.toHaveBeenCalled();
+  expect(p.estado().cancelado).toBe(true);
+  expect(p.estado().leidos).toBeLessThan(p.estado().total);
+});
+
+it('JSON null se rechaza con400 sin intentar leer un archivo', async () => {
+  expect((await postear(null)).status).toBe(400);
+  expect(leer).not.toHaveBeenCalled();
 });
 
 describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {

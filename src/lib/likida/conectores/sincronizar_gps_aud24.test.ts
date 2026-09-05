@@ -67,7 +67,10 @@ vi.mock('@/lib/supabase/admin', () => ({
         }
         if (modo === 'upsert') {
           upserts.push(payload as Array<Record<string, unknown>>);
-          return { data: null, error: null };
+          return {
+            data: (payload as Array<Record<string, unknown>>).map((_, i) => ({ id: `p-${i}` })),
+            error: null,
+          };
         }
         if (tabla === 'unidad') {
           return { data: UNIDADES.filter(casa).map((u) => ({ id: u.id, gps_device_id: u.gps_device_id })), error: null };
@@ -189,6 +192,24 @@ describe('LEG-1 · no se rastrea antes de avisar', () => {
     expect(r.error).toMatch(/no se guardó ninguna posición/);
     expect(upserts).toHaveLength(0);
   });
+
+  it('dos operadores vivos en la misma unidad fallan cerrado aunque ambos tengan aviso', async () => {
+    viajesVivos = [
+      { tenant_id: 't-1', unidad_id: 'u-0', operador_id: 'op-a', estatus: 'abierto' },
+      { tenant_id: 't-1', unidad_id: 'u-0', operador_id: 'op-b', estatus: 'en_cuadre' },
+    ];
+    operadores = [
+      { id: 'op-a', tenant_id: 't-1', aviso_privacidad_en: '2026-08-01T00:00:00Z' },
+      { id: 'op-b', tenant_id: 't-1', aviso_privacidad_en: '2026-08-01T00:00:00Z' },
+    ];
+
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, httpQue(lecturas(1)), ahora);
+
+    expect(r.sinAvisoPrevio).toBe(1);
+    expect(r.guardadas).toBe(0);
+    expect(filasGuardadas()).toEqual([]);
+    expect(sellos).toEqual([]);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -216,6 +237,30 @@ describe('REN-2 · el tope deja de ser mudo', () => {
     expect(r.descartadas).toBe(1);
     expect(r.leidas).toBe(1);
     expect(filasGuardadas().map((f) => f.unidad_id)).toEqual(['u-0']);
+  });
+
+  it('velocidad 257.5 se descarta sola y las otras 499 sí llegan a Postgres', async () => {
+    conAvisoTodos(500);
+    const cuerpo = JSON.stringify({
+      data: Array.from({ length: 500 }, (_, i) => ({
+        id: `dev-${i}`,
+        gps: {
+          latitude: 20.9 + i * 0.00001,
+          longitude: -89.5,
+          time: new Date(AHORA - 60_000).toISOString(),
+          // 160 mph normaliza a 257.5 km/h: viola exactamente CHECK < 250.
+          speedMilesPerHour: i === 201 ? 160 : 10,
+        },
+      })),
+    });
+
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, httpQue(cuerpo), ahora);
+
+    expect(r.descartadas).toBe(1);
+    expect(r.leidas).toBe(499);
+    expect(r.guardadas).toBe(499);
+    expect(filasGuardadas()).toHaveLength(499);
+    expect(filasGuardadas().some((f) => f.unidad_id === 'u-201')).toBe(false);
   });
 });
 

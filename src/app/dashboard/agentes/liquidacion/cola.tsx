@@ -47,9 +47,9 @@ const ROTULO_VACIO: Record<RevisionLiquidacion, string> = {
 };
 
 const ROTULO_ESTADO: Record<string, { rotulo: string; fg: string; bg: string }> = {
-  cuadrada: { rotulo: 'Cuadrada', fg: 'var(--ok)', bg: 'var(--ok-bg)' },
-  con_diferencias: { rotulo: 'Con diferencias', fg: 'var(--bad)', bg: 'var(--bad-bg)' },
-  revisar: { rotulo: 'Revisar', fg: 'var(--warn)', bg: 'var(--warn-bg)' },
+  cuadrada: { rotulo: 'Cuadrada', fg: 'var(--ok)', bg: 'var(--okbg)' },
+  con_diferencias: { rotulo: 'Con diferencias', fg: 'var(--bad)', bg: 'var(--badbg)' },
+  revisar: { rotulo: 'Revisar', fg: 'var(--warn)', bg: 'var(--warnbg)' },
 };
 
 export interface ColaProps {

@@ -87,7 +87,7 @@ describe('la ruta pública no puede llegar a pago_recibido', () => {
 
   it('trae los tres candados del molde #124, en la fuente', () => {
     const src = leer(RUTA_PUBLICA);
-    expect(src).toContain('bodyExcede');
+    expect(src).toContain('leerTextoAcotado');
     expect(src).toContain('rateLimit');
     expect(src).toContain('esCarnada');
   });

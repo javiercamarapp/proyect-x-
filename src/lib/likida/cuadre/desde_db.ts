@@ -2,7 +2,7 @@
 // Fuente única de verdad del cuadre; la usan las tools del agente Y la guardia
 // determinística del processor (para no depender de que el LLM llame la tool).
 
-import { cuadrarViaje, medioNoAdmitidoCombustible } from './engine';
+import { cuadrarViaje, medioNoAdmitidoCombustible, formaPagoJuzgableDe } from './engine';
 import { ventanaDelViaje } from './fecha_dudosa';
 import { getViaje, getGastos, getOperador, getAcumuladoCombustible, getPerfilCrudo } from '../repo';
 import { getConfig } from '../config';
@@ -52,18 +52,22 @@ export async function cuadrarDesdeDB(
    * el resto de este contador.
    */
   gastosOverride?: Gasto[],
+  opciones: { modo?: 'best_effort' | 'cierre' } = {},
 ): Promise<Omit<Liquidacion, 'id' | 'creadaEn'>> {
+  const cierreEstricto = opciones.modo === 'cierre';
   const [viaje, gastosDb, config, perfilCrudo] = await Promise.all([
     getViaje(viajeId, tenantId),
     gastosOverride ? Promise.resolve(gastosOverride) : getGastos(viajeId, tenantId),
     getConfig(tenantId),
-    // El perfil solo gobierna un BENEFICIO fiscal. Si no se puede leer, el
-    // viaje puede cerrarse, pero el estímulo no se concede: `null` llega al
-    // motor como `undefined` y la puerta del estímulo es fail-closed.
-    getPerfilCrudo(tenantId).catch((e) => {
-      logger.warn('desde_db.perfil_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
-      return {};
-    }),
+    // El perfil solo gobierna un BENEFICIO fiscal. Los usos informativos
+    // conservan el fallback sin estímulo; el cierre exige que la lectura sea
+    // determinada para que PDF, hash y persistencia partan del mismo insumo.
+    cierreEstricto
+      ? getPerfilCrudo(tenantId)
+      : getPerfilCrudo(tenantId).catch((e) => {
+          logger.warn('desde_db.perfil_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+          return {};
+        }),
   ]);
   const gastos = gastosOverride ?? gastosDb;
   if (!viaje) throw new Error('viaje no encontrado');
@@ -118,15 +122,14 @@ export async function cuadrarDesdeDB(
   // tool de periodo) con las claves del SAT — una sola barrida del ejercicio,
   // no dos consultas duplicadas con criterios que podían divergir.
   //
-  // Best-effort a propósito: el contador del 15% es CONTEXTO valioso, no un
-  // requisito para cerrar un viaje. Un fallo aquí no puede tumbar la
-  // liquidación (mismo criterio que la tool de periodo en tools.ts) — el motor
-  // recibe ceros y la rama 'sin datos del ejercicio' marca el efectivo para
-  // revisar, que es el fail-cerrado honesto.
+  // Los usos informativos son best-effort: si falla, el motor recibe ceros y
+  // marca el efectivo para revisar. El cierre, en cambio, propaga el fallo:
+  // degradar a cero produciría un PDF y un snapshot fiscal inventados.
   let totalesEjercicio = { efectivo: 0, totalCombustible: 0 };
   try {
     totalesEjercicio = await getAcumuladoCombustible(tenantId, Number(anioEjercicio), clavesCombustible);
   } catch (e) {
+    if (cierreEstricto) throw e;
     logger.warn('desde_db.contador_15_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
   }
   // El efectivo PREVIO excluye los gastos de ESTE viaje (los está procesando
@@ -140,9 +143,34 @@ export async function cuadrarDesdeDB(
   // la LISR 27-III. Sin este cambio, restar solo el '01' de este viaje contra
   // un total SQL que ahora sí cuenta los demás medios habría dejado el
   // "previo" con la porción no-'01' de ESTE viaje contada DOS veces.
+  //
+  // AUDITORÍA 26, FIS-C2 (CRÍTICO, reincidente de la 23, la 24 y la 25): la
+  // misma frontera, un nivel más adentro. La mig. 0305 movió el ACUMULADO a la
+  // forma EFECTIVA (un '99' con REP cuenta por `pagado_forma`) y dejó esta
+  // resta con la CRUDA, sobre la premisa —escrita en su cabecera y falsa— de
+  // que `Gasto` no trae `pagadoForma`; `repo.ts` lo mapea desde siempre. Con
+  // los dos términos juzgando distinto, un diésel '99' cuyo REP dice efectivo
+  // entraba al acumulado y NO se restaba: el comprobante consumía su propio
+  // cupo del 15% antes de evaluarse y salía «No deducible» en el PDF contra lo
+  // que la RFA 2026 2.9 concede. `formaPagoJuzgableDe` se importa del motor en
+  // vez de reimplementarse; es la regla de la 0305 salvo en un caso que sigue
+  // divergiendo y queda anotado como hallazgo abierto (un REP cuyo
+  // `FormaDePagoP` es a su vez '99': la RPC lo cuenta y este predicado no lo
+  // juzga).
+  //
+  // AUDITORÍA 26, REAUDITORÍA DEL ARREGLO: el `.filter` tiene que espejar el
+  // `where` de la RPC en TODOS sus términos, no solo en el de la forma de
+  // pago. La 0305 acota `fecha >= make_date(anio,1,1) and fecha <=
+  // make_date(anio,12,31)`, y una `fecha` NULL falla las dos comparaciones: el
+  // gasto SIN FECHA no entra al acumulado. El `?? anioEjercicio` lo daba por
+  // del ejercicio y lo restaba igual, dejando el previo CORTO — el error hacia
+  // el otro lado: regalar cupo del 15% que la regla no concede. El comentario
+  // de la AUDITORÍA 16 aquí arriba ya declaraba la regla completa («un gasto
+  // de otro año O SIN FECHA no está en el contador»); solo la mitad de «otro
+  // año» estaba implementada.
   const efectivoDeEsteViaje = gastos
-    .filter((g) => (g.fecha?.slice(0, 4) ?? anioEjercicio) === anioEjercicio
-      && medioNoAdmitidoCombustible(g.formaPago) && (g.concepto === 'diesel' || clavesCombustible.includes(g.claveProdServ ?? '')))
+    .filter((g) => g.fecha != null && g.fecha.slice(0, 4) === anioEjercicio
+      && medioNoAdmitidoCombustible(formaPagoJuzgableDe(g)) && (g.concepto === 'diesel' || clavesCombustible.includes(g.claveProdServ ?? '')))
     .reduce((s, g) => s + Number(g.monto ?? 0), 0);
   const efectivoPrevEjercicio = Math.max(0, totalesEjercicio.efectivo - efectivoDeEsteViaje);
   const totalCombustibleEjercicio = totalesEjercicio.totalCombustible;
@@ -174,10 +202,12 @@ export async function cuadrarDesdeDB(
     oposicionTitular,
     facilidad15,
     elegiblePeaje,
-    lineasEcc: await lineasEccParaCuadre(tenantId, gastos).catch((e) => {
-      logger.warn('desde_db.ecc_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
-      return [] as LineaEccRef[];
-    }),
+    lineasEcc: cierreEstricto
+      ? await lineasEccParaCuadre(tenantId, gastos)
+      : await lineasEccParaCuadre(tenantId, gastos).catch((e) => {
+          logger.warn('desde_db.ecc_no_disponible', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+          return [] as LineaEccRef[];
+        }),
     totalCombustibleEjercicio,
     efectivoPrevEjercicio,
     anioEjercicio,
@@ -219,11 +249,16 @@ async function lineasEccParaCuadre(tenantId: string, gastos: Gasto[]): Promise<L
     'desde_db.lineas_ecc',
   );
   if (error) throw new Error(`lineas ecc: ${error.message}`);
-  return ((data ?? []) as Array<{ fecha: unknown; monto: unknown; estacion_rfc: unknown }>)
-    .map((r) => ({
-      fecha: typeof r.fecha === 'string' ? r.fecha : undefined,
-      monto: Number(r.monto),
-      estacionRfc: typeof r.estacion_rfc === 'string' ? r.estacion_rfc : undefined,
-    }))
-    .filter((l) => Number.isFinite(l.monto));
+  if (!Array.isArray(data) || data.some((r) => {
+    const fila = r as { fecha?: unknown; monto?: unknown; estacion_rfc?: unknown } | null;
+    return !fila || typeof fila.fecha !== 'string'
+      || typeof fila.estacion_rfc !== 'string' || !Number.isFinite(Number(fila.monto));
+  })) {
+    throw new Error('lineas ecc: respuesta inválida');
+  }
+  return (data as Array<{ fecha: string; monto: unknown; estacion_rfc: string }>).map((r) => ({
+    fecha: r.fecha,
+    monto: Number(r.monto),
+    estacionRfc: r.estacion_rfc,
+  }));
 }

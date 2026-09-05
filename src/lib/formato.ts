@@ -47,6 +47,21 @@ export function hoyMx(fecha: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: TZ_MX, year: 'numeric', month: '2-digit', day: '2-digit' }).format(fecha);
 }
 
+/** Día natural de un instante en una zona IANA. Postgres es la autoridad para
+ * persistir el bucket; este helper sólo cubre el fallback de despliegue y hace
+ * explícito que el servidor no debe usar su zona local. */
+export function diaEnZona(momento: Date, zonaHoraria: string): string {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zonaHoraria, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(momento);
+  const valor = (tipo: Intl.DateTimeFormatPartTypes) =>
+    partes.find((p) => p.type === tipo)?.value;
+  const dia = `${valor('year')}-${valor('month')}-${valor('day')}`;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) throw new Error(`zona IANA inválida: ${zonaHoraria}`);
+  return dia;
+}
+
+
 /**
  * El desfase fijo de México contra UTC, para armar un instante a partir de un
  * día de calendario. Va en horas enteras y NO cambia en todo el año: México
@@ -165,7 +180,7 @@ export function mxn(n: number): string {
  * contador MEXICANO leyendo pesos.
  */
 export function usd(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' }).replace('$', 'US$');
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' }).replaceAll('$', 'US$');
 }
 
 /**
@@ -183,7 +198,7 @@ export function usd(n: number): string {
  * centavo: `usd(0.0003)` daría "US$0.00", que se lee como "gratis".
  */
 export function usd4(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).replace('$', 'US$');
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).replaceAll('$', 'US$');
 }
 
 /** El corte a partir del cual `mxnCompacto` abrevia. Por debajo, la cifra se
@@ -403,4 +418,25 @@ export function pesoArchivo(bytes: number | null | undefined): string {
   if (kb < 1024) return `${Math.round(kb)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+}
+
+/** Fecha RFC3339 estricta y normalizada. Las partes de tamaño fijo se validan
+ * separadas de la fracción para evitar cuantificadores anidados y discrepancias
+ * entre el webhook y el reconciliador de Cal.com. No recorta whitespace. */
+export function instanteRFC3339(valor: unknown): string | null {
+  if (typeof valor !== 'string') return null;
+  const base = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(valor.slice(0, 19));
+  if (!base) return null;
+  const zona = valor.endsWith('Z') ? 'Z' : valor.slice(-6);
+  if (zona !== 'Z' && !/^[+-]\d{2}:\d{2}$/.test(zona)) return null;
+  const fraccion = valor.slice(19, valor.length - zona.length);
+  if (fraccion && !/^\.\d+$/.test(fraccion)) return null;
+  const [year, month, day, hour, minute, second] = base.slice(1).map(Number);
+  const bisiesto = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const diasMes = [31, bisiesto ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > diasMes[month - 1]
+      || hour > 23 || minute > 59 || second > 59) return null;
+  if (zona !== 'Z' && (Number(zona.slice(1, 3)) > 23 || Number(zona.slice(4)) > 59)) return null;
+  const ms = Date.parse(valor);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }

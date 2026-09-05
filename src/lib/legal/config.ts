@@ -56,7 +56,8 @@ const REQUISITOS_ENTIDAD: Array<[keyof typeof LEGAL_CONFIG, string]> = [
 ];
 
 /**
- * LOS CUATRO DOCUMENTOS. NO bloquean el build — se reportan como faltantes.
+ * LOS CUATRO DOCUMENTOS. En producción bloquean por default; el estado siempre
+ * los reporta como faltantes aunque se use la válvula temporal de hotfix.
  *
  * ── POR QUÉ SE SEPARARON (24-ago-2026) ──────────────────────────────────
  *
@@ -70,14 +71,9 @@ const REQUISITOS_ENTIDAD: Array<[keyof typeof LEGAL_CONFIG, string]> = [
  * Un guardarraíl que también bloquea las REPARACIONES no protege: amplifica.
  * Convirtió un error de diez minutos en uno de horas.
  *
- * La protección real de estos cuatro no es impedir el deploy — es no AFIRMAR
- * que existen documentos que no existen. Eso lo resuelve `LEGAL_PLACEHOLDERS`,
- * que ya estaba escrito para exactamente esto y no lo usaba ninguna página.
- * `estadoLegalProduccion()` los sigue reportando en `faltantes`, así que quien
- * quiera un gate de venta enterprise lo tiene con el dato a la mano.
- *
- * Si algún día se quiere volver al comportamiento anterior, existe la palanca:
- * `LEGAL_ENFORCE_DOCS=true` los vuelve bloqueantes.
+ * Por eso existe una válvula explícita para publicar una reparación urgente:
+ * `LEGAL_ENFORCE_DOCS=false`. No es un alta enterprise y no oculta faltantes;
+ * omitir la variable mantiene el gate cerrado.
  */
 const REQUISITOS_DOCUMENTOS: Array<[keyof typeof LEGAL_CONFIG, string]> = [
   ['dpaVersion', 'LEGAL_DPA_VERSION'],
@@ -98,16 +94,19 @@ export function estadoLegalProduccion() {
     faltantes,
     faltantesEntidad,
     faltantesDocumentos,
-    /** Lo único que impide construir producción. */
+    /** Estado mínimo de identidad; `exigirLegalEnProduccion` aplica además
+     * los anexos según la política de despliegue. */
     bloqueado: faltantesEntidad.length > 0,
   };
 }
 
-/** Solo bloquea cuando el despliegue lo activa explícitamente. */
+/** En producción los anexos son bloqueantes por defecto. Un hotfix puede usar
+ * `LEGAL_ENFORCE_DOCS=false` de forma explícita y temporal; omitir la variable
+ * ya no convierte documentos ausentes en un alta enterprise válida. */
 export function exigirLegalEnProduccion(): void {
   if (process.env.VERCEL_ENV !== 'production' && process.env.LEGAL_ENFORCE_PRODUCTION !== 'true') return;
   const estado = estadoLegalProduccion();
-  const exigirDocs = process.env.LEGAL_ENFORCE_DOCS === 'true';
+  const exigirDocs = process.env.LEGAL_ENFORCE_DOCS !== 'false';
   const bloqueantes = exigirDocs ? estado.faltantes : estado.faltantesEntidad;
   if (bloqueantes.length > 0) {
     throw new Error(`LEGAL_PRODUCTION_BLOCKED: faltan ${bloqueantes.join(', ')}`);

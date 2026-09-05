@@ -86,6 +86,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   claimMessage: (...a: unknown[]) => claimMessage(...(a as [string])),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
+  fotoAnteriorSinProcesar: vi.fn(async () => false),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
@@ -161,11 +162,11 @@ vi.mock('@/lib/observability/alerta', async (importOriginal) => ({
 const { processInbound } = await import('./processor');
 const { PartialExecutionError } = await import('@/lib/llm/openrouter');
 
-const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', waMessageId: 'wa1' };
+const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
 const cierre = (pdf_generado: boolean, pdf_contralor_generado = pdf_generado) => ({
   finalText: 'Listo, cerré tu viaje',
-  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado, pdf_contralor_generado }, durationMs: 5 }],
+  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: pdf_generado || pdf_contralor_generado ? 't1/v1.pdf' : null, pdf_generado, pdf_contralor_generado }, durationMs: 5 }],
   model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0,
 });
 
@@ -491,7 +492,7 @@ describe('ctxCerro en la recuperación de cierre parcial (AUD-7 ALTO-1)', () => 
   });
 
   it('el log del catch general dice la verdad: la liquidación SÍ se cerró', async () => {
-    const parcial = [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true }, durationMs: 5 }];
+    const parcial = [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true }, durationMs: 5 }];
     runAgent.mockRejectedValue(new PartialExecutionError('boom', new Error('boom'), parcial, 10, 10, 0));
     // Lo último del camino feliz truena DESPUÉS de que la recuperación ya marcó
     // el cierre: aquí es donde `ctxCerro` tenía que haber quedado en `true`.
@@ -537,7 +538,7 @@ describe('AUD3 AG-A1: "ya" pelón y "ya voy" NO son cierre; las formas fuertes s
   it.each(['ya', 'ya voy'])(
     '"%s" NO dispara el freno de cierre: sigue su camino al agente',
     async (texto) => {
-      await processInbound({ from: '5219993700779', type: 'text', text: texto, waMessageId: `wa-${texto}` });
+      await processInbound({ from: '5219993700779', type: 'text', text: texto, timestampMs: 1788534000000, waMessageId: `wa-${texto}` });
       expect(avisosDelFreno(), `el freno trató "${texto}" como cierre`).toHaveLength(0);
       expect(runAgent).toHaveBeenCalledTimes(1);
     },
@@ -546,7 +547,7 @@ describe('AUD3 AG-A1: "ya" pelón y "ya voy" NO son cierre; las formas fuertes s
   it.each(['ya está', 'ya quedó', 'listo', 'terminé', 'ya terminé', 'ya no tengo más'])(
     '"%s" SÍ parece cierre: con cero comprobantes el freno pregunta antes de cerrar',
     async (texto) => {
-      await processInbound({ from: '5219993700779', type: 'text', text: texto, waMessageId: `wa-${texto}` });
+      await processInbound({ from: '5219993700779', type: 'text', text: texto, timestampMs: 1788534000000, waMessageId: `wa-${texto}` });
       expect(avisosDelFreno(), `"${texto}" dejó de contar como cierre`).toHaveLength(1);
       expect(runAgent).not.toHaveBeenCalled();
     },

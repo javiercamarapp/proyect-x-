@@ -147,7 +147,7 @@ vi.mock('@/lib/saas/suscripcion', () => ({ getPlanes: () => getPlanes() }));
 const {
   lunesDeSemana, mesAnterior, tocaCerrar,
   evaluarUmbralesCostos, armarParteTesoreria, armarParteMetricas, armarCierreMensual,
-  correrAgenteFinanciero, semaforoDeRunway,
+  correrAgenteFinanciero, semaforoDeRunway, contarPipeline,
 } = await import('./finanzas');
 
 beforeEach(() => {
@@ -296,10 +296,23 @@ describe('armarParteTesoreria — el runway honesto', () => {
 });
 
 describe('armarParteMetricas — cifra + absoluto + fuente, y el $0 verdadero', () => {
+  it('consulta los 14 valores persistidos y los agrupa en los 11 canónicos', async () => {
+    respuestas.set('prospecto', Array.from({ length: 14 }, () => ({ count: 1, error: null })));
+
+    expect(await contarPipeline()).toEqual([
+      { estado: 'nuevo', n: 1 }, { estado: 'contactado', n: 1 },
+      { estado: 'appointment', n: 1 }, { estado: 'rescheduled', n: 1 },
+      { estado: 'cancelled', n: 1 }, { estado: 'no-show', n: 1 },
+      { estado: 'demo', n: 1 }, { estado: 'proposal', n: 2 },
+      { estado: 'pilot', n: 1 }, { estado: 'won', n: 2 },
+      { estado: 'lost', n: 2 },
+    ]);
+  });
+
   it('con base cero: MRR $0 real (no placeholder) y churn SIN DATO (no 0%)', () => {
     const parte = armarParteMetricas({
       activas: 0, mrrMxn: 0, activasSinPrecio: 0,
-      pipeline: [{ estado: 'nuevo', n: 829 }, { estado: 'cerrado', n: 0 }],
+      pipeline: [{ estado: 'nuevo', n: 829 }, { estado: 'won', n: 0 }],
       conteos: { operadores: 0, liquidaciones: 0, conversacionesWa: 0, usuarios: 3, usuariosPorRol: [] },
       costoIaUsd: 12.34, viajesProcesados: 0, porCobrar: 0, porCobrarMonto: 0,
     }, '2026-08-24');
@@ -307,6 +320,16 @@ describe('armarParteMetricas — cifra + absoluto + fuente, y el $0 verdadero', 
     expect(parte).toContain('Churn: SIN DATO');
     expect(parte).toContain('DESCONOCIDA — cero cerrados');
     expect(parte).not.toContain('Churn: 0%');
+  });
+
+  it('won y cerrado histórico se suman como cierres', () => {
+    const parte = armarParteMetricas({
+      activas: 1, mrrMxn: 9_500, activasSinPrecio: 0,
+      pipeline: [{ estado: 'won', n: 2 }, { estado: 'cerrado', n: 1 }],
+      conteos: { operadores: 0, liquidaciones: 0, conversacionesWa: 0, usuarios: 0, usuariosPorRol: [] },
+      costoIaUsd: 0, viajesProcesados: 0, porCobrar: 0, porCobrarMonto: 0,
+    }, '2026-08-24');
+    expect(parte).toContain('3 cerrados');
   });
 
   it('activas sin precio configurado ⇒ el MRR se declara incompleto, no se inventa', () => {

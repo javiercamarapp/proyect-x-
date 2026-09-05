@@ -84,14 +84,16 @@ export async function GET(req: Request) {
   const venceEn = Date.now() + maxDuration * 1000 - MARGEN_RELOJ_MS;
 
   try {
-    const resultados = await sincronizarGpsTodas(httpReal, { venceEn });
-
     // Los EVENTOS DE SEGURIDAD de las cámaras del cliente van en la MISMA
     // corrida — mismo proveedor, misma credencial, misma cadencia; un cron
     // aparte duplicaría las 8,640 invocaciones/mes por nada (la lección de
     // COSTO-VERCEL-50K). Un evento grave (crash/volcadura) abre el expediente
     // de asistencia y avisa al jefe ANTES de que el chofer pueda escribir.
+    // Van PRIMERO: con presupuesto compartido, la telemetría ordinaria nunca
+    // puede consumir el turno de un choque pendiente.
     const eventos = await sincronizarEventosTodas(httpReal, { venceEn });
+
+    const resultados = await sincronizarGpsTodas(httpReal, { venceEn });
 
     const conError = resultados.filter((r) => r.error);
     const guardadas = resultados.reduce((s, r) => s + r.guardadas, 0);
@@ -101,10 +103,19 @@ export async function GET(req: Request) {
     const eventosGuardados = eventos.reduce((s, r) => s + r.guardados, 0);
     const disparos = eventos.reduce((s, r) => s + r.disparos, 0);
     const eventosSinTurno = eventos.filter((r) => r.sinTurno).length;
+    const backlog = resultados.filter((r) => r.backlog).length;
+    const eventosBacklog = eventos.filter((r) => r.backlog).length;
     // AUDITORÍA 24, REN-2 y LEG-1: lo que la corrida NO guardó, con nombre.
     const recortadas = resultados.reduce((s, r) => s + (r.recortadas ?? 0), 0);
     const sinAvisoPrevio = resultados.reduce((s, r) => s + (r.sinAvisoPrevio ?? 0), 0);
     const eventosSinAvisoPrevio = eventos.reduce((s, r) => s + (r.sinAvisoPrevio ?? 0), 0);
+    const enCuarentena = eventos.reduce((s, r) => s + (r.eventosEnCuarentena ?? 0), 0);
+    const cuarentenaMuertos = eventos.reduce((s, r) => s + (r.eventosCuarentenaMuertos ?? 0), 0);
+    const outboxPendientes = eventos.reduce((s, r) => s + (r.eventosOutboxPendientes ?? 0), 0);
+    const outboxMuertos = eventos.reduce((s, r) => s + (r.eventosOutboxMuertos ?? 0), 0);
+    const avisosPendientes = eventos.reduce((s, r) => s + (r.avisosPendientes ?? 0), 0);
+    const avisosMuertos = eventos.reduce((s, r) => s + (r.avisosMuertos ?? 0), 0);
+    const eventosMuertos = cuarentenaMuertos + outboxMuertos + avisosMuertos;
 
     // Las huérfanas no son un error de la corrida, pero tampoco son ruido: son
     // camiones que el proveedor reporta y que ninguna unidad reclama. Van en el
@@ -125,6 +136,7 @@ export async function GET(req: Request) {
       // REN-2: lecturas válidas que el techo dejó fuera. > 0 = hay camiones
       // que este cron no ve; nunca «ok».
       recortadas,
+      backlogPendiente: backlog,
       // LEG-1: unidades con viaje vivo cuyo operador no ha recibido el aviso
       // de privacidad. Sus posiciones NO se guardaron (art. 16 LFPDPPP).
       sinAvisoPrevio,
@@ -136,9 +148,12 @@ export async function GET(req: Request) {
         guardados: eventosGuardados,
         disparosAsistencia: disparos,
         sinTurnoPorReloj: eventosSinTurno,
+        backlogPendiente: eventosBacklog,
         sinAvisoPrevio: eventosSinAvisoPrevio,
         sinPermiso: eventos.filter((r) => r.sinPermiso).map((r) => ({ tenantId: r.tenantId, proveedor: r.proveedor })),
         conError: eventosConError.length,
+        enCuarentena, cuarentenaMuertos, outboxPendientes, outboxMuertos,
+        avisosPendientes, avisosMuertos,
         errores: eventosConError.map((r) => ({ tenantId: r.tenantId, proveedor: r.proveedor, error: r.error })),
       },
       // El detalle SIN la credencial: aquí solo viaja el id del proveedor.
@@ -151,7 +166,15 @@ export async function GET(req: Request) {
     const cortadaPorReloj = sinTurno > 0 || eventosSinTurno > 0;
     // `parcial` también con recorte o con unidades sin aviso: en los dos casos
     // hay camiones que esta corrida NO sincronizó, y un «ok» lo taparía.
-    const incompleta = recortadas > 0 || sinAvisoPrevio > 0 || eventosSinAvisoPrevio > 0;
+    const incompleta = recortadas > 0 || backlog > 0 || eventosBacklog > 0 ||
+      enCuarentena > 0 || outboxPendientes > 0 || avisosPendientes > 0 || eventosMuertos > 0 ||
+      sinAvisoPrevio > 0 || eventosSinAvisoPrevio > 0;
+    if (eventosMuertos > 0) {
+      const afectados = eventos.filter((r) =>
+        (r.eventosCuarentenaMuertos ?? 0) + (r.eventosOutboxMuertos ?? 0) + (r.avisosMuertos ?? 0) > 0)
+        .map((r) => `${r.tenantId}/${r.proveedor}`).join(', ');
+      await alertarOperador('cron.gps.dlq', { afectados, eventosMuertos });
+    }
     if (conError.length > 0 || eventosConError.length > 0 || cortadaPorReloj || incompleta) {
       logger.warn('cron.gps.parcial', cuerpo);
       await registrarLatido('gps', 'parcial', {
@@ -159,7 +182,9 @@ export async function GET(req: Request) {
         conError: conError.length + eventosConError.length,
         sinTurnoPorReloj: sinTurno + eventosSinTurno,
         recortadas,
+        backlogPendiente: backlog + eventosBacklog,
         sinAvisoPrevio: sinAvisoPrevio + eventosSinAvisoPrevio,
+        eventosMuertos,
       });
     } else {
       logger.info('cron.gps.ok', cuerpo);
@@ -175,4 +200,3 @@ export async function GET(req: Request) {
     return NextResponse.json({ error }, { status: 500 });
   }
 }
-

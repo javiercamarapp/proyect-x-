@@ -23,6 +23,10 @@ const updateGastoCfdiXml = vi.fn();
 const saveCfdiXmlRaw = vi.fn();
 const parseCfdiXml = vi.fn();
 const intakeDelta = vi.fn();
+const resolveOperador = vi.fn(async (): Promise<{ tenantId: string; operadorId: string } | null> => ({ tenantId: 't1', operadorId: 'o1' }));
+const getOpenViaje = vi.fn(async (): Promise<string | null> => 'v1');
+const resolverCuentaOficina = vi.fn(async (): Promise<Record<string, unknown> | null> => null);
+const guardarConsolidado = vi.fn(async () => ({ cfdiXmlId: 'xml', totalLineas: 3, conciliadas: 3, porConciliar: 0 }));
 const getGastos = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 
 vi.mock('@/lib/agents/run', () => ({ runAgent: vi.fn() }));
@@ -30,10 +34,12 @@ vi.mock('@/lib/likida/intake/cfdi_xml', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   parseCfdiXml: (...a: unknown[]) => parseCfdiXml(...a),
 }));
+vi.mock('./contactos', async (original) => ({ ...(await original<Record<string, unknown>>()), resolverCuentaOficina: (...a: []) => resolverCuentaOficina(...a) }));
+vi.mock('./intake/consolidado', async (original) => ({ ...(await original<Record<string, unknown>>()), guardarYConciliarConsolidado: (...a: []) => guardarConsolidado(...a) }));
 vi.mock('@/lib/likida/conv', async (original) => ({
   ...(await original<Record<string, unknown>>()),
-  resolveOperador: vi.fn(async () => ({ tenantId: 't1', operadorId: 'o1' })),
-  getOpenViaje: vi.fn(async () => 'v1'),
+  resolveOperador: (...a: []) => resolveOperador(...a),
+  getOpenViaje: (...a: []) => getOpenViaje(...a),
   getTenantContext: vi.fn(async () => ({ nombre: 'Flota' })),
   loadConversation: vi.fn(async () => ({ id: 'c1', turns: [] })),
   saveConversation: vi.fn(),
@@ -119,9 +125,13 @@ function notaCredito() {
 
 beforeEach(() => {
   salientes.length = 0;
+  resolveOperador.mockResolvedValue({ tenantId: 't1', operadorId: 'o1' });
+  getOpenViaje.mockResolvedValue('v1');
+  resolverCuentaOficina.mockResolvedValue(null);
+  guardarConsolidado.mockClear();
   addGasto.mockReset(); addGasto.mockResolvedValue(undefined);
   updateGastoCfdiXml.mockReset(); updateGastoCfdiXml.mockResolvedValue(undefined);
-  saveCfdiXmlRaw.mockReset(); saveCfdiXmlRaw.mockResolvedValue(undefined);
+  saveCfdiXmlRaw.mockReset(); saveCfdiXmlRaw.mockResolvedValue(true);
   parseCfdiXml.mockReset();
   getGastos.mockReset(); getGastos.mockResolvedValue([]);
   intakeDelta.mockReset(); intakeDelta.mockResolvedValue(1);
@@ -165,5 +175,56 @@ describe('una nota de crédito (TipoDeComprobante=E) no es un gasto deducible', 
     parseCfdiXml.mockReturnValue({ ...notaCredito(), tipoComprobante: 'I' });
     await processInbound(xmlMsg);
     expect(addGasto).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('nota de crédito multiconcepto: las tres puertas conservan sin conciliar', () => {
+  function puerta(nombre: string) {
+    if (nombre === 'oficina') {
+      resolveOperador.mockResolvedValue(null);
+      resolverCuentaOficina.mockResolvedValue({ tenantId: 't1', userId: 'of-1', rol: 'flota_admin', nombre: 'Oficina', email: 'sintetico@example.invalid' });
+    }
+    if (nombre === 'sin viaje') getOpenViaje.mockResolvedValue(null);
+    parseCfdiXml.mockReturnValue({ ...notaCredito(), lineas: [1,2,3].map((indice) => ({ indice, monto: 8000, cantidad: 320, fuente: 'ecc12' })) });
+  }
+  it.each(['oficina', 'sin viaje', 'con viaje'])('%s: el consolidado de ingreso conserva su camino de conciliación', async (p) => {
+    puerta(p);
+    parseCfdiXml.mockReturnValue({ ...notaCredito(), tipoComprobante: 'I', lineas: [1,2,3].map((indice) => ({ indice, monto: 8000, cantidad: 320, fuente: 'ecc12' })) });
+    await processInbound(xmlMsg);
+    expect(guardarConsolidado).toHaveBeenCalledTimes(1);
+    expect(saveCfdiXmlRaw).not.toHaveBeenCalled();
+    expect(salientes).toHaveLength(1);
+  });
+  it.each(['oficina', 'sin viaje', 'con viaje'])('%s: conserva XML y acusa nota de crédito sin gasto/IVA/litros conciliados', async (p) => {
+    puerta(p);
+    await processInbound(xmlMsg);
+    expect(guardarConsolidado).not.toHaveBeenCalled();
+    expect(addGasto).not.toHaveBeenCalled();
+    expect(updateGastoCfdiXml).not.toHaveBeenCalled();
+    expect(saveCfdiXmlRaw).toHaveBeenCalledExactlyOnceWith('t1', notaCredito().uuid, null, '<cfdi:Comprobante/>');
+    expect(salientes).toHaveLength(1);
+    expect(salientes[0]).toMatch(/nota de crédito/i);
+    expect(salientes[0]).toMatch(/guard[eé].*archivo/i);
+    expect(salientes[0]).not.toMatch(/conciliad[oa]|aplica desde el panel/i);
+  });
+  it.each(['oficina', 'sin viaje', 'con viaje'])('%s: una excepción al persistir también produce acuse honesto', async (p) => {
+    puerta(p);
+    saveCfdiXmlRaw.mockRejectedValueOnce(new Error('timeout sintético'));
+    await processInbound(xmlMsg);
+    expect(guardarConsolidado).not.toHaveBeenCalled();
+    expect(salientes).toHaveLength(1);
+    expect(salientes[0]).toMatch(/no pude guardar/i);
+  });
+  it.each(['oficina', 'sin viaje', 'con viaje'])('%s: si no persiste no promete guardar ni conciliar', async (p) => {
+    puerta(p);
+    saveCfdiXmlRaw.mockResolvedValue(false);
+    await processInbound(xmlMsg);
+    expect(guardarConsolidado).not.toHaveBeenCalled();
+    expect(addGasto).not.toHaveBeenCalled();
+    expect(updateGastoCfdiXml).not.toHaveBeenCalled();
+    expect(salientes).toHaveLength(1);
+    expect(salientes[0]).toMatch(/no pude guardar/i);
+    expect(salientes[0]).not.toMatch(/guard[eé] el archivo|quedó guardado/i);
   });
 });

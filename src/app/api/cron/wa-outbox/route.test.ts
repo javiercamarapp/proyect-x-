@@ -40,11 +40,16 @@ vi.mock('@/lib/admin/salud', () => ({
 const reclamarSalidasWhatsApp = vi.fn(async () => [
   { id: 'out-1', payload: { messaging_product: 'whatsapp', to: '5215512345678', text: { body: 'Tu liquidación está lista' } } },
 ]);
-const finalizarSalidaWhatsApp = vi.fn(async () => {});
+const reconciliarReceiptsWhatsApp = vi.fn(async () => 0);
+const purgarReceiptsWhatsApp = vi.fn(async () => 0);
+const finalizarSalidaWhatsApp = vi.fn(async () => ({ ok: true, muerta: false }));
 vi.mock('@/lib/likida/wa_outbox', () => ({
+  reconciliarReceiptsWhatsApp: () => reconciliarReceiptsWhatsApp(),
+  purgarReceiptsWhatsApp: () => purgarReceiptsWhatsApp(),
   reclamarSalidasWhatsApp: (...a: unknown[]) => reclamarSalidasWhatsApp(...(a as [])),
   finalizarSalidaWhatsApp: (...a: unknown[]) => finalizarSalidaWhatsApp(...(a as [])),
 }));
+
 
 vi.mock('@/lib/likida/lotes', () => ({
   conPool: async <T,>(xs: T[], _n: number, f: (x: T) => Promise<void>) => { for (const x of xs) await f(x); },
@@ -57,6 +62,8 @@ const CON_SECRETO = { headers: { authorization: 'Bearer secreto-de-prueba' } };
 describe('cron wa-outbox — el kill switch global (BACK-19-1)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    reconciliarReceiptsWhatsApp.mockResolvedValue(0);
+    purgarReceiptsWhatsApp.mockResolvedValue(0);
     interruptor = 'encendido';
     process.env.WHATSAPP_ACCESS_TOKEN = 'token-de-prueba';
     process.env.WHATSAPP_PHONE_NUMBER_ID = '123456';
@@ -122,5 +129,19 @@ describe('cron wa-outbox — el kill switch global (BACK-19-1)', () => {
     expect(res.status).toBe(500);
     expect(body).toMatchObject({ corrio: false, codigo: 'canal_no_configurado' });
     expect(registrarLatido).toHaveBeenCalledWith('wa-outbox', 'fallo', { codigo: 'canal_no_configurado' });
+  });
+});
+
+describe('receipts del dominio no ocultan un backstop fallido', () => {
+  it('continúa drenando pero responde parcial si falla reconciliación o purga', async () => {
+    interruptor = 'encendido';
+    process.env.WHATSAPP_ACCESS_TOKEN = 'test';
+    process.env.WHATSAPP_PHONE_NUMBER_ID = '123';
+    reconciliarReceiptsWhatsApp.mockRejectedValueOnce(new Error('reconciliar falló'));
+    purgarReceiptsWhatsApp.mockRejectedValueOnce(new Error('purgar falló'));
+    const res = await GET(new Request('https://likida.ai/api/cron/wa-outbox', CON_SECRETO));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ fallosBackstop: ['reconciliacion: reconciliar falló', 'purga: purgar falló'] });
+    expect(registrarLatido).toHaveBeenLastCalledWith('wa-outbox', 'parcial', expect.any(Object));
   });
 });

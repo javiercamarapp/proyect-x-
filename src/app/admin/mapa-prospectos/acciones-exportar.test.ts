@@ -48,6 +48,22 @@ describe('accionRegistrarExportacion', () => {
     expect((llamadas[0].filtros.busqueda as string).length).toBe(200);
   });
 
+  it('conserva claves reservadas como datos propios sin alterar el prototipo del filtro', async () => {
+    const entrada = JSON.parse('{"__proto__":{"administrador":true},"constructor":"filtro","busqueda":"texto"}');
+    await accionRegistrarExportacion(1, entrada);
+    const filtros = llamadas[0].filtros;
+    expect(Object.getPrototypeOf(filtros)).toBeNull();
+    expect(Object.hasOwn(filtros, '__proto__')).toBe(true);
+    expect(JSON.parse(JSON.stringify(filtros))).toEqual(entrada);
+    expect(Object.getPrototypeOf({})).not.toHaveProperty('administrador');
+  });
+
+  it('sin sesión privilegiada no registra ningún filtro', async () => {
+    vi.mocked(requireSuperadmin).mockRejectedValueOnce(new Error('sesión denegada'));
+    await expect(accionRegistrarExportacion(1, { busqueda: 'texto' })).rejects.toThrow('sesión denegada');
+    expect(llamadas).toEqual([]);
+  });
+
   it('conserva valores no-string tal cual (arrays, booleanos, números)', async () => {
     await accionRegistrarExportacion(1, { giros: ['carga', 'refrigerado'], soloTel: true, minUrgencia: 70 });
     expect(llamadas[0].filtros).toEqual({ giros: ['carga', 'refrigerado'], soloTel: true, minUrgencia: 70 });

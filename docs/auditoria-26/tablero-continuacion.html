@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auditoría 26 · continuación — Likida</title>
+<style>
+  /* Paleta de ESTADO: el color codifica LA NOTA, jamás el delta. Un rubro que
+     baja de 5 a 4 sigue en ámbar; pintarlo rojo por haber bajado sería
+     codificar dos variables con un canal. */
+  :root{
+    --fondo:#f6f7f9; --sup:#fff; --borde:#e3e6ea;
+    --tinta:#12161c; --tinta2:#454d59; --tinta3:#6b7480;
+    --malo:#b42318; --malo-bg:#fef3f2;
+    --medio:#b54708; --medio-bg:#fffaeb;
+    --bien:#067647; --bien-bg:#ecfdf3;
+    --linea:#2563eb;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --fondo:#0d1117; --sup:#161b22; --borde:#2a313a;
+      --tinta:#e8edf3; --tinta2:#aeb8c4; --tinta3:#7d8896;
+      --malo:#ff8a7a; --malo-bg:#2a1512;
+      --medio:#f5b544; --medio-bg:#2a1f0d;
+      --bien:#5fd39b; --bien-bg:#0e2a1c;
+      --linea:#7aa7ff;
+    }
+  }
+  :root[data-theme="dark"]{
+    --fondo:#0d1117; --sup:#161b22; --borde:#2a313a;
+    --tinta:#e8edf3; --tinta2:#aeb8c4; --tinta3:#7d8896;
+    --malo:#ff8a7a; --malo-bg:#2a1512;
+    --medio:#f5b544; --medio-bg:#2a1f0d;
+    --bien:#5fd39b; --bien-bg:#0e2a1c;
+    --linea:#7aa7ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--fondo); color:var(--tinta);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; padding:28px 22px 40px; overflow-x:hidden}
+  .envoltura{max-width:1180px; margin:0 auto}
+  h1{font-size:21px; margin:0 0 2px; letter-spacing:-.2px}
+  .sub{color:var(--tinta3); font-size:13px; margin-bottom:18px}
+  .panel{background:var(--sup); border:1px solid var(--borde); border-radius:12px}
+
+  .compuerta{display:flex; flex-wrap:wrap; gap:1px; overflow:hidden; margin-bottom:14px; background:var(--borde); border:1px solid var(--borde); border-radius:12px}
+  .compuerta .c{flex:1 1 150px; padding:11px 14px; background:var(--sup)}
+  .compuerta .k{font-size:11px; color:var(--tinta3); text-transform:uppercase; letter-spacing:.5px}
+  .compuerta .v{font-size:15px; font-weight:650; margin-top:3px}
+  .ok{color:var(--bien)} .mal{color:var(--malo)} .adv{color:var(--medio)}
+  .compuerta .n{font-size:12px; color:var(--tinta2); font-weight:400; margin-top:1px}
+
+  .fila{display:grid; grid-template-columns:1fr 356px; gap:14px; margin-bottom:14px; align-items:start}
+  @media (max-width:900px){ .fila{grid-template-columns:1fr} }
+
+  .global{padding:16px 18px; display:flex; align-items:baseline; gap:14px; flex-wrap:wrap}
+  .global .n{font-size:44px; font-weight:700; letter-spacing:-1.5px; line-height:1}
+  .global .d{font-size:15px; font-weight:650}
+  .global .nota{flex-basis:100%; color:var(--tinta2); font-size:12.5px; margin-top:6px}
+
+  figure{margin:0; padding:14px 16px}
+  figcaption{font-size:13px; font-weight:650; margin-bottom:2px}
+  .pie{font-size:12px; color:var(--tinta3); margin-top:6px}
+
+  table{border-collapse:collapse; width:100%; font-size:13px}
+  caption{text-align:left; font-size:13px; font-weight:650; padding:14px 16px 8px}
+  th,td{padding:7px 10px; border-top:1px solid var(--borde); text-align:left; vertical-align:top}
+  th{font-size:11px; color:var(--tinta3); text-transform:uppercase; letter-spacing:.5px; border-top:none}
+  td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
+  .nota-b{display:inline-block; min-width:22px; text-align:center; padding:1px 6px; border-radius:5px; font-weight:700; font-variant-numeric:tabular-nums}
+  .n-bien{background:var(--bien-bg); color:var(--bien)}
+  .n-medio{background:var(--medio-bg); color:var(--medio)}
+  .n-malo{background:var(--malo-bg); color:var(--malo)}
+  .delta{font-variant-numeric:tabular-nums; font-weight:650}
+  .quieto{color:var(--tinta3); font-weight:400}
+  .porque{color:var(--tinta2); font-size:12.5px}
+  .sinaud{color:var(--tinta3); font-style:italic}
+
+  .sev{display:flex; gap:1px; background:var(--borde); border:1px solid var(--borde); border-radius:10px; overflow:hidden; margin:0 16px 14px}
+  .sev .s{flex:1; background:var(--sup); padding:10px 12px}
+  .sev .s .k{font-size:11px; color:var(--tinta3); text-transform:uppercase; letter-spacing:.5px}
+  .sev .s .v{font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2}
+
+  ul.arr{margin:0; padding:0 16px 16px 32px; font-size:13px; color:var(--tinta2)}
+  ul.arr li{margin-bottom:7px}
+  ul.arr code{font-size:12px; background:var(--fondo); padding:1px 4px; border-radius:4px}
+  strong.id{color:var(--tinta)}
+</style>
+</head>
+<body>
+<div class="envoltura">
+
+  <h1>Auditoría 26 · continuación — Likida</h1>
+  <div class="sub">5-sep-2026 · desatendida, en la nube · rama <code>claude/auditoria-26</code>, PR #326 · 3 rubros relanzados de 12</div>
+
+  <!-- COMPUERTA. Va arriba porque una nota sobre un árbol rojo no significa nada. -->
+  <div class="compuerta">
+    <div class="c"><div class="k">Pruebas</div><div class="v ok">864 archivos · 11,293</div><div class="n">0 fallos · 1 saltada</div></div>
+    <div class="c"><div class="k">Tipos</div><div class="v ok">tsc exit 0</div><div class="n">sin errores</div></div>
+    <div class="c"><div class="k">Lint</div><div class="v ok">0 errores</div><div class="n">194 avisos · ratchet 194/194, 0 nuevos</div></div>
+    <div class="c"><div class="k">CI del PR #326</div><div class="v ok">9/9 verdes</div><div class="n">sin conflicto con master</div></div>
+    <div class="c"><div class="k">Build</div><div class="v adv">no se corre</div><div class="n">pide credenciales que la nube no tiene</div></div>
+  </div>
+
+  <div class="fila">
+    <div class="panel global">
+      <div class="n">5.8</div>
+      <div class="d mal">▼ 0.2 &nbsp;<span style="color:var(--tinta3);font-weight:400">desde 6.0</span></div>
+      <div class="nota">Media de los 12 rubros: 69/12 = <strong>5.75</strong>, a un decimal <strong>5.8</strong>. Nueve rubros conservan su nota (<em>no auditados esta ronda</em>); los tres relanzados <strong>bajan uno cada uno</strong>. Ninguno bajó porque el código empeorara: los tres abrieron el arreglo de la propia ronda 26 y lo encontraron a medias.</div>
+    </div>
+
+    <figure class="panel">
+      <figcaption>La serie</figcaption>
+      <!-- Una sola serie: sin caja de leyenda (el título la nombra). Los
+           extremos van etiquetados; los intermedios se leen del eje. -->
+      <svg viewBox="0 0 320 118" width="100%" height="118" role="img"
+           aria-label="Nota global por ronda: 22 en 6.1, 23 en 5.4, 24 en 6.2, 25 en 5.3, 26 en 6.0, 26 continuación en 5.8">
+        <!-- banda 5–7: donde vive un pre-revenue honesto, según la escala -->
+        <rect x="34" y="34" width="272" height="46" fill="var(--linea)" opacity="0.06"/>
+        <line x1="34" y1="80" x2="306" y2="80" stroke="var(--borde)"/>
+        <line x1="34" y1="34" x2="306" y2="34" stroke="var(--borde)" stroke-dasharray="2 3"/>
+        <text x="6" y="84" font-size="9" fill="var(--tinta3)">5.0</text>
+        <text x="6" y="38" font-size="9" fill="var(--tinta3)">7.0</text>
+        <!-- y = 80 - (nota-5)*23 -->
+        <polyline fill="none" stroke="var(--linea)" stroke-width="2" stroke-linejoin="round"
+          points="52,54.7 105,70.8 158,52.4 211,73.1 264,57 300,62.8"/>
+        <circle cx="52"  cy="54.7" r="3" fill="var(--linea)"/>
+        <circle cx="105" cy="70.8" r="3" fill="var(--linea)"/>
+        <circle cx="158" cy="52.4" r="3" fill="var(--linea)"/>
+        <circle cx="211" cy="73.1" r="3" fill="var(--linea)"/>
+        <circle cx="264" cy="57"   r="3" fill="var(--linea)"/>
+        <circle cx="300" cy="62.8" r="3.6" fill="var(--linea)" stroke="var(--sup)" stroke-width="1.5"/>
+        <g font-size="9" fill="var(--tinta3)" text-anchor="middle">
+          <text x="52" y="95">22</text>
+          <text x="105" y="95">23</text>
+          <text x="158" y="95">24</text>
+          <text x="211" y="95">25</text>
+          <text x="264" y="95">26</text>
+          <text x="300" y="95">26·c</text>
+        </g>
+        <g font-size="10" font-weight="700" fill="var(--tinta2)">
+          <text x="40" y="46">6.1</text>
+          <text x="286" y="78">5.8</text>
+        </g>
+      </svg>
+      <div class="pie">Sube y baja por rondas: no es ruido, es la nota moviéndose cuando cambia la profundidad de la mirada.</div>
+    </figure>
+  </div>
+
+  <!-- HALLAZGOS DE LOS TRES RUBROS RELANZADOS -->
+  <div class="panel" style="padding-top:14px; margin-bottom:14px">
+    <div style="font-size:13px;font-weight:650;padding:0 16px 8px">Hallazgos de los 3 rubros relanzados</div>
+    <div class="sev">
+      <div class="s"><div class="k">Crítico</div><div class="v mal">2</div></div>
+      <div class="s"><div class="k">Alto</div><div class="v mal">10</div></div>
+      <div class="s"><div class="k">Medio</div><div class="v adv">10</div></div>
+      <div class="s"><div class="k">Bajo</div><div class="v">3</div></div>
+    </div>
+    <div style="font-size:13px;font-weight:650;padding:0 16px 6px">Arreglado en esta continuación — 3, cada uno con prueba que lo reproduce</div>
+    <ul class="arr">
+      <li><strong class="id">FIS-C2c</strong> (CRÍTICO) <code>2a58e07</code> — el gasto <em>sin fecha</em> entraba al numerador del 15 % y no al denominador. El PDF imprimía «no deducible $111,000» donde la regla, medida coherentemente, da $93,600, y declaraba una razón de 26.1 % que no se puede reconstruir con el total del propio renglón. Medido rojo→verde.</li>
+      <li><strong class="id">FE-1b</strong> (ALTO) <code>fc98bbf6</code> — el arreglo de FE-1 llegó al camino de <em>respaldo</em>; el que corre en una liquidación sana tiraba <code>pagadoEn</code> en su mapeo. Toda caseta a crédito con REP seguía saliendo «Por confirmar» contra el bloque de Deducibilidad de la misma hoja.</li>
+      <li><strong class="id">FIS-A3</strong> (ALTO) <code>8c72f7b</code> — el cuarto sitio que mide el cubo del 15 % lo pedía <em>sin las claves del SAT</em>: el agente contestaba «holgado, margen $105,000» sobre la liquidación cuyo PDF quita deducción.</li>
+    </ul>
+  </div>
+
+  <!-- LAS NOTAS -->
+  <div class="panel">
+    <table>
+      <caption>Los 12 rubros — los 3 relanzados llevan delta; los 9 restantes conservan su nota</caption>
+      <thead>
+        <tr><th>Rubro</th><th class="num">Antes</th><th class="num">Hoy</th><th class="num">Δ</th><th>Porqué del movimiento</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Pruebas</td><td class="num">8</td><td class="num"><span class="nota-b n-bien">8</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td><strong>Backend y API</strong></td><td class="num">7</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num delta mal">▼1</td><td class="porque"><strong>Mirada más profunda</strong> — la nota anterior estaba inflada. El barrido de los 18 <code>select</code>/<code>rpc</code> de <code>analytics.ts</code> que el encargo pidió encontró la misma clase de defecto en cuatro consultas más de KPI, ninguna mirando <code>revision</code> cuando el CSV, la API y la póliza ya se abstienen.</td></tr>
+        <tr><td>Seguridad</td><td class="num">7</td><td class="num"><span class="nota-b n-medio">7</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td>Sistema agéntico</td><td class="num">6</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td>Cumplimiento legal</td><td class="num">6</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td>Rendimiento y costo</td><td class="num">6</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td>Modelo de datos</td><td class="num">6</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td>Tool calling</td><td class="num">6</td><td class="num"><span class="nota-b n-medio">6</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td><strong>Cumplimiento fiscal</strong></td><td class="num">5</td><td class="num"><span class="nota-b n-malo">4</span></td><td class="num delta mal">▼1</td><td class="porque"><strong>Deuda que cobró factura</strong> — la ronda declaró cerrado su CRÍTICO y el cotejo término por término del <code>where</code> de la 0305 contra el motor encontró un tercero, vivo, en la misma línea: el gasto sin fecha en el numerador y no en el denominador. Tercera vuelta sobre el mismo cálculo.</td></tr>
+        <tr><td>Arquitectura</td><td class="num">5</td><td class="num"><span class="nota-b n-malo">5</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+        <tr><td><strong>Frontend</strong></td><td class="num">5</td><td class="num"><span class="nota-b n-malo">4</span></td><td class="num delta mal">▼1</td><td class="porque"><strong>Deuda que cobró factura</strong> — de los dos ALTO que la ronda dio por cerrados, uno lo está de verdad (17.5:1 medido en los dos temas) y el otro llegó al camino de respaldo. La pantalla donde se firma lleva cinco rondas contradiciéndose, y esta creyó haberlo cerrado.</td></tr>
+        <tr><td>Operabilidad y DX</td><td class="num">5</td><td class="num"><span class="nota-b n-malo">5</span></td><td class="num quieto">=</td><td class="sinaud">no auditado esta ronda</td></tr>
+      </tbody>
+    </table>
+    <div class="pie" style="padding:0 16px 16px">Los tres arreglos de esta continuación aterrizaron <strong>después</strong> de que los auditores calificaran. Su verificación es trabajo de la ronda 27: un arreglo no se acredita su propia nota — es la lección que la 26 dejó escrita.</div>
+  </div>
+
+</div>
+</body>
+</html>

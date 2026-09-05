@@ -11,7 +11,8 @@
 // Las conversiones NO entran por aquí: las escribe el servidor en la ruta
 // del prospecto, donde de verdad ocurren.
 // ═══════════════════════════════════════════════════════════════════════════
-import { rateLimit, clientIp, bodyExcede } from '@/lib/ratelimit';
+import { rateLimit, clientIp } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { articuloPorSlug } from '@/lib/likida/marketing/articulos';
 import { logger } from '@/lib/logger';
@@ -33,14 +34,16 @@ function paginaValida(p: string): boolean {
 }
 
 export async function POST(req: Request) {
-  if (bodyExcede(req, 1_000)) return new Response(null, { status: 204 });
   if (!(await rateLimit(`marketing-evento:${clientIp(req)}`, 30, 60_000))) {
     return new Response(null, { status: 204 });
   }
+  const lectura = await leerTextoAcotado(req, 1_000);
+  if (!lectura.ok) return new Response(null, { status: 204 });
+
 
   let pagina = '';
   try {
-    const c = (await req.json()) as { pagina?: unknown; evento?: unknown };
+    const c = JSON.parse(lectura.texto) as { pagina?: unknown; evento?: unknown };
     if (c.evento !== 'pageview') return new Response(null, { status: 204 });
     pagina = typeof c.pagina === 'string' ? c.pagina : '';
   } catch {

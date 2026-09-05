@@ -94,3 +94,35 @@ describe('leases/fencing del inbox', () => {
     expect(rpc).toHaveBeenNthCalledWith(3, 'renovar_wa_pendiente', expect.objectContaining({ p_claim_token: 'tok-1', p_owner: 'worker-1' }));
   });
 });
+
+describe('lease singleton de la cadena QStash', () => {
+  it('abre una cadena con lease y conserva `null` cuando otra ya está activa', async () => {
+    const { iniciarCadenaWa } = await import('./wa_pendientes');
+    rpc
+      .mockResolvedValueOnce({ data: '11111111-1111-4111-8111-111111111111', error: null })
+      .mockResolvedValueOnce({ data: null, error: null });
+    await expect(iniciarCadenaWa()).resolves.toBe('11111111-1111-4111-8111-111111111111');
+    await expect(iniciarCadenaWa()).resolves.toBeNull();
+    expect(rpc).toHaveBeenNthCalledWith(1, 'iniciar_cadena_wa', { p_lease_seconds: 180 });
+  });
+
+  it('renueva y finaliza siempre cercado por el UUID vigente', async () => {
+    const { renovarCadenaWa, finalizarCadenaWa } = await import('./wa_pendientes');
+    rpc.mockResolvedValue({ data: true, error: null });
+    await expect(renovarCadenaWa('11111111-1111-4111-8111-111111111111')).resolves.toBe(true);
+    await expect(finalizarCadenaWa('11111111-1111-4111-8111-111111111111')).resolves.toBe(true);
+    expect(rpc).toHaveBeenNthCalledWith(1, 'renovar_cadena_wa', expect.objectContaining({
+      p_cadena_id: '11111111-1111-4111-8111-111111111111', p_lease_seconds: 180,
+    }));
+    expect(rpc).toHaveBeenNthCalledWith(2, 'finalizar_cadena_wa', {
+      p_cadena_id: '11111111-1111-4111-8111-111111111111',
+    });
+  });
+
+  it('falla cerrado al no poder validar la renovación', async () => {
+    const { renovarCadenaWa } = await import('./wa_pendientes');
+    rpc.mockResolvedValue({ data: null, error: { message: 'base caída' } });
+    await expect(renovarCadenaWa('11111111-1111-4111-8111-111111111111')).resolves.toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith('wa.cadena_no_renovada', expect.anything());
+  });
+});

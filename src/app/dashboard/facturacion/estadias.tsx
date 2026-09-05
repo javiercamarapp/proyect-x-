@@ -108,6 +108,14 @@ function Renglon({ e }: { e: EpisodioEstadia }) {
   );
 }
 
+// Referencia de módulo: las Server Actions sólo capturan `sp`, serializable.
+// Una función local quedaría en sus argumentos cifrados y rompería el render.
+// Vacío conserva null: nadie pactó cero por dejar el campo sin llenar.
+function perilla(v: FormDataEntryValue | null): number | null {
+  const s = String(v ?? '').trim();
+  return s === '' ? null : Number(s.replace(',', '.'));
+}
+
 export async function BloqueEstadias({
   sp,
 }: {
@@ -140,13 +148,6 @@ export async function BloqueEstadias({
     leyoOk = false;
     logger.warn('estadias.no_leido', { tenantId, err: e instanceof Error ? e.message : String(e) });
   }
-
-  // '' = no pactado (null). Number('') sería 0, y un cero inventado es
-  // exactamente el pacto que nadie firmó.
-  const perilla = (v: FormDataEntryValue | null): number | null => {
-    const s = String(v ?? '').trim();
-    return s === '' ? null : Number(s.replace(',', '.'));
-  };
 
   async function pactarFlota(_previo: ResultadoAccion, fd: FormData): Promise<ResultadoAccion> {
     'use server';

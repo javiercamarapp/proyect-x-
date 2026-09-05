@@ -67,7 +67,10 @@ vi.mock('@/lib/supabase/admin', () => ({
 
 const recalcularParaAjuste = vi.fn();
 const regenerarPdfTrasAjuste = vi.fn();
+const conservarPdfAntesDeAjuste = vi.fn(async (..._args: unknown[]) => undefined);
+vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: vi.fn(async () => undefined) }));
 vi.mock('./revision_recalculo', () => ({
+  conservarPdfAntesDeAjuste: (...a: unknown[]) => conservarPdfAntesDeAjuste(...a),
   recalcularParaAjuste: (...a: unknown[]) => recalcularParaAjuste(...a),
   regenerarPdfTrasAjuste: (...a: unknown[]) => regenerarPdfTrasAjuste(...a),
 }));
@@ -93,6 +96,7 @@ beforeEach(() => {
   errorBase = null;
   filaUnica = null;
   rpc.mockReset();
+  conservarPdfAntesDeAjuste.mockReset();
   sendText.mockClear();
   recalcularParaAjuste.mockReset();
   regenerarPdfTrasAjuste.mockReset();
@@ -329,6 +333,28 @@ describe('revisarLiquidacion', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it('si no puede conservar la pareja antigua, no ejecuta el ajuste ni firma', async () => {
+    filaUnica = { viaje_id: U(9) };
+    recalcularParaAjuste.mockResolvedValue({ recalculo: RECALCULO, cuadre: CUADRE_RECALCULADO });
+    conservarPdfAntesDeAjuste.mockRejectedValueOnce(new Error('no se pudo conservar la pareja'));
+    await expect(revisarLiquidacion({ tenantId: 't', liquidacionId: U(1), accion: 'ajustar', motivo: 'x', ajustes: [{ gastoId: U(3), montoNuevo: 100 }], actor }))
+      .rejects.toThrow('no se pudo conservar la pareja');
+    expect(rpc).not.toHaveBeenCalled();
+    expect(regenerarPdfTrasAjuste).not.toHaveBeenCalled();
+  });
+
+  it.each(['LR019', 'LR022'])('conserva el rechazo %s de duplicados sin reintentar', async (code) => {
+    filaUnica = { viaje_id: U(9) };
+    recalcularParaAjuste.mockResolvedValue({ recalculo: RECALCULO, cuadre: CUADRE_RECALCULADO });
+    const message = code === 'LR019' ? 'copia excluida: rechaza y revisa' : 'grupo duplicado cuya identidad depende del monto: rechaza y revisa';
+    rpc.mockResolvedValueOnce({ data: null, error: { code, message } });
+    const error = await revisarLiquidacion({ tenantId: 't', liquidacionId: U(1), accion: 'ajustar', motivo: 'x', ajustes: [{ gastoId: U(3), montoNuevo: 100 }], actor }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DatoInvalido);
+    expect((error as Error).message).toBe(message);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(regenerarPdfTrasAjuste).not.toHaveBeenCalled();
+  });
+
   it('un PDF que no se pudo regenerar no tumba el ajuste YA firme en la base — se dice, no se revierte', async () => {
     filaUnica = { viaje_id: U(9) };
     recalcularParaAjuste.mockResolvedValueOnce({ recalculo: RECALCULO, cuadre: CUADRE_RECALCULADO });
@@ -339,6 +365,7 @@ describe('revisarLiquidacion', () => {
     });
     const r = await revisarLiquidacion({ tenantId: 't', liquidacionId: U(1), accion: 'ajustar', motivo: 'x', ajustes: [{ gastoId: U(3), montoNuevo: 8000 }], actor });
     expect(r.revision).toBe('ajustada');
+    expect(r.pdfPendiente).toBe(true);
   });
 
   it('LR020 (el recálculo no coincide con el ajuste — una carrera) sale como mensaje para la persona; LR021 (recálculo faltante) es falla del sistema', async () => {

@@ -20,6 +20,7 @@ import { FichaCorridas } from '../ficha-corridas';
 import { registrarCorrida, ultimasCorridas } from '@/lib/likida/agentes/corridas';
 import type { EstadoImportar } from './subir-desglose';
 import type { EstadoConciliar } from './conciliar-desglose';
+import { MAX_ARCHIVO_SUBIDA_BYTES, MENSAJE_ARCHIVO_GRANDE } from '@/lib/http/subidas_formulario';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,9 +29,7 @@ export const dynamic = 'force-dynamic';
  *  equivocado, no un desglose grande. */
 const MAX_XML_BYTES = 4 * 1024 * 1024;
 
-/** El desglose del proveedor (Excel/CSV/PDF) sí puede pesar varios MB; 8 MB
- *  ya no es un corte de peaje, es el archivo equivocado. */
-const MAX_DESGLOSE_BYTES = 8 * 1024 * 1024;
+const MAX_DESGLOSE_BYTES = MAX_ARCHIVO_SUBIDA_BYTES;
 
 function safe<T>(fn: () => Promise<T>): Promise<T | null> {
   return fn().catch(() => null);
@@ -144,7 +143,7 @@ export default async function PaginaAgentePeajes({
 
     const archivo = fd.get('archivo');
     if (!(archivo instanceof File) || archivo.size === 0) return { error: 'Elige el archivo del desglose (Excel, CSV o PDF).' };
-    if (archivo.size > MAX_DESGLOSE_BYTES) return { error: 'Ese archivo pesa demasiado para ser un desglose de peaje — revisa que sea el corte del proveedor.' };
+    if (archivo.size > MAX_DESGLOSE_BYTES) return { error: MENSAJE_ARCHIVO_GRANDE };
     const proveedor = String(fd.get('proveedor') ?? '').trim();
 
     try {

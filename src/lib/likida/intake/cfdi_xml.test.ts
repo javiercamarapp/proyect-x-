@@ -250,3 +250,12 @@ describe('DAT-19 · la moneda del comprobante', () => {
     expect(r.tipoCambio).toBeUndefined();
   });
 });
+
+
+it.each([CONSOLIDADO_ECC12, CONSOLIDADO_TAG_SIN_FECHA])('una nota de crédito multi-concepto nunca es consolidado de gastos', (base) => {
+  const credito = parseCfdiXml(base.replace('TipoDeComprobante="I"', 'TipoDeComprobante="E"'))!;
+  expect(credito.tipoComprobante).toBe('E');
+  expect(credito.lineas.length).toBeGreaterThan(1);
+  expect(esConsolidado(credito)).toBe(false);
+  expect(esConsolidado(parseCfdiXml(base)!)).toBe(true);
+});

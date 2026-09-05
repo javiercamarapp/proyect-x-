@@ -1,3 +1,4 @@
+import { peticionStream } from '@/lib/pruebas/peticion_stream';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -63,4 +64,17 @@ describe('la puerta de origen (auditoría 21, BAJO-MEDIO)', () => {
     expect(r.status).toBe(200);
     expect(guardarCorrida).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('cuerpo acotado durante lectura', () => {
+ it('cancela el exceso sin efectos', async()=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/qa/lanzar',JSON.stringify({...LANZAR,ignorado:'x'.repeat(100000)}),8192);
+  expect((await POST(p.req)).status).toBe(413);
+  expect(p.estado().cancelado).toBe(true);expect(p.estado().leidos).toBeLessThan(p.estado().total);
+  expect(guardarCorrida).not.toHaveBeenCalled();
+ });
+ it.each([null, [], 'texto', 42].map((valor) => [valor]))('rechaza cuerpo no objeto %j antes de efectos', async(cuerpo)=>{
+  const p=peticionStream('https://app.likida.ai/api/admin/qa/lanzar',JSON.stringify(cuerpo));
+  expect((await POST(p.req)).status).toBe(400);expect(guardarCorrida).not.toHaveBeenCalled();
+ });
 });

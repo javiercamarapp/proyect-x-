@@ -11,7 +11,7 @@ Son objetivos operativos hasta que exista evidencia de una ejecución externa.
 |---|---:|---:|---|
 | Base de datos | 24 h mientras no haya PITR | 4 h | dump + restore drill |
 | Supabase Storage | 24 h | 8 h | manifiesto + checksum + copia remota |
-| Vercel | 0–15 min durante promoción | 15 min | Preview smoke + rollback |
+| Vercel | 0–15 min durante promoción | 15 min | Production staged smoke + rollback |
 
 Un objetivo no es un SLA. Hasta ejecutar la primera corrida programada y un
 restore drill con cronómetro, el estado contractual es **no demostrado**.
@@ -118,31 +118,115 @@ aislado, cotejar las rutas referenciadas por la base y registrar el RTO. La
 primera prueba externa sigue pendiente porque este entorno no tiene credenciales
 ni un Supabase local disponible.
 
-## Preview, smoke y promote
+## Preview, candidato Production, smoke y promoción
 
-`.github/workflows/deploy-preview-promote.yml` implementa:
+`.github/workflows/deploy-preview-promote.yml` es manual. Recibe un SHA revisado,
+lo fija una sola vez y usa ese mismo commit en todos los jobs. Serializa el
+release completo (`vercel-release-likida`, sin cancelar la ejecución anterior).
+Los pushes de Git pueden crear intentos separados en Vercel; la compuerta
+`scripts/ci/compuerta-deploy.mjs` conserva su política de mensajes y migraciones.
+Este workflow no desactiva esa integración ni autoriza usar `[deploy:forzar]`.
 
-1. Solo arranca por `workflow_dispatch`; abrir o actualizar un PR jamás expone
-   secretos ni despliega automáticamente.
-2. Resuelve `ref` una vez a un SHA de 40 caracteres y usa ese mismo SHA en todos
-   los jobs, aunque la rama avance mientras corre el workflow.
-3. Repite `npm ci`, auditoría runtime, typecheck, lint ratchet, resiliencia,
-   cobertura y build antes de obtener credenciales de despliegue.
-4. En el environment `staging`, enlaza el proyecto de staging y ejecuta
-   `supabase db push --dry-run`; cualquier secreto ausente o drift falla cerrado.
-5. Solo después crea una Preview prebuilt y ejecuta el smoke público sobre su
-   URL exacta.
-6. Con `promote=true` y la confirmación literal
-   `APPLY_MIGRATIONS_AND_PROMOTE`, el environment `production` vuelve a hacer
-   dry-run y ejecuta las migraciones reales. Vercel se promueve únicamente si
-   ese job terminó en verde.
+El grafo es:
 
-Configurar los environments `staging`, `preview` y `production` con reviewers
-y secretos de mínimo alcance. Staging requiere `SUPABASE_ACCESS_TOKEN`,
-`SUPABASE_DB_PASSWORD` y `SUPABASE_PROJECT_REF_STAGING`; producción usa los dos
-primeros y `SUPABASE_PROJECT_REF_PRODUCTION`; Preview requiere `VERCEL_TOKEN`,
-`VERCEL_ORG_ID` y `VERCEL_PROJECT_ID`. Sin ellos no se simula éxito. Nunca usar
-el ref móvil `master` para una promoción: pegar el SHA ya revisado del PR.
+1. SHA inmutable → calidad completa (npm ci, auditoría runtime estricta (`audit-runtime.mjs`), typecheck,
+   lint ratchet, resiliencia, cobertura y build).
+2. Staging autorizado: comprobar ref → `supabase link` → preflight concurrente 0335
+   → `db push --dry-run` → `db push`. Se aplica primero en la rama existente
+   `dmhhygwzgudwgcbixuwp`, separada de Production `gngoqsvrxdguxvsizpbw`.
+3. Preview prebuilt con metadata `releaseSha` → smoke de navegador protegido,
+   sólo GET/HEAD sobre `/`, `/terminos` y `/privacidad`.
+4. Sólo con `promote=true` y `APPLY_MIGRATIONS_AND_PROMOTE`: consultar backups
+   SQL gestionados → exigir uno `COMPLETED` de las últimas 24 h → link Production
+   → preflight 0335 → dry-run → aplicar migraciones.
+5. Capturar ID actual y destino Cron → `pull --environment=production` →
+   validar URL/ref/roles Supabase de Production →
+   `build --prod` → `deploy --prebuilt --prod --skip-domain`. Inspeccionar
+   proyecto, target Production, estado READY y SHA; conservar el ID devuelto.
+6. Comprobar que alias y destino Cron no cambiaron durante la creación.
+   Ejecutar smoke de navegador sobre ese ID y `/api/health`: requiere estado
+   sano, versión del SHA revisado y migraciones al día.
+7. Revalidar ID y alias anterior → `promote` del mismo ID → comprobar que
+   `app.likida.ai` y `likidaai.vercel.app` resuelven exactamente a ese ID. No se promueve una Preview.
+
+La distinción importa: [promover una Preview reconstruye con entorno
+Production](https://vercel.com/docs/deployments/promoting-a-deployment);
+un [Production staged](https://vercel.com/docs/cli/deploying-from-cli)
+se activa sin reconstrucción. `--skip-domain` evita asignar los dominios al
+crear el candidato, pero **no convierte Production en una base aislada**.
+Usa secretos y datos reales. Los smokes no ejecutan acciones humanas, ingesta,
+OCR, SAT/PAC, envíos ni llamadas manuales a Cron.
+
+La [documentación de Cron](https://vercel.com/docs/cron-jobs) señala que usa la
+URL de Production, pero no garantiza expresamente la ausencia de efectos de
+un staged deployment. La comparación de `project.crons.deploymentId` detecta
+un cambio después de ocurrir; no previene una ejecución que ya haya empezado.
+Si cambia, el pipeline se detiene y requiere revisar logs/efectos antes de
+continuar. No se eliminan los crons del artefacto para simular aislamiento.
+Antes de construir Preview, el pipeline comprueba el URL y el ref/rol JWT de
+las dos credenciales Supabase descargadas por `vercel pull`: deben pertenecer
+al staging autorizado. Si las entradas siguen compartidas con Production,
+falla antes del build. No basta con que el environment se llame Preview.
+Las credenciales opacas nuevas requieren actualizar esta comprobación con un
+mecanismo verificable; no se aceptan sin poder vincularlas al ref esperado.
+
+### Credenciales y preflight SQL
+
+Staging necesita los secretos existentes `SUPABASE_ACCESS_TOKEN`,
+`SUPABASE_DB_PASSWORD` y `SUPABASE_PROJECT_REF_STAGING`; Production usa los
+mismos dos primeros y `SUPABASE_PROJECT_REF_PRODUCTION`. Los secretos
+`SUPABASE_DB_URL_STAGING` y `SUPABASE_DB_URL_PRODUCTION` son opcionales.
+Después de `link`, el helper lee `.temp/project-ref` y `.temp/pooler-url`.
+Acepta sólo el session pooler Supabase en puerto 5432, base postgres y rol
+`postgres.<ref>`; la alternativa directa exige `db.<ref>.supabase.co` y
+rol postgres. Rechaza hosts externos, transaction pooler 6543 y parámetros que
+puedan cambiar host/rol. La contraseña va en `PGPASSWORD`, nunca en argv,
+logs ni outputs. El preflight usa `sslmode=verify-full&sslrootcert=system`:
+[libpq 16 soporta CA del sistema y verifica hostname](https://www.postgresql.org/docs/16/libpq-connect.html).
+Si el runner o la cadena de confianza no lo soporta, falla; no rebaja TLS.
+
+Vercel CLI está fijada en 59.1.4 y lee `VERCEL_TOKEN` del entorno. Preview y
+Production requieren ese secreto. Los identificadores públicos del proyecto
+verificado están fijados en el workflow y en la guarda:
+`prj_OnrG9eY8WQzj35I3jtAZX2wTJ2sn`, team
+`team_uelpa362TxivuQUHNzTGLWNv`. El repositorio canónico es
+`javiercamarapp/proyect-x-`; los dominios son `app.likida.ai` y
+`likidaai.vercel.app`. El apex `likida.ai` pertenece al proyecto landing.
+
+El smoke usa el mecanismo de [bypass de automatización de
+Vercel](https://vercel.com/docs/cli/curl), implementado con fetch para evitar
+pasar el token a argv de curl. Reutiliza un bypass existente sin modificarlo;
+si falta, el workflow autorizado crea uno propio y lo revoca en `finally`,
+aunque falle la creación o el smoke. Una revocación fallida bloquea el job y
+emite un error administrativo. Un runner terminado abruptamente puede impedir
+el `finally`: revisar entonces los bypass del proyecto. La cookie privada 0600
+se limita al host exacto, se borra al terminar y nunca se sube como artifact.
+No se desactiva Deployment Protection. La pantalla de login de Vercel, un
+redirect a otro origin o un navegador con errores no cuentan como PASS.
+
+### Alcance de backup y evidencia externa
+
+El GET [Management API de backups](https://supabase.com/docs/reference/api/v1-list-all-backups)
+comprueba existencia/frescura mínima: estado COMPLETED y fecha pasada dentro
+de 24 h. Un flag PITR sin backup fresco no pasa. Esto **no demuestra restore,
+RPO aceptado ni respaldo de objetos Storage**. No descarga ni restaura datos.
+Si el destino S3/R2 de Storage no está configurado y verificado, el respaldo
+completo sigue pendiente; este gate SQL no permite declararlo listo.
+
+Configurar revisores y restricciones de environments según la política de
+operación: el nombre `production` por sí solo no implica aprobación humana.
+Conservar como evidencia del release el SHA, ID anterior/candidato/final,
+fecha del backup SQL, estado de migraciones, smoke y alias final; jamás secretos.
+Antes de ejecutar, revisar sólo nombres de secretos:
+
+```bash
+gh secret list --repo javiercamarapp/proyect-x- --env staging
+gh secret list --repo javiercamarapp/proyect-x- --env production
+```
+
+Una falla después de migrar conserva las migraciones ya aplicadas y el dominio
+anterior; no existe rollback SQL automático. Revisar compatibilidad hacia
+atrás antes de autorizar el release y registrar cualquier efecto de Cron.
 
 ## Rollback
 
@@ -177,3 +261,24 @@ bash scripts/test-resiliencia.sh
 Si está instalado, ejecutar también `shellcheck` sobre los tres scripts. La
 validación contra Supabase, AWS, Vercel, GitHub environments y el restore real
 es deliberadamente externa y debe quedar registrada como evidencia de release.
+
+
+### Separar Preview de Production (staging existente)
+
+El proyecto existente `dmhhygwzgudwgcbixuwp` es el staging de `gngoqsvrxdguxvsizpbw`.
+La primera ejecución de este release requiere `configure_preview=true`: el job
+`preview_configuration` usa los accesos administrativos que ya existen en el
+environment Production para leer las claves del staging y escribir únicamente
+las tres variables Supabase del target Preview. Las claves permanecen en memoria
+y viajan por HTTPS: nunca outputs, archivos o artifacts. No crea proyectos ni claves.
+
+Los registros que comparten Preview/Production se separan sin cambiar el valor
+productivo. Se comprueban los tres valores de Production antes y después, y las
+claves/URL de Preview contra el staging autorizado. Cualquier override por rama,
+respuesta ambigua o error detiene el despliegue. Si falla a mitad, Preview puede
+quedar incompleto; repetir la configuración converge sobre los registros existentes.
+No se despliega mientras la comprobación de las tres variables no pase.
+
+Contratos consultados: [Supabase API keys](https://supabase.com/docs/reference/api/v1-get-project-api-keys),
+[Vercel editar variables](https://vercel.com/docs/rest-api/projects/edit-an-environment-variable) y
+[Vercel crear variables](https://vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables).

@@ -5,7 +5,10 @@
 
 import crypto from 'crypto';
 import { logger } from '@/lib/logger';
-import { encolarSalidaWhatsApp, RETRASO_AMBIGUO_SEGUNDOS } from '@/lib/likida/wa_outbox';
+import {
+  encolarSalidaWhatsApp, encolarSalidaWhatsAppDedupe, RETRASO_AMBIGUO_SEGUNDOS,
+  type SalidaOutboxDedupe,
+} from '@/lib/likida/wa_outbox';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -385,6 +388,36 @@ export async function sendButtons(to: string, cuerpo: string, botones: BotonAcus
     if (payload) await encolarSalidaWhatsApp(payload, e instanceof Error ? e.message : String(e), RETRASO_AMBIGUO_SEGUNDOS);
     return null;
   }
+}
+
+/** Construye el mismo sobre que `sendButtons`, pero sólo registra una
+ * intención durable/idempotente. El worker de wa_outbox es el único que toca
+ * Meta, por lo que un timeout ambiguo nunca provoca un segundo productor. */
+export async function encolarBotonesWhatsApp(
+  to: string,
+  cuerpo: string,
+  botones: BotonAcuse[],
+  dedupeKey: string,
+): Promise<SalidaOutboxDedupe | null> {
+  const invalido = motivoBotonesInvalidos(cuerpo, botones);
+  if (invalido || !dedupeKey.trim() || dedupeKey.length > 300) {
+    logger.error('wa.encolarButtons.invalido', invalido ?? { dedupeKey: 'inválida' });
+    return null;
+  }
+  // Las alertas GPS pueden iniciar una conversación fuera de la ventana de
+  // 24 h: una plantilla aprobada es obligatoria. La quick reply conserva el
+  // acuse semántico aunque Meta ya no acepte un interactive de sesión.
+  const payload = {
+    messaging_product: 'whatsapp', to: destinatarioWhatsApp(to), type: 'template',
+    template: {
+      name: 'gps_alerta_critica', language: { code: 'es_MX' },
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: cuerpo }] },
+        { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: botones[0].id }] },
+      ],
+    },
+  };
+  return encolarSalidaWhatsAppDedupe(dedupeKey, payload, 'alerta GPS pendiente de entrega');
 }
 
 /**

@@ -9,6 +9,41 @@ export interface SalidaOutbox {
   leaseToken: string;
 }
 
+export interface SalidaOutboxDedupe {
+  id: string;
+  estado: 'pending' | 'sending' | 'sent' | 'dead';
+  providerMessageId: string | null;
+}
+
+/** Persiste una intención de envío ANTES de tocar Meta. La llave estable
+ * vuelve idempotente el reintento tras timeout/kill del proceso. */
+export async function encolarSalidaWhatsAppDedupe(
+  dedupeKey: string,
+  payload: Record<string, unknown>,
+  motivo: string,
+): Promise<SalidaOutboxDedupe | null> {
+  const { data, error } = await acotada(supabaseAdmin().rpc('encolar_wa_outbox_dedupe', {
+    p_dedupe_key: dedupeKey,
+    p_payload: payload,
+    p_error: motivo.slice(0, 500),
+  }), 'wa.outbox.encolar_dedupe');
+  const fila = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | null;
+  if (error || !fila || typeof fila.id !== 'string') {
+    logger.error('wa.outbox_dedupe_no_encolado', { err: error?.message ?? 'respuesta inválida' });
+    return null;
+  }
+  const estado = String(fila.estado);
+  if (!['pending', 'sending', 'sent', 'dead'].includes(estado)) {
+    logger.error('wa.outbox_dedupe_no_encolado', { err: 'estado inválido' });
+    return null;
+  }
+  return {
+    id: fila.id,
+    estado: estado as SalidaOutboxDedupe['estado'],
+    providerMessageId: fila.provider_message_id == null ? null : String(fila.provider_message_id),
+  };
+}
+
 /**
  * AUDITORÍA 20 (R-1, CRÍTICO): este lease vivía en 120s mientras
  * `wa-outbox/route.ts` mide 155.5s reales y puede correr hasta los 300s de
@@ -98,6 +133,8 @@ export async function reclamarSalidasWhatsApp(limite = 25): Promise<SalidaOutbox
 }
 
 /**
+ * `ok: false` distingue una RPC fallida/claim perdido de una finalización real;
+ * el caller no puede afirmar que envió una fila que no logró sellar.
  * `muerta: true` cuando esta salida agotó sus 8 reintentos (0180) y quedó en
  * `estado='dead'` — nadie la va a volver a intentar. AUDITORÍA 19 (OP-19c2-3):
  * antes de la 0189 esto no se podía saber desde la app (la RPC devolvía solo
@@ -105,14 +142,34 @@ export async function reclamarSalidasWhatsApp(limite = 25): Promise<SalidaOutbox
  * seguía en verde porque procesó la fila con éxito, solo que el resultado fue
  * enterrarla. El llamador (`route.ts`) es quien decide avisar.
  */
-export async function finalizarSalidaWhatsApp(s: SalidaOutbox, messageId?: string, error?: string): Promise<{ muerta: boolean }> {
+export async function finalizarSalidaWhatsApp(s: SalidaOutbox, messageId?: string, error?: string): Promise<{ ok: boolean; muerta: boolean }> {
   const { data, error: err } = await acotada(supabaseAdmin().rpc('finalizar_wa_outbox', {
     p_id: s.id, p_token: s.leaseToken, p_message_id: messageId ?? null, p_error: error ?? null,
   }), 'wa.outbox.finalizar');
   const fila = (data as Array<{ ok: boolean; muerta: boolean }> | null)?.[0];
   if (err || !fila?.ok) {
     logger.error('wa.outbox_no_finalizado', { id: s.id, err: err?.message ?? 'claim perdido' });
-    return { muerta: false };
+    return { ok: false, muerta: false };
   }
-  return { muerta: fila.muerta === true };
+  return { ok: true, muerta: fila.muerta === true };
+}
+
+/** Los receipts pertenecen al outbox: una respuesta inválida jamás equivale
+ * a cero trabajo. El cron conserva la observabilidad y decide si continuar. */
+async function mantenerReceiptsWhatsApp(
+  operacion: 'reconciliar_wa_meta_receipts' | 'purgar_wa_meta_receipts',
+  limite: number,
+): Promise<number> {
+  const { data, error } = await acotada(supabaseAdmin().rpc(operacion, { p_limite: limite }), operacion);
+  if (error) throw new Error(error.message);
+  if (!Number.isInteger(data) || data < 0) throw new Error('respuesta inválida');
+  return data;
+}
+
+export function reconciliarReceiptsWhatsApp(limite = 100): Promise<number> {
+  return mantenerReceiptsWhatsApp('reconciliar_wa_meta_receipts', limite);
+}
+
+export function purgarReceiptsWhatsApp(limite = 100): Promise<number> {
+  return mantenerReceiptsWhatsApp('purgar_wa_meta_receipts', limite);
 }

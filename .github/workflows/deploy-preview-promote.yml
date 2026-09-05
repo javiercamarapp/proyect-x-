@@ -1,8 +1,9 @@
-name: Vercel preview -> smoke -> promote
+name: Vercel preview -> Production staged -> smoke -> promote
 
 # Deliberadamente manual: un PR no recibe secretos ni crea una Preview antes
 # de CI. Este workflow vuelve a correr calidad sobre un SHA inmutable, exige el
-# dry-run de migraciones en staging y solo entonces despliega ese mismo SHA.
+# preflight/dry-run/aplicación de migraciones en staging y solo entonces
+# despliega ese SHA. Production se construye staged y se prueba antes del alias.
 on:
   workflow_dispatch:
     inputs:
@@ -11,8 +12,13 @@ on:
         required: true
         default: master
         type: string
+      configure_preview:
+        description: Separar sólo las tres variables Supabase de Preview hacia el staging existente
+        required: true
+        default: false
+        type: boolean
       promote:
-        description: Promover Preview validada a producción (requiere approval)
+        description: Migrar y activar candidato Production validado
         required: true
         default: false
         type: boolean
@@ -47,11 +53,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: vercel-preview-${{ github.event.pull_request.number || inputs.ref || github.ref }}
-  cancel-in-progress: true
+  group: vercel-release-likida
+  cancel-in-progress: false
 
 env:
-  VERCEL_CLI_VERSION: '41.7.3'
+  VERCEL_CLI_VERSION: '59.1.4'
+  VERCEL_ORG_ID: team_uelpa362TxivuQUHNzTGLWNv
+  VERCEL_PROJECT_ID: prj_OnrG9eY8WQzj35I3jtAZX2wTJ2sn
   SUPABASE_CLI_VERSION: '2.115.0'
   NPM_CONFIG_REGISTRY: https://registry.npmjs.org
 
@@ -96,10 +104,32 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          # El artefacto prebuilt se ejecuta con Node24 en el proyecto Vercel.
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Auditoría runtime high/critical (con reintentos acotados)
+        run: |
+          for intento in 1 2 3; do
+            : > "$RUNNER_TEMP/npm-audit-runtime.json"
+            : > "$RUNNER_TEMP/npm-audit-runtime.err"
+            set +e
+            timeout 75s npm audit --omit=dev --audit-level=high --json \
+              > "$RUNNER_TEMP/npm-audit-runtime.json" \
+              2> "$RUNNER_TEMP/npm-audit-runtime.err"
+            npm_exit=$?
+            node scripts/ci/audit-runtime.mjs "$RUNNER_TEMP/npm-audit-runtime.json"
+            clasificacion=$?
+            set -e
+
+            if [ "$clasificacion" -eq 0 ]; then exit 0; fi
+            if [ "$clasificacion" -eq 1 ]; then exit 1; fi
+            echo "::warning::npm audit inconcluso (intento $intento/3, exit npm=$npm_exit); se reintentará."
+            if [ "$intento" -lt 3 ]; then sleep $((intento * 10)); fi
+          done
+          cat "$RUNNER_TEMP/npm-audit-runtime.err"
+          echo "::error::No se obtuvo una auditoría runtime concluyente tras 3 intentos; no se declara verde."
+          exit 1
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm run lint:ratchet
@@ -122,7 +152,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
 
   supabase-dry-run:
-    name: Supabase staging — migraciones dry-run
+    name: Supabase staging — preflight, dry-run y migraciones
     needs: [preflight, quality]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -134,22 +164,51 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-      - name: Verificar staging y simular migraciones
+      - name: Verificar staging y aplicar migraciones aisladas
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL_STAGING }}
         run: |
           set -euo pipefail
           [ -n "$SUPABASE_ACCESS_TOKEN" ] || { echo "::error::Falta SUPABASE_ACCESS_TOKEN en staging."; exit 1; }
           [ -n "$SUPABASE_DB_PASSWORD" ] || { echo "::error::Falta SUPABASE_DB_PASSWORD en staging."; exit 1; }
           [ -n "$SUPABASE_PROJECT_REF" ] || { echo "::error::Falta SUPABASE_PROJECT_REF_STAGING."; exit 1; }
-          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+          [ "$SUPABASE_PROJECT_REF" = "dmhhygwzgudwgcbixuwp" ] || { echo "::error::El ref no es el staging autorizado."; exit 1; }
+          command -v psql >/dev/null || { echo "::error::El runner no incluye psql; no se puede ejecutar el preflight de 0332."; exit 1; }
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF"
+          node scripts/ci/supabase-preflight.mjs preflight # 0335_preflight_retencion_indices.sql
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push --dry-run
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push
+
+  preview_configuration:
+    name: Configuración opcional de Preview aislada
+    needs: [preflight, quality, supabase-dry-run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Este environment ya contiene los dos accesos administrativos necesarios.
+    # El helper sólo escribe los tres targets Preview; no crea claves/proyectos
+    # ni exporta secretos a outputs, archivos o artifacts.
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Aislar Supabase Preview con las credenciales existentes
+        if: inputs.configure_preview == true
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          CONFIGURE_PREVIEW: ISOLATE_EXISTING_STAGING
+        run: node scripts/ci/configure-preview.mjs
 
   preview:
     name: Crear Preview inmutable
-    needs: [preflight, quality, supabase-dry-run]
+    needs: [preflight, quality, supabase-dry-run, preview_configuration]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: preview
@@ -161,14 +220,12 @@ jobs:
           ref: ${{ needs.preflight.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: Verificar credenciales Vercel del environment Preview
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           set -euo pipefail
           [ -n "$VERCEL_TOKEN" ] || { echo "::error::Falta VERCEL_TOKEN en preview."; exit 1; }
@@ -177,29 +234,30 @@ jobs:
       - name: Link, pull y build Preview
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           set -euo pipefail
-          npx --yes "vercel@${VERCEL_CLI_VERSION}" link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
-          npx --yes "vercel@${VERCEL_CLI_VERSION}" pull --yes --environment=preview --token "$VERCEL_TOKEN"
-          npx --yes "vercel@${VERCEL_CLI_VERSION}" build --token "$VERCEL_TOKEN"
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID"
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" pull --yes --environment=preview
+          node scripts/ci/production-candidate.mjs preview-env
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" build
       - id: deploy
         name: Deploy prebuilt a Preview
         env:
+          RELEASE_SHA: ${{ needs.preflight.outputs.sha }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          url="$(npx --yes "vercel@${VERCEL_CLI_VERSION}" deploy --prebuilt --token "$VERCEL_TOKEN" | tail -n1)"
+          url="$(npx --yes "vercel@${VERCEL_CLI_VERSION}" deploy --prebuilt --meta releaseSha="$RELEASE_SHA" | tail -n1)"
           case "$url" in https://*) ;; *) echo "::error::Vercel no devolvió una URL HTTPS: $url"; exit 1 ;; esac
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "Preview: $url" >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
-    name: Smoke público de Preview
+    name: Smoke protegido de Preview (GET)
     needs: [preflight, preview]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: preview
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -209,10 +267,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Smoke de rutas públicas
+      - name: Smoke de navegador en la Preview exacta
         env:
-          PLAYWRIGHT_BASE_URL: ${{ needs.preview.outputs.url }}
-        run: npm run test:smoke
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          URL: ${{ needs.preview.outputs.url }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+        run: node scripts/ci/production-candidate.mjs smoke-preview "$URL" "$SHA"
 
   production_migrations:
     name: Producción — aplicar migraciones reales
@@ -233,6 +293,7 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL_PRODUCTION }}
           CONFIRM: ${{ inputs.production_confirmation }}
         run: |
           set -euo pipefail
@@ -240,34 +301,102 @@ jobs:
           [ -n "$SUPABASE_ACCESS_TOKEN" ] || { echo "::error::Falta SUPABASE_ACCESS_TOKEN en production."; exit 1; }
           [ -n "$SUPABASE_DB_PASSWORD" ] || { echo "::error::Falta SUPABASE_DB_PASSWORD en production."; exit 1; }
           [ -n "$SUPABASE_PROJECT_REF" ] || { echo "::error::Falta SUPABASE_PROJECT_REF_PRODUCTION."; exit 1; }
-          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+          command -v psql >/dev/null || { echo "::error::El runner no incluye psql; no se puede ejecutar el preflight de 0332."; exit 1; }
+          [ "$SUPABASE_PROJECT_REF" = "gngoqsvrxdguxvsizpbw" ] || { echo "::error::El ref no es Production autorizado."; exit 1; }
+          node scripts/ci/supabase-preflight.mjs backup
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF"
+          node scripts/ci/supabase-preflight.mjs preflight # 0335_preflight_retencion_indices.sql
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push --dry-run
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" db push
 
+  production_candidate:
+    name: Production staged sin asignar dominios
+    needs: [preflight, quality, production_migrations]
+    if: inputs.promote == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: production
+    outputs:
+      id: ${{ steps.candidate.outputs.id }}
+      url: ${{ steps.candidate.outputs.url }}
+      previous: ${{ steps.candidate.outputs.previous }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      SHA: ${{ needs.preflight.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build con configuración Production
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+          VERCEL_GIT_COMMIT_SHA: ${{ needs.preflight.outputs.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/ci/production-candidate.mjs baseline > "$RUNNER_TEMP/production-before.json"
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" pull --yes --environment=production
+          node scripts/ci/production-candidate.mjs production-env
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" build --prod
+      - id: candidate
+        name: Crear e inspeccionar ID Production staged
+        run: |
+          set -euo pipefail
+          url="$(npx --yes "vercel@${VERCEL_CLI_VERSION}" deploy --prebuilt --prod --skip-domain --meta releaseSha="$SHA" --env VERCEL_GIT_COMMIT_SHA="$SHA" | tail -n1)"
+          node scripts/ci/production-candidate.mjs candidate "$url" "$SHA" "$RUNNER_TEMP/production-before.json"
+
+  production_smoke:
+    name: Smoke del ID Production que se activará
+    needs: [preflight, production_candidate]
+    if: inputs.promote == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOYMENT_ID: ${{ needs.production_candidate.outputs.id }}
+          SHA: ${{ needs.preflight.outputs.sha }}
+        run: node scripts/ci/production-candidate.mjs smoke-production "$DEPLOYMENT_ID" "$SHA"
+
   promote:
-    name: Promote aprobado a producción
-    needs: [preflight, preview, smoke, production_migrations]
-    if: github.event_name == 'workflow_dispatch' && inputs.promote == true
+    name: Activar exactamente el ID Production probado
+    needs: [preflight, production_candidate, production_smoke, production_migrations]
+    if: inputs.promote == true
     runs-on: ubuntu-24.04
     environment:
       name: production
-      url: ${{ needs.preview.outputs.url }}
+      url: ${{ needs.production_candidate.outputs.url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      DEPLOYMENT_ID: ${{ needs.production_candidate.outputs.id }}
+      PREVIOUS_ID: ${{ needs.production_candidate.outputs.previous }}
+      SHA: ${{ needs.preflight.outputs.sha }}
     steps:
-      - name: Guardas de promoción
-        env:
-          URL: ${{ needs.preview.outputs.url }}
-          CONFIRM: ${{ inputs.promote }}
-          MIGRATIONS: ${{ needs.production_migrations.result }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Inspeccionar, promover y comprobar alias
         run: |
           set -euo pipefail
-          case "$URL" in https://*) ;; *) echo "::error::URL de Preview inválida."; exit 1 ;; esac
-          [ "$CONFIRM" = "true" ] || { echo "::error::Promoción no confirmada."; exit 1; }
-          [ "$MIGRATIONS" = "success" ] || { echo "::error::Las migraciones reales no terminaron en verde."; exit 1; }
-      - name: Promover exactamente la Preview testeada
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          URL: ${{ needs.preview.outputs.url }}
-        run: npx --yes "vercel@${VERCEL_CLI_VERSION}" promote "$URL" --token "$VERCEL_TOKEN"
+          node scripts/ci/production-candidate.mjs before-promote "$DEPLOYMENT_ID" "$SHA" "$PREVIOUS_ID"
+          npx --yes "vercel@${VERCEL_CLI_VERSION}" promote "$DEPLOYMENT_ID" --yes --scope "$VERCEL_ORG_ID"
+          node scripts/ci/production-candidate.mjs verify-alias "$DEPLOYMENT_ID" "$SHA"
 
   diagnose_migrations:
     name: Diagnóstico de migraciones (solo lectura) — ${{ inputs.diagnose_migrations }}
@@ -287,7 +416,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ inputs.diagnose_migrations == 'staging' && secrets.SUPABASE_PROJECT_REF_STAGING || secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
         run: |
           set -euo pipefail
-          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF"
           npx --yes "supabase@${SUPABASE_CLI_VERSION}" migration list
 
   repair_migrations:
@@ -316,7 +445,7 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ inputs.repair_migrations == 'staging' && secrets.SUPABASE_PROJECT_REF_STAGING || secrets.SUPABASE_PROJECT_REF_PRODUCTION }}
         run: |
           set -euo pipefail
-          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+          npx --yes "supabase@${SUPABASE_CLI_VERSION}" link --project-ref "$SUPABASE_PROJECT_REF"
 
           echo "::group::1) Revertir entradas remotas huerfanas (sin archivo local)"
           # shellcheck disable=SC2046

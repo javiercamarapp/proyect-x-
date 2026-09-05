@@ -33,6 +33,7 @@ import {
 import { describirHerramientas, despacharHerramienta } from '@/lib/mcp/herramientas';
 import { anotarBitacora } from '@/lib/likida/bitacora_escritura';
 import { registrarEventoSeguridad } from '@/lib/seguridad/eventos';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { LecturaIncompleta } from '@/lib/likida/pg';
 import { appUrl } from '@/lib/env';
 
@@ -160,19 +161,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `Máximo ${TASA_POR_FLOTA} peticiones por minuto por flota. Espera un momento.` }, { status: 429 });
   }
 
-  let crudo: string;
-  try {
-    crudo = await req.text();
-  } catch {
+  const lecturaCuerpo = await leerTextoAcotado(req, CUERPO_MAX_BYTES);
+  if (!lecturaCuerpo.ok && lecturaCuerpo.motivo === 'lectura_fallida') {
     return json(respuestaError(null, RPC.PARSE_ERROR, 'No se pudo leer el cuerpo.'), 400);
   }
-  if (crudo.length > CUERPO_MAX_BYTES) {
+  if (!lecturaCuerpo.ok) {
     await registrarEventoSeguridad({
       origen: 'otro', tipo: 'payload_excesivo', tenantId: cred.tenantId, actor: cred.via,
-      detalle: { superficie: 'mcp', bytes: crudo.length },
+      detalle: { superficie: 'mcp', bytes: `>${CUERPO_MAX_BYTES}` },
     });
     return json(respuestaError(null, RPC.INVALID_REQUEST, 'El cuerpo excede el tamaño permitido.'), 400);
   }
+  const crudo = lecturaCuerpo.texto;
   let cuerpo: unknown;
   try {
     cuerpo = JSON.parse(crudo);

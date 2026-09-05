@@ -15,11 +15,47 @@ const loggerError = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/logger', () => ({ logger: { error: loggerError } }));
 
 const {
-  finalizarSalidaWhatsApp, encolarSalidaWhatsApp, reclamarSalidasWhatsApp,
+  finalizarSalidaWhatsApp, encolarSalidaWhatsApp, encolarSalidaWhatsAppDedupe,
+  reclamarSalidasWhatsApp, reconciliarReceiptsWhatsApp, purgarReceiptsWhatsApp,
   WA_OUTBOX_LEASE_SECONDS, RETRASO_AMBIGUO_SEGUNDOS,
 } = await import('./wa_outbox');
 
 const salida = { id: 'x', payload: {}, intentos: 8, leaseToken: 't' };
+
+describe('encolarSalidaWhatsAppDedupe persiste la intención crítica antes de Meta', () => {
+  beforeEach(() => { rpc.mockReset(); loggerError.mockReset(); });
+
+  it('mapea el receipt durable y conserva una llave de idempotencia estable', async () => {
+    rpc.mockResolvedValue({
+      data: [{ id: 'outbox-1', estado: 'pending', provider_message_id: null }],
+      error: null,
+    });
+
+    await expect(encolarSalidaWhatsAppDedupe(
+      'gps:samsara:tenant-1:evento-1',
+      { messaging_product: 'whatsapp', to: '5219990000000' },
+      'alerta crítica GPS',
+    )).resolves.toEqual({ id: 'outbox-1', estado: 'pending', providerMessageId: null });
+
+    expect(rpc).toHaveBeenCalledWith('encolar_wa_outbox_dedupe', {
+      p_dedupe_key: 'gps:samsara:tenant-1:evento-1',
+      p_payload: { messaging_product: 'whatsapp', to: '5219990000000' },
+      p_error: 'alerta crítica GPS',
+    });
+  });
+
+  it('falla cerrado ante error o estado fuera del contrato', async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: 'timeout' } });
+    await expect(encolarSalidaWhatsAppDedupe('k', {}, 'm')).resolves.toBeNull();
+
+    rpc.mockResolvedValue({
+      data: [{ id: 'outbox-2', estado: 'desconocido', provider_message_id: null }],
+      error: null,
+    });
+    await expect(encolarSalidaWhatsAppDedupe('k', {}, 'm')).resolves.toBeNull();
+    expect(loggerError).toHaveBeenCalledTimes(2);
+  });
+});
 
 // PRUEBAS (barrido MEDIO/BAJO): `encolarSalidaWhatsApp` y `reclamarSalidasWhatsApp`
 // no tenían ni una prueba — solo `finalizarSalidaWhatsApp` estaba cubierta, y es
@@ -169,19 +205,37 @@ describe('finalizarSalidaWhatsApp lee el contrato de tabla de la 0189', () => {
 
   it('muerta: true cuando la fila agotó reintentos', async () => {
     rpc.mockResolvedValue({ data: [{ ok: true, muerta: true }], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: true });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: true, muerta: true });
   });
 
   it('muerta: false en un envío exitoso', async () => {
     rpc.mockResolvedValue({ data: [{ ok: true, muerta: false }], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, 'wamid.1')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, 'wamid.1')).toEqual({ ok: true, muerta: false });
   });
 
-  it('muerta: false (no true por accidente) si la RPC falla o el claim se perdió', async () => {
+  it('ok: false distingue un fallo RPC o claim perdido de una finalización exitosa', async () => {
     rpc.mockResolvedValue({ data: null, error: { message: 'boom' } });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: false, muerta: false });
 
     rpc.mockResolvedValue({ data: [], error: null });
-    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ muerta: false });
+    expect(await finalizarSalidaWhatsApp(salida, undefined, 'fallo')).toEqual({ ok: false, muerta: false });
+  });
+});
+
+describe('mantenimiento de receipts conserva el contrato escalar de PostgreSQL', () => {
+  beforeEach(() => rpc.mockReset());
+  it.each([
+    ['reconciliar_wa_meta_receipts', reconciliarReceiptsWhatsApp],
+    ['purgar_wa_meta_receipts', purgarReceiptsWhatsApp],
+  ] as const)('%s pasa el lote y rechaza errores o conteos inválidos', async (nombre, ejecutar) => {
+    rpc.mockResolvedValue({ data: 7, error: null });
+    await expect(ejecutar(40)).resolves.toBe(7);
+    expect(rpc).toHaveBeenLastCalledWith(nombre, { p_limite: 40 });
+    for (const data of [null, -1, 1.5, '7', {}, []]) {
+      rpc.mockResolvedValue({ data, error: null });
+      await expect(ejecutar()).rejects.toThrow('respuesta inválida');
+    }
+    rpc.mockResolvedValue({ data: 0, error: { message: 'denegado' } });
+    await expect(ejecutar()).rejects.toThrow('denegado');
   });
 });

@@ -57,6 +57,26 @@ describe('BE-6 (b) — el callback LATE en sus salidas de puerta', () => {
     expect(procesarLoteEnCola).not.toHaveBeenCalled();
   });
 
+  it('un body chunked excesivo se corta antes de verificar la firma', async () => {
+    let pedidos = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controlador) {
+        pedidos += 1;
+        if (pedidos > 20) { controlador.close(); return; }
+        controlador.enqueue(new Uint8Array(64 * 1024).fill(120));
+      },
+    });
+    const res = await POST(new Request('https://app.likida.ai/api/cron/facturar/cola', {
+      method: 'POST', headers: { 'upstash-signature': 'x' }, body,
+      // @ts-expect-error Node exige duplex para construir Request con stream.
+      duplex: 'half',
+    }) as never);
+
+    expect(res.status).toBe(413);
+    expect(pedidos).toBeLessThanOrEqual(6);
+    expect(procesarLoteEnCola).not.toHaveBeenCalled();
+  });
+
   it('firma inválida (llave rotada en QStash y no en Vercel): 401 Y latido `fallo`', async () => {
     firmaValida = false;
     const res = await pedir();

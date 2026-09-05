@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { NextResponse } from 'next/server';
 import { sesionSuperadmin } from '@/lib/auth/api-superadmin';
 import { listarInterruptores, apagar, encender } from '@/lib/likida/interruptores';
@@ -80,15 +81,20 @@ export async function POST(req: Request) {
   const { error: puerta, sesion } = await sesionSuperadmin();
   if (!sesion) return puerta;
 
-  let cuerpo: { operacion?: string; id?: string; motivo?: string };
+  // Id de interruptor y motivo: 16 KiB dejan margen para texto escapado.
+  const lecturaCuerpo = await leerTextoAcotado(req, 16 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
   try {
-    cuerpo = await req.json() as typeof cuerpo;
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
   } catch {
-    return NextResponse.json({ error: 'JSON inválido.' }, { status: 400 });
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
   }
-
   const { operacion, id, motivo } = cuerpo;
-  if (!id || (operacion !== 'apagar' && operacion !== 'encender')) {
+  if (typeof id !== 'string' || !id || (motivo !== undefined && typeof motivo !== 'string') || (operacion !== 'apagar' && operacion !== 'encender')) {
     return NextResponse.json({ error: 'Falta el interruptor o la operación no existe.' }, { status: 400 });
   }
 

@@ -54,15 +54,17 @@ vi.mock('./liquidacion/pdf', () => ({
   }),
 }));
 
-const saveLiquidacion = vi.fn(async (_t: string, _l: unknown, _p?: string, _n?: number) => 'liq-1');
+const saveLiquidacion = vi.fn(async (_t: string, _l: unknown, _p?: string, _n?: number, _s?: unknown) => 'liq-1');
+const leerSnapshotInsumosCierre = vi.fn(async () => ({ version: 1 as const, hash: 'a'.repeat(64) }));
 vi.mock('./repo', async () => {
   const real = await vi.importActual<typeof import('./repo')>('./repo');
   return {
     getViaje: vi.fn(async () => ({ id: 'v1', folio: 'VJ-1', anticipo: 5000 })),
     getOperador: vi.fn(async () => ({ id: 'o1', nombre: 'Juan', telefono: '5219993700779' })),
     saveLiquidacion: (...a: unknown[]) => saveLiquidacion(...(a as Parameters<typeof saveLiquidacion>)),
-    // El detector de CU003 es el REAL: si cambia su criterio, esta prueba lo ve.
-    conteoDeGastosCambio: real.conteoDeGastosCambio,
+    leerSnapshotInsumosCierre: (...a: unknown[]) => leerSnapshotInsumosCierre(...(a as [])),
+    // El detector de CU003/CU006 es el REAL: si cambia su criterio, esta prueba lo ve.
+    insumosDeCierreCambiaron: real.insumosDeCierreCambiaron,
     getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
   };
 });
@@ -83,10 +85,15 @@ const contexto = (extras: Record<string, unknown> = {}) => ({ ...BASE, ...extras
 
 /** El error tal como llega de `saveLiquidacion` cuando la 0158 rechaza. */
 const cu003 = () => Object.assign(new Error('saveLiquidacion: contó otra cosa'), { code: 'CU003' });
+const cu006 = () => Object.assign(new Error('saveLiquidacion: snapshot_changed'), { code: 'CU006' });
 
 beforeEach(() => {
   saveLiquidacion.mockReset();
   saveLiquidacion.mockResolvedValue('liq-1');
+  leerSnapshotInsumosCierre.mockReset();
+  leerSnapshotInsumosCierre
+    .mockResolvedValueOnce({ version: 1, hash: 'a'.repeat(64) })
+    .mockResolvedValue({ version: 1, hash: 'b'.repeat(64) });
   cuadrarDesdeDB.mockClear();
   pdfsImpresos.length = 0;
   fotos = [conNGastos(5)];
@@ -98,6 +105,8 @@ describe('el cierre le dice a la base cuántos comprobantes archivó', () => {
     expect(r.success).toBe(true);
     expect(saveLiquidacion).toHaveBeenCalledTimes(1);
     expect(saveLiquidacion.mock.calls[0][3]).toBe(5);
+    expect(saveLiquidacion.mock.calls[0][4]).toEqual({ version: 1, hash: 'a'.repeat(64) });
+    expect(cuadrarDesdeDB).toHaveBeenCalledWith('t1', 'v1', undefined, { modo: 'cierre' });
     expect(pdfsImpresos).toEqual([5, 5]);   // contralor + operador
   });
 });
@@ -114,12 +123,27 @@ describe('si un gasto entra en la ventana, se vuelve a fotografiar UNA vez', () 
     expect(cuadrarDesdeDB).toHaveBeenCalledTimes(2);
     expect(saveLiquidacion).toHaveBeenCalledTimes(2);
     expect(saveLiquidacion.mock.calls[1][3]).toBe(6);
+    expect(saveLiquidacion.mock.calls[1][4]).toEqual({ version: 1, hash: 'b'.repeat(64) });
     // Los PDF se REIMPRIMEN con la fotografía nueva: archivar el papel viejo
     // sería exactamente el hallazgo, movido de sitio.
     expect(pdfsImpresos).toEqual([5, 5, 6, 6]);
     // Y lo que se devuelve —lo que la guardia del processor narra por
     // WhatsApp— es el cuadre que de verdad se archivó, no el primero.
     expect((r.result as { liq: Liquidacion }).liq.gastos).toHaveLength(6);
+  });
+
+  it('recalcula también si cambia monto/IVA/UUID aunque el conteo sea idéntico', async () => {
+    fotos = [conNGastos(5), conNGastos(5)];
+    saveLiquidacion.mockRejectedValueOnce(cu006());
+
+    const r = await executeTool('guardar_liquidacion', {}, contexto());
+
+    expect(r.success).toBe(true);
+    expect(cuadrarDesdeDB).toHaveBeenCalledTimes(2);
+    expect(saveLiquidacion).toHaveBeenCalledTimes(2);
+    expect(leerSnapshotInsumosCierre).toHaveBeenCalledTimes(2);
+    expect(saveLiquidacion.mock.calls[0][3]).toBe(5);
+    expect(saveLiquidacion.mock.calls[1][3]).toBe(5);
   });
 
   it('si al segundo intento vuelve a cambiar, NO cierra: se rinde y lo dice', async () => {

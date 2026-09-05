@@ -23,6 +23,7 @@ let respGastoUpdate: Resp;
 let respLineasUpsert: Resp;
 
 /** Los `update` que llegaron a `gasto`: [vals, filtros...] por llamada. */
+let xmlUpserts = 0;
 let gastoUpdates: Array<Record<string, unknown>>;
 /** El payload del upsert de `cfdi_consolidado_linea` (las filas de línea). */
 let lineasUpsertPayload: Array<Record<string, unknown>> | null;
@@ -48,7 +49,7 @@ vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
     from: (tabla: string) => ({
       upsert: (payload: unknown) => {
-        if (tabla === 'cfdi_xml') return thenable(() => respXmlUpsert);
+        if (tabla === 'cfdi_xml') { xmlUpserts += 1; return thenable(() => respXmlUpsert); }
         lineasUpsertPayload = payload as Array<Record<string, unknown>>;
         return thenable(() => respLineasUpsert);
       },
@@ -88,6 +89,7 @@ beforeEach(() => {
   respGastoUpdate = { data: [{ id: 'g' }], error: null };
   respLineasUpsert = { data: null, error: null };
   gastoUpdates = [];
+  xmlUpserts = 0;
   lineasUpsertPayload = null;
   logger.error.mockClear();
 });
@@ -156,4 +158,14 @@ describe('guardarYConciliarConsolidado — la segunda escritura NO se traga', ()
     expect(gastoUpdates).toHaveLength(0);
     expect(lineasUpsertPayload).toBeNull();
   });
+});
+
+
+it('rechaza una nota de crédito antes de persistir líneas o tocar gastos, incluso si llaman directo al escritor', async () => {
+  respCandidatos = { data: [{ id: 'g1', concepto: 'diesel', monto: 500, fecha: '2026-04-03' }], error: null };
+  const credito = { ...xmlConsolidado([linea(1,500,'2026-04-03T08:00:00'),linea(2,900,'2026-04-05T10:00:00')]), tipoComprobante: 'E' };
+  await expect(guardarYConciliarConsolidado('t1', credito, '<xml/>')).rejects.toThrow(/nota de crédito/i);
+  expect(xmlUpserts).toBe(0);
+  expect(gastoUpdates).toHaveLength(0);
+  expect(lineasUpsertPayload).toBeNull();
 });

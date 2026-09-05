@@ -1,3 +1,4 @@
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 // LOS TEXTOS LARGOS, A PEDIDO (FE-16).
 //
 // El listado del Cerebro dejó de cargar `notas` y los mensajes redactados por
@@ -39,7 +40,18 @@ export async function POST(req: Request) {
 
   const { error } = await sesionSuperadmin();
   if (error) return error;
-  const cuerpo = (await req.json().catch(() => null)) as { ids?: unknown } | null;
+  // 2,000 UUIDs incluso escapados en JSON (~432 KB), más envoltura.
+  const lecturaCuerpo = await leerTextoAcotado(req, 512 * 1024);
+  if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
+    { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
+  let cuerpo: Record<string, unknown>;
+  try {
+    const valor: unknown = JSON.parse(lecturaCuerpo.texto);
+    if (!valor || typeof valor !== 'object' || Array.isArray(valor)) return NextResponse.json({ error: 'Se esperaba un objeto JSON.' }, { status: 400 });
+    cuerpo = valor as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
   if (!Array.isArray(cuerpo?.ids)) {
     return NextResponse.json({ error: 'Falta la lista de ids.' }, { status: 400 });
   }

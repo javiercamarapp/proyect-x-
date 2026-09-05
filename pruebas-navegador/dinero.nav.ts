@@ -26,63 +26,95 @@
  * autentica con él). En CI además la pila entera es efímera.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { test, expect, request as apiRequest } from '@playwright/test';
+import { test, expect, request as apiRequest } from './apoyo/fixture';
 import { ESTADOS } from './apoyo/sesion';
+import { entornoLocalE2E, getLocalE2E } from '../scripts/ci/e2e/entorno-local.mjs';
 
-/** Folio único por corrida: dos corridas locales seguidas no chocan. */
-const FOLIO = `E2E-${Date.now().toString(36).toUpperCase()}`;
+const SUPABASE_URL = entornoLocalE2E().supabase;
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:54321';
+for (const rol of ['duena', 'encargado'] as const) {
+  test.describe(`alta del viaje en Despacho (${rol})`, () => {
+    test.use({ storageState: ESTADOS[rol] });
+    const FOLIO = `E2E-${rol}-${Date.now().toString(36).toUpperCase()}`;
 
-test.describe('alta del viaje en Despacho', () => {
-  test.use({ storageState: ESTADOS.duena });
+    test.afterAll(async () => {
+      // Limpieza fail-closed: si el viaje quedó y no se pudo borrar, se dice.
+      // (`request` de prueba no existe en afterAll; se abre un contexto propio.)
+      // Revalida antes de crear el contexto incluso si cambió el entorno.
+      entornoLocalE2E();
+      const llave = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!llave) throw new Error('Falta SUPABASE_SERVICE_ROLE_KEY para la limpieza del viaje E2E.');
+      const ctx = await apiRequest.newContext();
+      try {
+        const r = await ctx.delete(`${SUPABASE_URL}/rest/v1/viaje`, {
+          params: { tenant_id: 'eq.11111111-1111-1111-1111-111111111111', folio: `eq.${FOLIO}` },
+          maxRedirects: 0,
+          headers: { apikey: llave, Authorization: `Bearer ${llave}` },
+        });
+        if (!r.ok()) throw new Error(`La limpieza del viaje ${FOLIO} respondió ${r.status()}.`);
+      } finally {
+        await ctx.dispose();
+      }
+    });
 
-  test.afterAll(async () => {
-    // Limpieza fail-closed: si el viaje quedó y no se pudo borrar, se dice.
-    // (`request` de prueba no existe en afterAll; se abre un contexto propio.)
-    const llave = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!llave) throw new Error('Falta SUPABASE_SERVICE_ROLE_KEY para la limpieza del viaje E2E.');
-    const ctx = await apiRequest.newContext();
-    try {
-      const r = await ctx.delete(`${SUPABASE_URL}/rest/v1/viaje`, {
-        params: { folio: `eq.${FOLIO}` },
-        headers: { apikey: llave, Authorization: `Bearer ${llave}` },
+    if (rol === 'encargado') test('rechaza campos financieros inyectados en el formulario antes de crear', async ({ page }) => {
+      await page.goto('/dashboard/despacho');
+      const forma = page.locator('form:has(button:has-text("Crear viaje"))');
+      await forma.locator('#folio').fill(FOLIO);
+      await forma.locator('#origen').fill('Silao, GTO');
+      await forma.locator('#destino').fill('Monterrey, NL');
+      await forma.locator('#operadorId').fill('Fernando');
+      await expect(forma.locator('option[value="Fernando Aguilar Cruz"]')).toBeAttached();
+      await forma.locator('#operadorId').fill('Fernando Aguilar Cruz');
+      await expect(forma.locator('input[type="hidden"][name="operadorId"]')).not.toHaveValue('');
+      await expect(forma.locator('#anticipo')).toHaveCount(0);
+      // El atacante modifica su DOM, no la sesión ni el servidor.
+      await forma.evaluate((nodo) => {
+        for (const valor of ['', '9876']) {
+          const input = document.createElement('input');
+          input.type = 'hidden'; input.name = 'anticipo'; input.value = valor;
+          nodo.appendChild(input);
+        }
       });
-      if (!r.ok()) throw new Error(`La limpieza del viaje ${FOLIO} respondió ${r.status()}.`);
-    } finally {
-      await ctx.dispose();
-    }
+      await forma.getByRole('button', { name: 'Crear viaje', exact: true }).click();
+      await expect(page.locator('body')).toContainText(/Tu rol no puede/);
+      await page.goto(`/dashboard/viajes?q=${FOLIO}`);
+      await expect(page.locator('tr', { hasText: FOLIO })).toHaveCount(0);
+    });
+
+    test('el viaje nace en el panel y el registro lo enseña abierto', async ({ page }) => {
+      await page.goto('/dashboard/despacho');
+      const forma = page.locator('form:has(button:has-text("Crear viaje"))');
+      await forma.locator('#folio').fill(FOLIO);
+      await forma.locator('#origen').fill('Silao, GTO');
+      await forma.locator('#destino').fill('Monterrey, NL');
+      if (rol === 'duena') await forma.locator('#anticipo').fill('8000');
+      else await expect(forma.locator('#anticipo')).toHaveCount(0);
+
+      // El combo del chofer resuelve el id CONTRA lo que el servidor ofreció
+      // (combo-catalogo.tsx): primero se teclea para disparar la búsqueda, y
+      // cuando la opción ya llegó se teclea la etiqueta completa. La espera es
+      // por condición: el <option> del datalist y el hidden con id resuelto.
+      const combo = forma.locator('#operadorId');
+      await combo.fill('Fernando');
+      await expect(forma.locator('option[value="Fernando Aguilar Cruz"]')).toBeAttached();
+      await combo.fill('Fernando Aguilar Cruz');
+      await expect(forma.locator('input[type="hidden"][name="operadorId"]')).not.toHaveValue('');
+
+      await forma.getByRole('button', { name: 'Crear viaje' }).click();
+      // La señal de éxito es el dato en su fuente de verdad navegable, no un
+      // toast: el registro, filtrado a abiertos y buscado por el folio único.
+      await expect(async () => {
+        await page.goto(`/dashboard/viajes?f=abiertos&q=${FOLIO}`);
+        const fila = page.locator('tr', { hasText: FOLIO });
+        await expect(fila).toContainText('Abierto');
+        if (rol === 'duena') await expect(fila).toContainText('8,000');
+        else await expect(page.getByRole('columnheader', { name: /Anticipo/i })).toHaveCount(0);
+      }).toPass({ timeout: 15_000 });
+    });
   });
 
-  test('el viaje nace en el panel y el registro lo enseña abierto', async ({ page }) => {
-    await page.goto('/dashboard/despacho');
-    const forma = page.locator('form:has(button:has-text("Crear viaje"))');
-    await forma.locator('#folio').fill(FOLIO);
-    await forma.locator('#origen').fill('Silao, GTO');
-    await forma.locator('#destino').fill('Monterrey, NL');
-    await forma.locator('#anticipo').fill('8000');
-
-    // El combo del chofer resuelve el id CONTRA lo que el servidor ofreció
-    // (combo-catalogo.tsx): primero se teclea para disparar la búsqueda, y
-    // cuando la opción ya llegó se teclea la etiqueta completa. La espera es
-    // por condición: el <option> del datalist y el hidden con id resuelto.
-    const combo = forma.locator('#operadorId');
-    await combo.fill('Fernando');
-    await expect(forma.locator('option[value="Fernando Aguilar Cruz"]')).toBeAttached();
-    await combo.fill('Fernando Aguilar Cruz');
-    await expect(forma.locator('input[type="hidden"][name="operadorId"]')).not.toHaveValue('');
-
-    await forma.getByRole('button', { name: 'Crear viaje' }).click();
-    // La señal de éxito es el dato en su fuente de verdad navegable, no un
-    // toast: el registro, filtrado a abiertos y buscado por el folio único.
-    await expect(async () => {
-      await page.goto(`/dashboard/viajes?f=abiertos&q=${FOLIO}`);
-      const fila = page.locator('tr', { hasText: FOLIO });
-      await expect(fila).toContainText('Abierto');
-      await expect(fila).toContainText('8,000');
-    }).toPass({ timeout: 15_000 });
-  });
-});
+}
 
 test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
   test.use({ storageState: ESTADOS.duena });
@@ -105,7 +137,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     expect(pdfHref).toMatch(/^\/api\/export\/pdf\//);
 
     // La descarga real: sesión → rol → tenant → URL firmada → bytes de PDF.
-    const r = await page.request.get(pdfHref);
+    const r = await getLocalE2E(page.request, pdfHref);
     expect(r.status()).toBe(200);
     const cuerpo = await r.body();
     expect(cuerpo.subarray(0, 5).toString()).toBe('%PDF-');
@@ -119,7 +151,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     // no debe poder distinguir "no existe" de "existe y no es tuyo".
     const contextoB = await browser.newContext({ storageState: ESTADOS.intrusa });
     try {
-      const rIntrusa = await contextoB.request.get(pdfHref);
+      const rIntrusa = await getLocalE2E(contextoB.request, pdfHref);
       expect(rIntrusa.status()).toBe(404);
     } finally {
       await contextoB.close();
@@ -137,7 +169,7 @@ test.describe('cifras y PDF de la liquidación cuadrada (VJ-2026-0844)', () => {
     // pero declarado aquí porque hace falta DENTRO del test, no en todo el describe).
     const contextoAnon = await browser.newContext({ storageState: { cookies: [], origins: [] } });
     try {
-      const rAnon = await contextoAnon.request.get(pdfHref);
+      const rAnon = await getLocalE2E(contextoAnon.request, pdfHref);
       expect(rAnon.status()).toBe(401);
     } finally {
       await contextoAnon.close();

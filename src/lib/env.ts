@@ -49,10 +49,25 @@ const GRUPOS = Object.keys(GROUPS) as EnvGroup[];
 // vacíos, o una plantilla sin llenar. Se rechazan por CONTENIDO, no solo presencia.
 const MARCADOR = /^\s*(\[[^\]]*\]|<[^>]*>|tu[-_ ].*|xxx+|changeme|placeholder|your[-_ ].*)\s*$/i;
 
+/** Validador reutilizable para configuración recibida por argumento. Mantiene
+ * el mismo criterio que `envPuesta`, sin obligar al consumidor a escribir el
+ * valor en `process.env` para poder validarlo. */
+export function valorEntornoReal(v: unknown): v is string {
+  return typeof v === 'string' && v.trim() !== '' && !MARCADOR.test(v);
+}
+
+/** Piso defensivo para secretos operativos. La longitud evita claves humanas
+ * triviales y la diversidad detecta rellenos como `aaaaaaaa...`; no pretende
+ * estimar criptográficamente la entropía de una contraseña elegida a mano. */
+export function secretoEntornoSeguro(v: unknown, minimo = 32): v is string {
+  if (!valorEntornoReal(v)) return false;
+  const limpio = v.trim();
+  return limpio.length >= minimo && new Set(limpio).size >= 10;
+}
+
 /** `true` solo si la variable trae un valor REAL, no un marcador ni un hueco. */
 export function envPuesta(k: string): boolean {
-  const v = process.env[k];
-  return typeof v === 'string' && v.trim() !== '' && !MARCADOR.test(v);
+  return valorEntornoReal(process.env[k]);
 }
 
 /**

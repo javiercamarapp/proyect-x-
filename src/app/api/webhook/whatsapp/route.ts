@@ -5,13 +5,14 @@ import { randomUUID } from 'crypto';
 // es el aviso de mantenimiento (AUDITORÍA 24 · AGEN-7): con la palanca abajo
 // el processor no llega a correr, así que si no habla esta ruta no habla
 // nadie — y el chofer se queda tres horas sin una sola línea.
-import { verifyWebhookChallenge, verifySignature, sendText } from '@/lib/meta/client';
+import { verifyWebhookChallenge, verifySignature, sendText, esReintentableMeta } from '@/lib/meta/client';
 import { processInbound, type InboundMessage, type ResultadoInbound } from '@/lib/likida/processor';
 import { rateLimit, bodyExcede } from '@/lib/ratelimit';
 import { logger } from '@/lib/logger';
 import { registrarEventoSeguridad } from '@/lib/seguridad/eventos';
 import { flushObservabilidad, codigoDeError } from '@/lib/observability/sentry';
 import { leerInterruptor } from '@/lib/likida/interruptores';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { avisadosDeApagado, VENTANA_AVISO_APAGADO_MS } from './avisos_apagado';
 import {
   guardarEventosPendientes, pendientesYaConocidos, reclamarPendiente,
@@ -436,9 +437,11 @@ export async function POST(req: NextRequest) {
               detenerRenovacion();
             }
           } catch (e) {
-            // Ni el claim se pudo leer: la fila sigue pendiente y el cron la
-            // recupera — se anota y no se tumba el pool.
+            // La fila y sus sucesoras siguen en la bandeja para el cron.
+            // Detener este chofer impide que «listo» adelante un comprobante;
+            // los demás choferes conservan sus trabajadores del pool.
             logger.error('wa.claim_fallo', { id: f.id, err: e instanceof Error ? e.message : String(e) });
+            break;
           }
         }
       });
@@ -483,6 +486,31 @@ export async function POST(req: NextRequest) {
   // Con el wamid que `sendText`/`sendDocument` ya registran al enviar, estas dos
   // líneas cierran el circuito: se sabe qué mensaje concreto no llegó y por qué.
   const estados = extractStatuses(payload);
+  let fallosEstado = 0;
+  const estadosPersistibles = estados.filter((e) => ['delivered', 'read', 'failed'].includes(e.status));
+  if (estadosPersistibles.length > 0) {
+    const lote = estadosPersistibles.map((e) => ({
+      wamid: e.id,
+      estado: e.status,
+      // T2 pertenece al evento de Meta, no al instante en que Vercel
+      // alcanzó a procesar este webhook (que puede venir reintentado).
+      ahora: instanteEstadoMeta(e.timestamp),
+      error: e.status === 'failed'
+        ? `${esReintentableMeta(e.errors?.[0]?.code) ? 'retryable:' : 'terminal:'}${e.errors?.[0]?.title ?? e.errors?.[0]?.message ?? 'Meta failed'}`
+        : null,
+    }));
+    const esperados = new Set(lote.map((e) => e.wamid.trim())).size;
+    try {
+      const resultado = await supabaseAdmin().rpc('registrar_estados_wa_meta_lote', { p_estados: lote });
+      if (resultado.error || resultado.data !== esperados) fallosEstado++;
+    } catch (err) {
+      fallosEstado++;
+      logger.error('wa.estado.persistencia_fallo', {
+        estados: estadosPersistibles.length,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   for (const e of estados) {
     if (e.status === 'failed') {
       logger.error('wa.no_entregado', {
@@ -494,6 +522,10 @@ export async function POST(req: NextRequest) {
     } else {
       logger.info('wa.estado', { id: e.id, estado: e.status });
     }
+  }
+
+  if (fallosEstado > 0) {
+    return NextResponse.json({ received: permitidos.length, estados: estados.length, error: 'acuse no persistido' }, { status: 503, headers: { 'Retry-After': '30' } });
   }
 
   // ── EL CÓDIGO DE SALIDA ES LA COLA ────────────────────────────────────────
@@ -531,6 +563,7 @@ export async function POST(req: NextRequest) {
 interface WaEstado {
   id: string;
   status: string;            // sent | delivered | read | failed
+  timestamp?: string;        // UNIX en segundos, como string
   recipient_id?: string;
   errors?: Array<{ code?: number; title?: string; message?: string; error_data?: { details?: string } }>;
 }
@@ -613,6 +646,20 @@ function extractStatuses(p: WaWebhook): WaEstado[] {
     }
   }
   return out;
+}
+
+/** Convierte el reloj de Meta a T2. Si falta o no es un Unix entero plausible,
+ * usa de forma explícita el reloj de recepción local: nunca pasa Invalid Date,
+ * infinito ni una fecha futura controlada por el payload a PostgreSQL. */
+function instanteEstadoMeta(timestamp: string | undefined): string {
+  const recibidoAhora = new Date();
+  if (!/^\d+$/.test(timestamp ?? '')) return recibidoAhora.toISOString();
+  const segundos = Number(timestamp);
+  const maximoConDeriva = Math.floor(recibidoAhora.getTime() / 1000) + 5 * 60;
+  if (!Number.isSafeInteger(segundos) || segundos < 946_684_800 || segundos > maximoConDeriva) {
+    return recibidoAhora.toISOString();
+  }
+  return new Date(segundos * 1000).toISOString();
 }
 
 function extractMessages(p: WaWebhook): InboundMessage[] {

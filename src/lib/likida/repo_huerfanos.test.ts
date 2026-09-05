@@ -31,6 +31,7 @@ import type { Gasto } from '@/types/likida';
 /** Lo que se le pidió a la base, en orden: tabla, método, argumentos. */
 let llamadas: Array<{ tabla: string; metodo: string; args: unknown[] }> = [];
 let respuesta: { data: unknown; error: unknown } = { data: null, error: null };
+const rpc = vi.fn(async () => ({ data: 'h1', error: null }));
 
 const from = vi.fn((tabla: string) => {
   const enlace: Record<string, unknown> = {};
@@ -41,7 +42,7 @@ const from = vi.fn((tabla: string) => {
   return enlace;
 });
 
-vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from, rpc }) }));
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 vi.mock('@/lib/logger', () => ({ logger }));
@@ -54,6 +55,7 @@ beforeEach(() => {
   llamadas = [];
   respuesta = { data: null, error: null };
   from.mockClear();
+  rpc.mockClear();
   logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset();
 });
 
@@ -91,6 +93,18 @@ describe('guardarHuerfano — inserta con los datos del gasto y del motivo', () 
     const ok = await guardarHuerfano('t1', 'o1', { gasto: GASTO, motivo: 'sin_viaje' });
     expect(ok).toBe(false);
     expect(logger.error).toHaveBeenCalledWith('huerfano.guardar_error', expect.anything());
+  });
+
+  it('con viaje registra o vincula por tenant+hash en una sola RPC atómica', async () => {
+    const gasto = { ...GASTO, imgHash: 'a'.repeat(64) };
+    const ok = await guardarHuerfano('t1', 'o1', {
+      gasto, motivo: 'fallo_ocr', rutaImagen: 't1/v1/a.jpg', viajeId: 'v1',
+    });
+    expect(ok).toBe(true);
+    expect(rpc).toHaveBeenCalledWith('guardar_comprobante_huerfano_tx', {
+      p_tenant: 't1', p_operador: 'o1', p_gasto: gasto,
+      p_motivo: 'fallo_ocr', p_ruta_imagen: 't1/v1/a.jpg', p_viaje: 'v1',
+    });
   });
 });
 

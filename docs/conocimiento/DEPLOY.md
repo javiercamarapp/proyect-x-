@@ -252,10 +252,12 @@ La cuenta de superadmin cruza **todas** las flotas: `is_superadmin()` abre la
 RLS entera, `?tenant=` abre el panel de cualquier cliente y `/api/export/*` sus
 liquidaciones. Su única puerta es un enlace mágico al correo, así que un
 phishing que consiga que pegues un código de seis dígitos entrega la base de
-todos los clientes. La palanca `LIKIDA_SUPERADMIN_MFA=obligatorio` cierra eso.
+todos los clientes. En producción la protección está **encendida por defecto**;
+`LIKIDA_SUPERADMIN_MFA=obligatorio` permite probar el mismo gate fuera de
+producción.
 
-**Está apagada por default a propósito: encenderla sin haber inscrito el factor
-te deja fuera de tu propia consola.** La secuencia, en este orden:
+La pantalla Mi perfil es la única exenta, así que una cuenta sin factor puede
+inscribirlo sin abrir primero datos de una flota. La secuencia, en este orden:
 
 1. **Habilita TOTP en el proyecto de producción**: Supabase → Authentication →
    Multi-Factor → *TOTP: enabled*. (En local es `[auth.mfa.totp]
@@ -266,9 +268,8 @@ te deja fuera de tu propia consola.** La secuencia, en este orden:
    de contraseñas, no solo en el teléfono.
 3. **Comprueba que verificas**: escribe el código de la app en esa misma
    pantalla y espera el aviso «Segundo factor verificado».
-4. Solo entonces: `vercel env add LIKIDA_SUPERADMIN_MFA production` con el
-   valor exacto `obligatorio` (ningún otro valor la enciende — ni `true`, ni
-   `1`), y redespliega.
+4. Redespliega y verifica que `/admin` rebota a Mi perfil hasta completar AAL2.
+   No hace falta una variable para producción; el default ya es obligatorio.
 
 **Qué cambia con la palanca puesta.** Al abrir `/admin` o cualquier página de
 `/dashboard`, una sesión de superadmin sin factor —o con factor pero en AAL1—
@@ -277,9 +278,11 @@ pantalla es la **única exenta** (gatearla sería un círculo) y, mientras la
 palanca esté puesta, resuelve sin exigir flota elegida. Si Supabase Auth no
 contesta, también rebota: fallar cerrado.
 
-**Cómo apagarla si te quedas fuera.** `vercel env rm LIKIDA_SUPERADMIN_MFA
-production` y redesplegar. La cuenta no queda bloqueada en la base: la
-exigencia vive solo en el código (`src/lib/auth/guard.ts`).
+**Recuperación de emergencia.** Define temporalmente
+`LIKIDA_SUPERADMIN_MFA=desactivado-temporal` en producción y redespliega. Debe
+retirarse en cuanto se recupere el factor; dejarla puesta es un hallazgo de
+seguridad. La cuenta no queda bloqueada en la base: la exigencia vive en el
+código (`src/lib/auth/guard.ts`).
 
 ### Dar de baja a alguien de una flota (SEG-1)
 

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { mezclaQueSoloRellena, notaConLoNoAplicado } from './mezcla';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { rateLimit, bodyExcede, clientIp } from '@/lib/ratelimit';
+import { rateLimit, clientIp } from '@/lib/ratelimit';
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
 import { logger } from '@/lib/logger';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -147,20 +148,18 @@ export async function POST(req: Request) {
     { status: 503, headers: cabeceras },
   );
 
-  if (bodyExcede(req, MAX_BODY)) {
-    return NextResponse.json({ error: 'payload muy grande' }, { status: 413, headers: cabeceras });
-  }
   if (!(await rateLimit(`lead:${clientIp(req)}`, 10, 60_000))) {
     return NextResponse.json({ error: 'demasiadas peticiones' }, { status: 429, headers: cabeceras });
   }
-
-  const crudo = await req.text();
-  // `bodyExcede` solo mira `content-length`, que un POST `chunked` no declara.
-  // Mismo motivo que en /api/demo: sin esta segunda medición el cuerpo entero
-  // se materializa en memoria desde un endpoint sin sesión.
-  if (crudo.length > MAX_BODY) {
-    return NextResponse.json({ error: 'payload muy grande' }, { status: 413, headers: cabeceras });
+  const lectura = await leerTextoAcotado(req, MAX_BODY);
+  if (!lectura.ok) {
+    return NextResponse.json(
+      { error: lectura.motivo === 'demasiado_grande' ? 'payload muy grande' : 'no se pudo leer el cuerpo' },
+      { status: lectura.motivo === 'demasiado_grande' ? 413 : 400, headers: cabeceras },
+    );
   }
+
+  const crudo = lectura.texto;
 
   let body: Record<string, unknown>;
   try {

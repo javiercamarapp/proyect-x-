@@ -36,6 +36,9 @@ const marcarPendienteProcesado = vi.fn(async () => {});
 const anotarFalloPendiente = vi.fn(async () => {});
 const devolverIntentoPendiente = vi.fn(async () => {});
 const cartasMuertas = vi.fn(async () => 0);
+const iniciarCadenaWa = vi.fn(async () => '11111111-1111-4111-8111-111111111111' as string | null);
+const renovarCadenaWa = vi.fn(async () => true);
+const finalizarCadenaWa = vi.fn(async () => true);
 vi.mock('@/lib/likida/wa_pendientes', () => ({
   crearLeaseOwner: () => 'wa-cron:test',
   iniciarRenovacionLease: () => () => {},
@@ -45,6 +48,9 @@ vi.mock('@/lib/likida/wa_pendientes', () => ({
   anotarFalloPendiente: (...a: unknown[]) => anotarFalloPendiente(...(a as [])),
   devolverIntentoPendiente: (...a: unknown[]) => devolverIntentoPendiente(...(a as [])),
   cartasMuertas: (...a: unknown[]) => cartasMuertas(...(a as [])),
+  iniciarCadenaWa: (...a: unknown[]) => iniciarCadenaWa(...(a as [])),
+  renovarCadenaWa: (...a: unknown[]) => renovarCadenaWa(...(a as [])),
+  finalizarCadenaWa: (...a: unknown[]) => finalizarCadenaWa(...(a as [])),
 }));
 
 // QStash (ESC-1): se mira la PUBLICACIÓN, no la red de Upstash.
@@ -77,6 +83,9 @@ beforeEach(() => {
   ilegible = false;
   pendientesPorDrenar.mockResolvedValue([]);
   cartasMuertas.mockResolvedValue(0);
+  iniciarCadenaWa.mockResolvedValue('11111111-1111-4111-8111-111111111111');
+  renovarCadenaWa.mockResolvedValue(true);
+  finalizarCadenaWa.mockResolvedValue(true);
   processInbound.mockImplementation(async () => {});
   reclamarPendiente.mockImplementation(async (id: string, intentos: number) =>
     ({ id, evento: { from: '521999', type: 'text', waMessageId: id }, intentos: intentos + 1 }));
@@ -207,13 +216,89 @@ describe('el drenado', () => {
     expect(await r.json()).toMatchObject({ encolado: 'msg-1' });
     expect(publishJSON).toHaveBeenCalledWith(expect.objectContaining({
       url: expect.stringContaining('/api/cron/wa-pendientes/cola'),
-      body: { vuelta: 1 },
+      body: { vuelta: 1, cadenaId: '11111111-1111-4111-8111-111111111111' },
+      deduplicationId: 'wa-pendientes-11111111-1111-4111-8111-111111111111-1',
     }));
 
     publishJSON.mockClear();
-    pendientesPorDrenar.mockResolvedValue([{ id: 'w0', intentos: 0, remitente: '521' }]);
+    pendientesPorDrenar
+      .mockResolvedValueOnce([{ id: 'w0', intentos: 0, remitente: '521' }])
+      .mockResolvedValueOnce([]);
     await GET(peticion('Bearer secreto-de-prueba'));
     expect(publishJSON).not.toHaveBeenCalled();
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+  });
+
+  it('un perdedor que vio 40 filas pero ganó CERO claims no publica sucesor', async () => {
+    process.env.UPSTASH_QSTASH_TOKEN = 'qstash-de-prueba';
+    pendientesPorDrenar.mockResolvedValue(
+      Array.from({ length: LOTE }, (_, i) => ({ id: `ocupado-${i}`, intentos: 0, remitente: `52${i}` })),
+    );
+    reclamarPendiente.mockResolvedValue(null);
+
+    const r = await GET(peticion('Bearer secreto-de-prueba'));
+
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ reclamados: 0, backlogDespues: false });
+    expect(publishJSON).not.toHaveBeenCalled();
+    // Una lectura inicial: sin claims ganados ni siquiera vuelve a sondear el
+    // backlog, que pertenece al worker ganador.
+    expect(pendientesPorDrenar).toHaveBeenCalledTimes(1);
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+  });
+
+  it('sin token mide backlog real y declara que continuará por cron, no false', async () => {
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+    pendientesPorDrenar
+      .mockResolvedValueOnce([{ id: 'w0', intentos: 0, remitente: '521' }])
+      .mockResolvedValueOnce([{ id: 'w1', intentos: 0, remitente: '522' }]);
+
+    const r = await GET(peticion('Bearer secreto-de-prueba'));
+
+    expect(await r.json()).toMatchObject({
+      reclamados: 1,
+      backlogDespues: true,
+      continuacion: 'cron',
+    });
+  });
+
+  it('el tope de generación conserva backlog=true, alerta y no finge que terminó', async () => {
+    process.env.UPSTASH_QSTASH_TOKEN = 'qstash-de-prueba';
+    pendientesPorDrenar
+      .mockResolvedValueOnce([{ id: 'w0', intentos: 0, remitente: '521' }])
+      .mockResolvedValueOnce([{ id: 'w1', intentos: 0, remitente: '522' }]);
+    const { drenarBandeja, MAX_VUELTAS_QSTASH } = await import('./drenado');
+
+    const r = await drenarBandeja(Date.now(), peticion('Bearer secreto-de-prueba'), MAX_VUELTAS_QSTASH, '11111111-1111-4111-8111-111111111111');
+
+    expect(r).toMatchObject({ backlogDespues: true, continuacion: 'tope' });
+    expect(publishJSON).not.toHaveBeenCalled();
+    expect(alertarOperador).toHaveBeenCalledWith('cron.wa_pendientes', expect.objectContaining({ codigo: 'tope_cadena_con_backlog' }));
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+  });
+
+  it('un callback con fence vencido no lista ni procesa mensajes', async () => {
+    renovarCadenaWa.mockResolvedValue(false);
+    const { drenarBandeja } = await import('./drenado');
+    const r = await drenarBandeja(Date.now(), peticion('Bearer secreto-de-prueba'), 3, '11111111-1111-4111-8111-111111111111');
+    expect(r.continuacion).toBe('cadena_obsoleta');
+    expect(pendientesPorDrenar).not.toHaveBeenCalled();
+    expect(processInbound).not.toHaveBeenCalled();
+  });
+
+  it('dos crons de minutos distintos no abren dos fan-outs si una cadena sigue activa', async () => {
+    process.env.UPSTASH_QSTASH_TOKEN = 'qstash-de-prueba';
+    iniciarCadenaWa
+      .mockResolvedValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockResolvedValueOnce(null);
+    pendientesPorDrenar.mockResolvedValue([{ id: 'w0', intentos: 0, remitente: '521' }]);
+
+    const primera = await GET(peticion('Bearer secreto-de-prueba'));
+    const segunda = await GET(peticion('Bearer secreto-de-prueba'));
+
+    expect((await primera.json()).continuacion).toBe('encolada');
+    expect((await segunda.json()).continuacion).toBe('cadena_activa');
+    expect(publishJSON).toHaveBeenCalledTimes(1);
     delete process.env.UPSTASH_QSTASH_TOKEN;
   });
 
@@ -226,6 +311,29 @@ describe('el drenado', () => {
     const r = await GET(peticion('Bearer secreto-de-prueba'));
     expect(r.status).toBe(200);
     expect(await r.json()).not.toHaveProperty('encolado');
+    delete process.env.UPSTASH_QSTASH_TOKEN;
+  });
+
+  it('un publish aceptado pero con timeout conserva el fence: el cron solapado no abre otra cadena', async () => {
+    process.env.UPSTASH_QSTASH_TOKEN = 'qstash-de-prueba';
+    // QStash sí pudo aceptar la publicación, pero el cliente perdió la
+    // respuesta. Desde este lado es indistinguible de un rechazo real.
+    publishJSON.mockRejectedValueOnce(new Error('timeout después de aceptar'));
+    iniciarCadenaWa
+      .mockResolvedValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockResolvedValueOnce(null);
+    pendientesPorDrenar.mockResolvedValue([{ id: 'w0', intentos: 0, remitente: '521' }]);
+
+    const primera = await GET(peticion('Bearer secreto-de-prueba'));
+    const segunda = await GET(peticion('Bearer secreto-de-prueba'));
+
+    expect((await primera.json()).continuacion).toBe('publicacion_fallida');
+    expect((await segunda.json()).continuacion).toBe('cadena_activa');
+    expect(publishJSON).toHaveBeenCalledTimes(1);
+    // El lease queda vivo durante la ventana ambigua. Si la publicación sí
+    // llegó, su callback conserva el único fence; si no llegó, otro cron sólo
+    // recupera al vencer el lease.
+    expect(finalizarCadenaWa).not.toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111');
     delete process.env.UPSTASH_QSTASH_TOKEN;
   });
 
@@ -312,5 +420,6 @@ describe('el drenado', () => {
     const r = await GET(peticion('Bearer secreto-de-prueba'));
     expect(r.status).toBe(200);
     expect(alertarOperador).toHaveBeenCalledWith('cron.wa_pendientes', expect.objectContaining({ codigo: 'cartas_muertas' }));
+    expect(registrarLatido).toHaveBeenCalledWith('wa-pendientes', 'parcial', expect.objectContaining({ cartasMuertas: 3 }));
   });
 });

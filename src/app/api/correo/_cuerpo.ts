@@ -12,29 +12,11 @@
  * rutas necesitan el cuerpo CRUDO (un `JSON.parse` + `stringify` reordena
  * llaves y la firma dejaría de cuadrar), por eso devuelve texto y no un objeto.
  */
+import { leerTextoAcotado } from '@/lib/http/cuerpo_acotado';
+
 export async function cuerpoAcotado(req: Request, maxBytes: number): Promise<string | null> {
-  const declarado = Number(req.headers.get('content-length') ?? 0);
-  if (Number.isFinite(declarado) && declarado > maxBytes) return null;
-  if (!req.body) return '';
-  const lector = req.body.getReader();
-  const partes: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await lector.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await lector.cancel();
-        return null;
-      }
-      partes.push(value);
-    }
-  } finally {
-    lector.releaseLock();
-  }
-  const combinado = new Uint8Array(total);
-  let offset = 0;
-  for (const parte of partes) { combinado.set(parte, offset); offset += parte.byteLength; }
-  return new TextDecoder().decode(combinado);
+  const resultado = await leerTextoAcotado(req, maxBytes);
+  if (resultado.ok) return resultado.texto;
+  if (resultado.motivo === 'demasiado_grande') return null;
+  throw new Error('No se pudo leer el cuerpo del webhook.');
 }

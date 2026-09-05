@@ -1,3 +1,12 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('@/lib/likida/liquidacion/rutas_pdf', async (original) => ({
+  ...await original<typeof import('@/lib/likida/liquidacion/rutas_pdf')>(),
+  rutasPdfVersionadas: (tenant: string, viaje: string) => ({
+    contralor: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046.pdf`,
+    operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
+  }),
+}));
 // ═══════════════════════════════════════════════════════════════════════════
 // E2E DE CANAL (auditoría externa 16-ago-2026, prioridad 6) — la cadena que
 // entrega el producto, ENTRANDO POR DONDE ENTRA EL MUNDO REAL:
@@ -14,7 +23,6 @@
 // del processor; este E2E ejercita el del CIERRE, que es el que cobra.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
 import type { Gasto, Viaje, Operador } from '@/types/likida';
 import { hoyMx } from '@/lib/formato';
@@ -65,7 +73,10 @@ vi.mock('@/lib/likida/repo', () => ({
   getOperador: vi.fn(async () => OPERADOR),
   getGastos: vi.fn(async () => GASTOS),
   saveLiquidacion: (...a: unknown[]) => saveLiquidacion(...(a as [])),
-  getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  insumosDeCierreCambiaron: (e: unknown) => ['CU003', 'CU006'].includes(String((e as { code?: string } | null)?.code ?? '')),
+  getLiquidacionDeViaje: vi.fn(async () => undefined),
+  getAcumuladoCombustible: vi.fn(async () => ({ efectivo: 0, totalCombustible: 0 })),
   // FASE 3: perfil vacío = sin declarar; desde_db.ts lo envuelve en catch.
   getPerfilCrudo: vi.fn(async () => ({})),
   addGasto: vi.fn(), updateGastoCfdiXml: vi.fn(), saveCfdiXmlRaw: vi.fn(),
@@ -83,12 +94,13 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   resolveOperador: vi.fn(async () => ({ tenantId: TENANT, operadorId: 'o1' })),
   getOpenViaje: vi.fn(async () => 'v1'),
+  viajeAbiertoDesdeMs: vi.fn(async () => 1_700_000_000_000),
   getTenantContext: vi.fn(async () => ({ nombre: 'Transportes del Sureste' })),
   loadConversation: vi.fn(async () => ({ id: 'c1', turns: [] })),
   saveConversation: vi.fn(),
   claimMessage: vi.fn(async () => 'nuevo'),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
-  releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
+  releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(), completarMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/costos', () => ({
@@ -106,7 +118,7 @@ vi.mock('@/lib/supabase/admin', () => ({
     from: (tabla: string) => {
       const b: Record<string, unknown> = {};
       const self = () => b;
-      for (const m of ['select', 'eq', 'gte', 'lte', 'or', 'order', 'in', 'is', 'limit']) b[m] = self;
+      for (const m of ['select', 'eq', 'gte', 'lte', 'lt', 'or', 'order', 'in', 'is', 'not', 'limit']) b[m] = self;
       b.range = async () => ({ data: [], error: null, count: 0 });
       // `interruptor` responde SIN FILA = encendido: el route y tools.ts
       // consultan el estaApagado REAL a través de este builder — el kill
@@ -161,6 +173,8 @@ vi.mock('@/lib/likida/wa_pendientes', () => ({
     (bandejaInbox.has(id) ? { id, evento: bandejaInbox.get(id), intentos: 1 } : null),
   marcarPendienteProcesado: async () => undefined,
   anotarFalloPendiente: async () => undefined,
+  devolverIntentoPendiente: async () => undefined,
+  iniciarRenovacionLease: () => () => {},
 }));
 
 // ── BORDE 4: la Graph API ───────────────────────────────────────────────────
@@ -188,7 +202,10 @@ const payloadMeta = JSON.stringify({
   object: 'whatsapp_business_account',
   entry: [{ id: '1395114249160000', changes: [{ field: 'messages', value: {
     messaging_product: 'whatsapp',
-    messages: [{ from: DESDE_META, id: 'wamid.E2E', type: 'text', text: { body: 'listo' } }],
+    messages: [{
+      from: DESDE_META, id: 'wamid.E2E', timestamp: '1800000000',
+      type: 'text', text: { body: 'listo' },
+    }],
   } }] }],
 });
 
@@ -204,7 +221,7 @@ const final = (texto: string) => ({
 });
 
 beforeEach(() => {
-  subidos.clear(); salientes.length = 0; corridas.length = 0; pendientes.length = 0;
+  subidos.clear(); bandejaInbox.clear(); salientes.length = 0; corridas.length = 0; pendientes.length = 0;
   create.mockReset(); saveLiquidacion.mockClear();
   vi.stubGlobal('fetch', fetchSpy);
   fetchSpy.mockClear();
@@ -231,10 +248,17 @@ describe('E2E de canal: POST firmado de Meta → cierre → PDF → sobre de vue
     // El ciclo del agente corrió (tool + narración):
     expect(create).toHaveBeenCalledTimes(2);
     // Los DOS ejemplares del PDF son bytes reales en storage:
-    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-operador.pdf`, `${TENANT}/v1.pdf`]);
+    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf`, `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`]);
     // La liquidación se persistió con el ejemplar del contralor:
-    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02).
-    expect(saveLiquidacion).toHaveBeenCalledWith(TENANT, expect.anything(), `${TENANT}/v1.pdf`, expect.any(Number));
+    // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02); el
+    // 5º, el sello de insumos que impide archivar un cuadre obsoleto (DAT-41).
+    expect(saveLiquidacion).toHaveBeenCalledWith(
+      TENANT,
+      expect.anything(),
+      `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`,
+      expect.any(Number),
+      { version: 1, hash: 'a'.repeat(64) },
+    );
     // Y el sobre del documento salió a Meta, al número que Meta acepta:
     const documentos = salientes.filter((s) => s.body.type === 'document');
     expect(documentos).toHaveLength(1);

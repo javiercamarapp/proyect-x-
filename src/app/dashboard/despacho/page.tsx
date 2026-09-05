@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { resolverTenantEfectivo } from '@/lib/auth/tenant-efectivo';
 import { sufijoTenant } from '../sufijo';
 import { requireSessionTenant } from '@/lib/auth/guard';
-import { puedeVerRuta } from '@/lib/auth/visibilidad';
+import { puedeVerRuta, puedeVerArea } from '@/lib/auth/visibilidad';
 import { puedeAsignar } from '@/lib/auth/permisos';
 import {
   getTableroOperacion, getViajesSinAsignar, getCargaOperadores, crearViaje, avisarAlChofer,
@@ -46,9 +46,10 @@ export const dynamic = 'force-dynamic';
  * A nivel de módulo no es una variable capturada, es una referencia del módulo.
  * Las acciones ahora solo cierran sobre `tenantId` y `destino`, dos strings.
  */
-async function guardiaDespacho(tenantId: string): Promise<string | null> {
+async function guardiaDespacho(tenantId: string, requiereDinero = false): Promise<string | null> {
   const sesion = await requireSessionTenant('/dashboard/despacho');
   if (!puedeAsignar(sesion.rol)) return 'Tu rol no puede despachar viajes.';
+  if (requiereDinero && !puedeVerArea(sesion.rol, 'dinero')) return 'Tu rol no puede consultar ni capturar datos de dinero o clientes.';
   if (sesion.rol !== 'superadmin' && sesion.tenantId !== tenantId) return 'Este despacho no es de tu flota.';
   return null;
 }
@@ -76,6 +77,7 @@ export default async function PaginaDespacho({
   const { tenantId, rol } = await resolverTenantEfectivo('/dashboard/despacho', sp);
   if (!puedeVerRuta(rol, '/dashboard/despacho')) redirect('/dashboard');
 
+  const puedeCapturarDinero = puedeVerArea(rol, 'dinero');
   const sufijo = sufijoTenant(sp);
   const destino = `/dashboard/despacho${sufijo}`;
   const paginaPedida = Math.max(1, Number.parseInt(sp.p ?? '1', 10) || 1);
@@ -103,7 +105,7 @@ export default async function PaginaDespacho({
     viajesEnCursoPaginados(tenantId, { pagina: paginaPedida, folio: folioPedido }),
     safe(() => getCargaOperadores(tenantId)),
     contarCatalogo(tenantId, 'operador'),
-    contarCatalogo(tenantId, 'cliente'),
+    puedeCapturarDinero ? contarCatalogo(tenantId, 'cliente') : Promise.resolve(null),
     contarCatalogo(tenantId, 'unidad'),
   ]);
 
@@ -124,7 +126,7 @@ export default async function PaginaDespacho({
    */
   async function buscarCatalogoAccion(tipo: TipoCatalogo, q: string): Promise<OpcionCatalogo[]> {
     'use server';
-    const rechazo = await guardiaDespacho(tenantId);
+    const rechazo = await guardiaDespacho(tenantId, tipo === 'cliente');
     if (rechazo) throw new Error(rechazo);
     if (tipo !== 'operador' && tipo !== 'cliente' && tipo !== 'unidad') {
       throw new Error('Catálogo desconocido.');
@@ -139,7 +141,10 @@ export default async function PaginaDespacho({
 
   async function crear(_prev: { error?: string } | null, fd: FormData): Promise<{ error?: string } | null> {
     'use server';
-    const rechazo = await guardiaDespacho(tenantId);
+    // La presencia se valida antes de leer valores: un POST manual, incluso
+    // vacío o con claves repetidas, no concede al encargado captura financiera.
+    const requiereDinero = ['anticipo', 'ingresoFlete', 'clienteId'].some((campo) => fd.has(campo));
+    const rechazo = await guardiaDespacho(tenantId, requiereDinero);
     if (rechazo) return { error: rechazo };
 
     const texto = (n: string, max: number) => {
@@ -322,6 +327,7 @@ export default async function PaginaDespacho({
 
   return (
     <VistaDespacho
+      puedeCapturarDinero={puedeCapturarDinero}
       tablero={tablero}
       sinAsignar={sinAsignar}
       activos={activos}

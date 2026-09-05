@@ -12,10 +12,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 //   1. EL RELOJ. `venceEn` no solo se recibe: se CONSULTA antes de tomar
 //      trabajo nuevo, y lo que no alcanzó se cuenta en `cortadosPorReloj` sin
 //      dejar nada a medias.
-//   2. EL TOPE. `listaTruncada` distingue «no había más» de «no cupo». La
-//      lista sale ordenada por `aceptado_en` ascendente, así que una ventana
-//      que rebasa el tope devuelve SIEMPRE los mismos viajes viejos y los
-//      recientes no se derivan nunca.
+//   2. EL TOPE. `listaTruncada` distingue «no había más» de «queda otra
+//      página». La RPC mueve un cursor rotativo bajo lock, así que ninguna
+//      página queda enterrada detrás de los mismos 400 viajes.
 //   3. LA LISTA ILEGIBLE LANZA. Un resultado en ceros se leería como «no había
 //      nada que hacer», y el cron pintaría verde sobre un expediente vacío.
 //   4. `ya_estaba` NO ES UN FALLO. Es el resultado esperado del índice único de
@@ -43,6 +42,21 @@ interface FilaViaje {
 }
 let viajes: FilaViaje[] = [];
 let errorViajes: { message: string } | null = null;
+interface TrabajoFake {
+  fila: FilaViaje;
+  unidadIds: string[];
+  inputVersion: string;
+  dia: string;
+  hecho: boolean;
+  claimToken: string | null;
+  claimOwner: string | null;
+  intentos: number;
+}
+let trabajos = new Map<string, TrabajoFake>();
+let secuenciaClaim = 0;
+let fallarAckUnaVez = false;
+let lotesProcesados = 0;
+let alTerminarLote: (() => void) | null = null;
 /** `${unidadId}|${dia}` → los `medida_en` de ese día, en orden ascendente. */
 let posiciones = new Map<string, string[]>();
 let errorGps: { message: string } | null = null;
@@ -54,7 +68,7 @@ let errorGps: { message: string } | null = null;
 let conAviso: Set<string> | null = null;   // null = todos
 let errorAviso: { message: string } | null = null;
 
-interface Estado { tabla: string; ascendente: boolean; unidad: string; dia: string; operador: string }
+interface Estado { tabla: string; ascendente: boolean; unidades: string[]; dia: string; operador: string }
 
 function resolver(e: Estado): { data: unknown; error: { message: string } | null } {
   if (e.tabla === 'operador') {
@@ -66,21 +80,215 @@ function resolver(e: Estado): { data: unknown; error: { message: string } | null
     return errorViajes ? { data: null, error: errorViajes } : { data: viajes, error: null };
   }
   if (errorGps) return { data: null, error: errorGps };
-  const lista = posiciones.get(`${e.unidad}|${e.dia}`) ?? [];
+  const lista = e.unidades.flatMap((unidadId) =>
+    (posiciones.get(`${unidadId}|${e.dia}`) ?? []).map((momento) => ({ momento, unidadId })),
+  ).sort((a, b) => a.momento.localeCompare(b.momento) || a.unidadId.localeCompare(b.unidadId));
   if (lista.length === 0) return { data: null, error: null };
   // El motor pide la primera y la última con dos consultas que solo difieren en
   // el `order`; el doble contesta según esa misma bandera.
-  return { data: { medida_en: e.ascendente ? lista[0] : lista[lista.length - 1] }, error: null };
+  const punto = e.ascendente ? lista[0] : lista[lista.length - 1];
+  return { data: { medida_en: punto.momento, unidad_id: punto.unidadId }, error: null };
+}
+
+function sincronizarTrabajos(): void {
+  const grupos = new Map<string, FilaViaje[]>();
+  for (const v of [...viajes].sort((a, b) => a.aceptado_en.localeCompare(b.aceptado_en) || a.id.localeCompare(b.id))) {
+    const dia = v.aceptado_en.slice(0, 10);
+    const llave = `${v.tenant_id}|${v.operador_id}|${dia}`;
+    grupos.set(llave, [...(grupos.get(llave) ?? []), v]);
+  }
+  for (const [llave, filas] of grupos) {
+    const fila = filas[0];
+    const dia = fila.aceptado_en.slice(0, 10);
+    const unidadIds = [...new Set(filas.flatMap((v) => v.unidad_id ? [v.unidad_id] : []))].sort();
+    const puntos = unidadIds.flatMap((u) => posiciones.get(`${u}|${dia}`) ?? []).sort();
+    const inputVersion = JSON.stringify({
+      viajes: filas.map((v) => [v.id, v.unidad_id, v.aceptado_en]),
+      unidadIds,
+      primera: puntos[0] ?? null,
+      ultima: puntos.at(-1) ?? null,
+      posiciones: puntos.length,
+    });
+    const previo = trabajos.get(llave);
+    if (!previo) {
+      trabajos.set(llave, { fila, unidadIds, inputVersion, dia, hecho: false, claimToken: null, claimOwner: null, intentos: 0 });
+    } else if (previo.inputVersion !== inputVersion) {
+      previo.fila = fila;
+      previo.unidadIds = unidadIds;
+      previo.inputVersion = inputVersion;
+      previo.hecho = false;
+    }
+  }
+}
+
+function resolverClaimJornada(args: { p_limite?: number; p_owner?: string }): { data: unknown; error: { message: string } | null } {
+  if (errorViajes) return { data: null, error: errorViajes };
+  const candidatos = [...trabajos.values()]
+    .filter((t) => !t.hecho && t.claimToken === null)
+    .sort((a, b) => a.fila.aceptado_en.localeCompare(b.fila.aceptado_en) || a.fila.id.localeCompare(b.fila.id));
+  const limite = Math.max(1, Number(args.p_limite ?? 400));
+  const pagina = candidatos.slice(0, limite);
+  for (const t of pagina) {
+    t.claimToken = `00000000-0000-4000-8000-${String(++secuenciaClaim).padStart(12, '0')}`;
+    t.claimOwner = String(args.p_owner);
+    t.intentos++;
+  }
+  return {
+    data: pagina.map((t) => ({
+      ...t.fila, unidad_ids: t.unidadIds, input_version: t.inputVersion,
+      dia: t.dia, claim_token: t.claimToken, intentos: t.intentos,
+      zona_horaria: 'America/Mexico_City',
+      hay_mas: candidatos.length > pagina.length,
+    })),
+    error: null,
+  };
+}
+
+async function resolverProceso(args: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }> {
+  const tokens = new Set(args.p_claim_tokens as string[]);
+  const lote = [...trabajos.values()].filter((t) => t.claimOwner === args.p_owner && t.claimToken && tokens.has(t.claimToken));
+  const filas: Array<Record<string, unknown>> = [];
+
+  for (const t of lote) {
+    const claimToken = t.claimToken as string;
+    let asentados = 0;
+    let yaEstaban = 0;
+    let diaSinGps = false;
+    let sinAviso = false;
+    let fallo: string | null = null;
+
+    if (errorAviso) {
+      logger.error('privacidad.aviso_previo_ilegible', expect.anything());
+      sinAviso = true;
+    } else if (conAviso !== null && !conAviso.has(t.fila.operador_id)) {
+      sinAviso = true;
+    } else {
+      try {
+        const expediente = await asegurarDiaJornada(t.fila.tenant_id, t.fila.operador_id, t.dia);
+        if ('error' in expediente) fallo = `expediente ${t.fila.operador_id}/${t.dia}: ${expediente.error}`;
+        else {
+          const contar = (r: 'asentado' | 'ya_estaba' | 'fallo', etiqueta: string) => {
+            if (r === 'asentado') asentados++;
+            else if (r === 'ya_estaba') yaEstaban++;
+            else fallo = etiqueta;
+          };
+          contar(await asentarMarca({
+            jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'inicio_jornada',
+            momento: new Date(t.fila.aceptado_en), procedencia: 'hito_viaje',
+            origenRef: `viaje:${t.fila.id}:aceptado_en`, viajeId: t.fila.id,
+            unidadId: t.fila.unidad_id,
+          }), `inicio hito ${t.fila.id}`);
+
+          if (t.unidadIds.length > 0) {
+            if (errorGps) fallo = `gps ${t.unidadIds.join(',')}/${t.dia}: ${errorGps.message}`;
+            else {
+              const puntos = t.unidadIds.flatMap((unidadId) =>
+                (posiciones.get(`${unidadId}|${t.dia}`) ?? []).map((momento) => ({ momento, unidadId })),
+              ).sort((a, b) => a.momento.localeCompare(b.momento) || a.unidadId.localeCompare(b.unidadId));
+              if (puntos.length === 0) diaSinGps = true;
+              else {
+                const primera = puntos[0];
+                const ultima = puntos[puntos.length - 1];
+                contar(await asentarMarca({
+                  jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'inicio_jornada',
+                  momento: new Date(primera.momento), procedencia: 'gps',
+                  origenRef: `gps:${primera.unidadId}:${t.dia}:primera:${primera.momento}`,
+                  unidadId: primera.unidadId, viajeId: t.fila.id,
+                }), `inicio gps ${t.fila.unidad_id}/${t.dia}`);
+                if (ultima.momento !== primera.momento) {
+                  contar(await asentarMarca({
+                    jornadaId: expediente.id, tenantId: t.fila.tenant_id, tipo: 'fin_jornada',
+                    momento: new Date(ultima.momento), procedencia: 'gps',
+                    origenRef: `gps:${ultima.unidadId}:${t.dia}:ultima:${ultima.momento}`,
+                    unidadId: ultima.unidadId, viajeId: t.fila.id,
+                  }), `fin gps ${t.fila.unidad_id}/${t.dia}`);
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        fallo = `trabajo ${t.fila.operador_id}/${t.dia}: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+
+    if (fallarAckUnaVez) {
+      fallarAckUnaVez = false;
+      return { data: null, error: { message: 'ACK interrumpido' } };
+    }
+    t.hecho = fallo === null && !sinAviso;
+    t.claimToken = null;
+    t.claimOwner = null;
+    filas.push({
+      claim_token: claimToken,
+      exito: fallo === null && !sinAviso,
+      asentados, ya_estaban: yaEstaban, dia_sin_gps: diaSinGps,
+      sin_aviso: sinAviso, error: fallo ?? (sinAviso ? 'aviso de privacidad pendiente' : null),
+    });
+  }
+  return { data: filas, error: null };
+}
+
+async function resolverRpc(nombre: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { message: string } | null }> {
+  if (nombre === 'sincronizar_jornadas_por_derivar') {
+    if (errorViajes) return { data: null, error: errorViajes };
+    sincronizarTrabajos();
+    return { data: trabajos.size, error: null };
+  }
+  if (nombre === 'reclamar_jornadas_por_derivar') return resolverClaimJornada(args);
+  if (nombre === 'procesar_jornadas_derivadas') {
+    const resultado = await resolverProceso(args);
+    lotesProcesados++;
+    alTerminarLote?.();
+    return resultado;
+  }
+  if (nombre === 'finalizar_jornada_derivacion') {
+    if (fallarAckUnaVez) {
+      fallarAckUnaVez = false;
+      return { data: null, error: { message: 'ACK interrumpido' } };
+    }
+    const t = [...trabajos.values()].find((x) => x.claimToken === args.p_claim_token && x.claimOwner === args.p_owner);
+    if (!t) return { data: false, error: null };
+    if (args.p_exito === true) t.hecho = true;
+    t.claimToken = null;
+    t.claimOwner = null;
+    return { data: true, error: null };
+  }
+  if (nombre === 'liberar_jornadas_por_derivar') {
+    const tokens = new Set(args.p_claim_tokens as string[]);
+    let n = 0;
+    for (const t of trabajos.values()) {
+      if (t.claimOwner === args.p_owner && t.claimToken && tokens.has(t.claimToken)) {
+        t.claimToken = null;
+        t.claimOwner = null;
+        t.intentos--;
+        n++;
+      }
+    }
+    return { data: n, error: null };
+  }
+  throw new Error(`RPC no doblada: ${nombre}`);
+}
+
+function expirarLeasesFake(): void {
+  for (const t of trabajos.values()) {
+    t.claimToken = null;
+    t.claimOwner = null;
+  }
 }
 
 function builder(tabla: string) {
-  const e: Estado = { tabla, ascendente: true, unidad: '', dia: '', operador: '' };
+  const e: Estado = { tabla, ascendente: true, unidades: [], dia: '', operador: '' };
   const b: Record<string, unknown> = {};
   const igual = () => b;
   Object.assign(b, {
-    select: igual, not: igual, lte: igual, limit: igual, is: igual, in: igual, maybeSingle: igual,
+    select: igual, not: igual, lte: igual, limit: igual, is: igual, maybeSingle: igual,
+    in: (col: string, v: unknown[]) => {
+      if (col === 'unidad_id') e.unidades = v.map(String);
+      return b;
+    },
     eq: (col: string, v: unknown) => {
-      if (col === 'unidad_id') e.unidad = String(v);
+      if (col === 'unidad_id') e.unidades = [String(v)];
       if (col === 'id' && tabla === 'operador') e.operador = String(v);
       return b;
     },
@@ -93,7 +301,10 @@ function builder(tabla: string) {
   return b;
 }
 vi.mock('@/lib/supabase/admin', () => ({
-  supabaseAdmin: () => ({ from: (t: string) => builder(t) }),
+  supabaseAdmin: () => ({
+    from: (t: string) => builder(t),
+    rpc: (nombre: string, args: Record<string, unknown>) => resolverRpc(nombre, args),
+  }),
 }));
 
 // ── EL ESCRITOR DOBLADO ────────────────────────────────────────────────────
@@ -109,7 +320,7 @@ vi.mock('./repo', async (importOriginal) => ({
   asentarMarca: (m: unknown) => asentarMarca(m),
 }));
 
-import { derivarJornadas, TOPE_VIAJES_POR_CORRIDA } from './derivar';
+import { derivarJornadas, diaEnZona, TOPE_VIAJES_POR_CORRIDA } from './derivar';
 
 /** Mediodía de México del 20-ago-2026: el ancla de toda la suite. */
 const AHORA = new Date('2026-08-20T18:00:00Z');
@@ -127,11 +338,29 @@ beforeEach(() => {
   vi.clearAllMocks();
   viajes = [];
   errorViajes = null;
+  trabajos = new Map();
+  secuenciaClaim = 0;
+  fallarAckUnaVez = false;
+  lotesProcesados = 0;
+  alTerminarLote = null;
   posiciones = new Map();
   errorGps = null;
   conAviso = null;
   errorAviso = null;
   resultadoAsiento = 'asentado';
+});
+
+describe('diaEnZona — bucket IANA del tenant', () => {
+  it('separa Tijuana y Sonora alrededor de medianoche invernal', () => {
+    const instante = new Date('2026-01-01T07:30:00.000Z');
+    expect(diaEnZona(instante, 'America/Tijuana')).toBe('2025-12-31');
+    expect(diaEnZona(instante, 'America/Hermosillo')).toBe('2026-01-01');
+  });
+
+  it('aplica la regla IANA de horario estacional, no un offset inventado', () => {
+    expect(diaEnZona(new Date('2026-07-01T06:30:00.000Z'), 'America/Tijuana')).toBe('2026-06-30');
+    expect(diaEnZona(new Date('2026-07-01T06:30:00.000Z'), 'America/Hermosillo')).toBe('2026-06-30');
+  });
 });
 
 describe('derivarJornadas — el reloj de la corrida', () => {
@@ -163,6 +392,23 @@ describe('derivarJornadas — el reloj de la corrida', () => {
     expect(r.fallos).toEqual([]);
   });
 
+  it('si el reloj vence después del primer RPC no arranca un segundo lote y libera el resto', async () => {
+    viajes = Array.from({ length: 101 }, (_, i) => viaje(i, `op-${i}`, null));
+    let reloj = 0;
+    const ahora = vi.spyOn(Date, 'now').mockImplementation(() => reloj);
+    alTerminarLote = () => { reloj = 2; };
+    try {
+      const r = await derivarJornadas({ ahora: AHORA, venceEn: 1 });
+      expect(r.revisados).toBe(101);
+      expect(r.cortadosPorReloj).toBe(51);
+      expect(r.asentados).toBe(50);
+      expect(lotesProcesados).toBe(1);
+      expect([...trabajos.values()].filter((t) => t.claimToken !== null)).toEqual([]);
+    } finally {
+      ahora.mockRestore();
+    }
+  });
+
   it('sin `venceEn` el motor NO corta — el reloj es del llamador, no del motor', async () => {
     viajes = [viaje(1, 'op-a', null)];
     const r = await derivarJornadas({ ahora: AHORA });
@@ -172,16 +418,19 @@ describe('derivarJornadas — el reloj de la corrida', () => {
 });
 
 describe('derivarJornadas — la ventana que no cupo', () => {
-  it('`listaTruncada` es true al TOCAR el tope, y se mide sobre los viajes crudos', async () => {
-    // Los `TOPE` viajes son del MISMO operador y el MISMO día: deduplican a un
-    // solo expediente. La truncación se mide sobre la CONSULTA —que sí se
-    // recortó—, no sobre la lista de trabajo ya deduplicada.
+  it('muchos viajes del MISMO expediente no consumen el tope de pares', async () => {
     viajes = Array.from({ length: TOPE_VIAJES_POR_CORRIDA }, (_, i) => viaje(i, 'op-a', null));
     const r = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
 
-    expect(r.listaTruncada).toBe(true);
+    expect(r.listaTruncada).toBe(false);
     expect(r.revisados).toBe(1);
-    // WARN, no info: es una corrida que no barrió su ventana.
+  });
+
+  it('`listaTruncada` declara que quedan más pares, con cursor ya avanzado', async () => {
+    viajes = Array.from({ length: TOPE_VIAJES_POR_CORRIDA + 1 }, (_, i) => viaje(i, `op-${i}`, null));
+    const r = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+    expect(r.listaTruncada).toBe(true);
+    expect(r.revisados).toBe(TOPE_VIAJES_POR_CORRIDA);
     expect(logger.warn).toHaveBeenCalledWith('jornada.derivar.lista_truncada', expect.anything());
   });
 
@@ -189,6 +438,83 @@ describe('derivarJornadas — la ventana que no cupo', () => {
     viajes = Array.from({ length: TOPE_VIAJES_POR_CORRIDA - 1 }, (_, i) => viaje(i, `op-${i}`, null));
     const r = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
     expect(r.listaTruncada).toBe(false);
+  });
+
+  it('1,500 pares más llegadas nuevas convergen sin quedar detrás del top-400', async () => {
+    viajes = Array.from({ length: 1_500 }, (_, i) => viaje(i, `op-${i}`, null));
+    await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+    viajes.push(...Array.from({ length: 20 }, (_, i) => viaje(1_500 + i, `op-${1_500 + i}`, null)));
+
+    for (let i = 0; i < 4; i++) {
+      await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+    }
+
+    const operadores = new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1])));
+    expect(operadores.size).toBe(1_520);
+  });
+
+  it('consumir sólo el primer batch de 50 converge y libera los 350 no iniciados', async () => {
+    // El deadline ahora se consulta por RPC/lote, que es la unidad atómica.
+    // Cada corrida procesa 50 y libera cercadamente los otros 350 claims.
+    viajes = Array.from({ length: 1_520 }, (_, i) => viaje(i, `op-${i}`, null));
+    const reloj = vi.spyOn(Date, 'now');
+    try {
+      for (let corrida = 0; corrida < 15; corrida++) {
+        let consultas = 0;
+        reloj.mockImplementation(() => consultas++ < 1 ? 0 : 2);
+        await derivarJornadas({ ahora: AHORA, venceEn: 1 });
+      }
+      const operadores = new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1])));
+      expect(operadores.size).toBe(750);
+      for (let corrida = 0; corrida < 16; corrida++) {
+        let consultas = 0;
+        reloj.mockImplementation(() => consultas++ < 1 ? 0 : 2);
+        await derivarJornadas({ ahora: AHORA, venceEn: 1 });
+      }
+    } finally {
+      reloj.mockRestore();
+    }
+
+    const operadores = new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1])));
+    expect(operadores.size).toBe(1_520);
+  });
+
+  it.each([0, 1, 399, 400, 401, 1_520])('respeta el borde de lote con %i expedientes', async (cantidad) => {
+    viajes = Array.from({ length: cantidad }, (_, i) => viaje(i, `op-${i}`, null));
+    const r = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+    expect(r.revisados).toBe(Math.min(cantidad, TOPE_VIAJES_POR_CORRIDA));
+    expect(r.listaTruncada).toBe(cantidad > TOPE_VIAJES_POR_CORRIDA);
+  });
+
+  it('una caída durante el ACK conserva el claim y, al vencer el lease, se recupera', async () => {
+    viajes = [viaje(1, 'op-a', null)];
+    fallarAckUnaVez = true;
+    const primera = await derivarJornadas({ ahora: AHORA });
+    expect(primera.fallos.some((f) => f.startsWith('ack '))).toBe(true);
+    expect(asegurarDiaJornada).toHaveBeenCalledTimes(1);
+
+    expirarLeasesFake();
+    const segunda = await derivarJornadas({ ahora: AHORA });
+    expect(segunda.fallos).toEqual([]);
+    expect(asegurarDiaJornada).toHaveBeenCalledTimes(2);
+  });
+
+  it('una caída antes del ACK se anota como fallo y vuelve a ser elegible', async () => {
+    viajes = [viaje(1, 'op-a', null)];
+    asentarMarca.mockRejectedValueOnce(new Error('proceso muerto'));
+    const primera = await derivarJornadas({ ahora: AHORA });
+    expect(primera.fallos.some((f) => f.includes('proceso muerto'))).toBe(true);
+    const segunda = await derivarJornadas({ ahora: AHORA });
+    expect(segunda.asentados).toBe(1);
+    expect(asegurarDiaJornada).toHaveBeenCalledTimes(2);
+  });
+
+  it('dos workers solapados reclaman conjuntos disjuntos y no dejan hambre', async () => {
+    viajes = Array.from({ length: 1_520 }, (_, i) => viaje(i, `op-${i}`, null));
+    await Promise.all([derivarJornadas({ ahora: AHORA }), derivarJornadas({ ahora: AHORA })]);
+    expect(new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1]))).size).toBe(800);
+    await Promise.all([derivarJornadas({ ahora: AHORA }), derivarJornadas({ ahora: AHORA })]);
+    expect(new Set(asegurarDiaJornada.mock.calls.map((c) => String(c[1]))).size).toBe(1_520);
   });
 });
 
@@ -209,6 +535,37 @@ describe('derivarJornadas — un expediente por (tenant, operador, día)', () =>
     expect(r.revisados).toBe(1);
     expect(asegurarDiaJornada).toHaveBeenCalledTimes(1);
     expect(asegurarDiaJornada).toHaveBeenCalledWith(T, 'op-a', DIA);
+  });
+
+  it('usa los extremos de TODAS las unidades que el operador manejó ese día', async () => {
+    viajes = [viaje(1, 'op-a', 'u-manana', '13:00'), viaje(2, 'op-a', 'u-tarde', '20:00')];
+    posiciones.set(`u-manana|${DIA}`, [`${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`]);
+    posiciones.set(`u-tarde|${DIA}`, [`${DIA}T20:00:00.000Z`, `${DIA}T23:00:00.000Z`]);
+
+    await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    expect(asentarMarca).toHaveBeenCalledWith(expect.objectContaining({
+      tipo: 'fin_jornada',
+      momento: new Date(`${DIA}T23:00:00.000Z`),
+      unidadId: 'u-tarde',
+    }));
+  });
+
+  it('reabre el trabajo cuando una posición posterior cambia el watermark del día', async () => {
+    viajes = [viaje(1, 'op-a', 'u-1')];
+    posiciones.set(`u-1|${DIA}`, [`${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`]);
+    await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    posiciones.set(`u-1|${DIA}`, [
+      `${DIA}T14:00:00.000Z`, `${DIA}T16:00:00.000Z`, `${DIA}T23:00:00.000Z`,
+    ]);
+    const segunda = await derivarJornadas({ ahora: AHORA, venceEn: Date.now() + 60_000 });
+
+    expect(segunda.revisados).toBe(1);
+    expect(asentarMarca).toHaveBeenCalledWith(expect.objectContaining({
+      tipo: 'fin_jornada',
+      momento: new Date(`${DIA}T23:00:00.000Z`),
+    }));
   });
 
   it('dos operadores distintos el mismo día son DOS expedientes', async () => {

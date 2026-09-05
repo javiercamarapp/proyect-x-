@@ -29,11 +29,13 @@ const SECRETO = 'app-secret-de-prueba';
 process.env.WHATSAPP_APP_SECRET = SECRETO;
 
 const processInbound = vi.fn(async () => {});
+const rpcEstado = vi.fn(async () => ({ data: 1, error: null }));
 // Solo el mensaje: el segundo argumento de `processInbound` es el reloj de la
 // invocación (auditoría 18, C4) y lo prueba `route_pospuesto.test.ts`; aquí se
 // afirma QUÉ mensaje llega, no cuándo arrancó la invocación.
 vi.mock('@/lib/likida/processor', () => ({ processInbound: (m: unknown) => (processInbound as (m: unknown) => Promise<void>)(m) }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc: rpcEstado }) }));
 
 // AUDITORÍA 6 · operabilidad — el flush de Sentry existía, con ocho pruebas
 // unitarias, y el único `after()` del repo no lo llamaba. Se espía aquí porque
@@ -117,7 +119,51 @@ const payload = (from: string, mensaje: Record<string, unknown>) => JSON.stringi
 beforeEach(() => {
   processInbound.mockReset(); processInbound.mockImplementation(async () => {});
   flushObservabilidad.mockReset(); flushObservabilidad.mockImplementation(async () => {});
+  rpcEstado.mockReset(); rpcEstado.mockResolvedValue({ data: 1, error: null });
   pendientes.length = 0;
+});
+
+describe('acuses Meta — persistencia durable antes del 200', () => {
+  const statusPayload = (status: string, id = 'wamid.STATUS') => JSON.stringify({
+    object: 'whatsapp_business_account', entry: [{ changes: [{ value: {
+      statuses: [{ id, status, errors: status === 'failed' ? [{ title: 'falló' }] : undefined }],
+    } }] }],
+  });
+
+  it('delivered persiste por wamid y responde 200', async () => {
+    const c = statusPayload('delivered');
+    const res = await postear(c, firmar(c));
+    expect(res.status).toBe(200);
+    expect(rpcEstado).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({ wamid: 'wamid.STATUS', estado: 'delivered' })],
+    });
+  });
+
+  it.each([
+    [{ data: null, error: { message: 'db down' } }],
+    [{ data: false, error: null }],
+  ])('error de persistencia devuelve 503 reintentable: %o', async (respuesta) => {
+    rpcEstado.mockResolvedValueOnce(respuesta as never);
+    const c = statusPayload('read', 'wamid.RETRY');
+    const res = await postear(c, firmar(c));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('30');
+  });
+
+  it('failed se persiste como estado observable', async () => {
+    const c = statusPayload('failed', 'wamid.FAILED');
+    const res = await postear(c, firmar(c));
+    expect(res.status).toBe(200);
+    expect(rpcEstado).toHaveBeenCalledWith('registrar_estados_wa_meta_lote', {
+      p_estados: [expect.objectContaining({ wamid: 'wamid.FAILED', estado: 'failed' })],
+    });
+  });
+
+  it('estado desconocido no llama al RPC', async () => {
+    const c = statusPayload('sent', 'wamid.SENT');
+    await postear(c, firmar(c));
+    expect(rpcEstado).not.toHaveBeenCalled();
+  });
 });
 
 // ═══ M17 — la firma ═══════════════════════════════════════════════════════
