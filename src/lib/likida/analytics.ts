@@ -301,6 +301,7 @@ export async function getHechosSolos(tenantId: string, limite = 8): Promise<Hech
         .eq('tenant_id', tenantId)
         .not(campo, 'is', null)
         .order(campo, { ascending: false })
+        .order('id', { ascending: false })
         .limit(limite),
       `getHechosSolos.${tipo}`,
     );

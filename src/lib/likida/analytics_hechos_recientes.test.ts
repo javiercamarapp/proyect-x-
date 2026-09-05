@@ -5,7 +5,7 @@ const estado = vi.hoisted(() => ({ filas: [] as Fila[], errorCampo: '', limites:
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from: (tabla: string) => {
   if (tabla !== 'viaje') throw new Error(`Tabla inesperada ${tabla}`);
   const filtros: Array<(f: Fila) => boolean> = [];
-  let orden = ''; let ascendente = false; let limite = Infinity;
+  const ordenes: Array<{ campo: string; ascendente: boolean }> = []; let limite = Infinity;
   const q = {
     select: () => q,
     eq: (campo: string, valor: unknown) => { filtros.push((f) => f[campo] === valor); return q; },
@@ -14,13 +14,19 @@ vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from: (tabla: s
       filtros.push((f) => f[campo] != null); return q;
     },
     or: () => { filtros.push((f) => f.escalado_en != null || f.recordatorio_comprobacion_en != null); return q; },
-    order: (campo: string, opts: { ascending: boolean }) => { orden = campo; ascendente = opts.ascending; return q; },
+    order: (campo: string, opts: { ascending: boolean }) => { ordenes.push({ campo, ascendente: opts.ascending }); return q; },
     limit: (n: number) => { limite = n; estado.limites.push(n); return q; },
     then: (res: (v: unknown) => unknown) => Promise.resolve({
       data: estado.filas.filter((f) => filtros.every((p) => p(f)))
-        .sort((a,b) => (ascendente ? 1 : -1) * String(a[orden]).localeCompare(String(b[orden])))
+        .sort((a,b) => {
+          for (const { campo, ascendente } of ordenes) {
+            const comparacion = (ascendente ? 1 : -1) * String(a[campo]).localeCompare(String(b[campo]));
+            if (comparacion) return comparacion;
+          }
+          return 0;
+        })
         .slice(0, limite),
-      error: estado.errorCampo === orden ? { message: 'lectura falló' } : null,
+      error: ordenes.some(({ campo }) => estado.errorCampo === campo) ? { message: 'lectura falló' } : null,
     }).then(res),
   };
   return q;
@@ -66,4 +72,13 @@ it.each(['escalado_en', 'recordatorio_comprobacion_en'])('fallo de %s no devuelv
 it('sin eventos conserva el feed vacío', async () => {
   estado.filas = [fila('sin-sello')];
   expect(await getHechosSolos('A')).toEqual([]);
+});
+
+
+it('desempata sellos iguales antes del límite aunque las filas cambien de orden', async () => {
+  const filas = ['a', 'd', 'b', 'c'].map((id) => fila(id, { escalado_en: '2026-09-05T12:00:00Z' }));
+  estado.filas = filas;
+  expect((await getHechosSolos('A', 2)).map((h) => h.folio)).toEqual(['d', 'c']);
+  estado.filas = [...filas].reverse();
+  expect((await getHechosSolos('A', 2)).map((h) => h.folio)).toEqual(['d', 'c']);
 });
