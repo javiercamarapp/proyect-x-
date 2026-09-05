@@ -1,3 +1,11 @@
+
+vi.mock('@/lib/likida/liquidacion/rutas_pdf', async (original) => ({
+  ...await original<typeof import('@/lib/likida/liquidacion/rutas_pdf')>(),
+  rutasPdfVersionadas: (tenant: string, viaje: string) => ({
+    contralor: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046.pdf`,
+    operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
+  }),
+}));
 // ═══════════════════════════════════════════════════════════════════════════
 // E2E DE CANAL (auditoría externa 16-ago-2026, prioridad 6) — la cadena que
 // entrega el producto, ENTRANDO POR DONDE ENTRA EL MUNDO REAL:
@@ -240,14 +248,14 @@ describe('E2E de canal: POST firmado de Meta → cierre → PDF → sobre de vue
     // El ciclo del agente corrió (tool + narración):
     expect(create).toHaveBeenCalledTimes(2);
     // Los DOS ejemplares del PDF son bytes reales en storage:
-    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-operador.pdf`, `${TENANT}/v1.pdf`]);
+    expect([...subidos.keys()].sort()).toEqual([`${TENANT}/v1-version-00000000-0000-4000-8000-000000000046-operador.pdf`, `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`]);
     // La liquidación se persistió con el ejemplar del contralor:
     // El 4º argumento es el conteo de comprobantes de la 0158 (DAT-02); el
     // 5º, el sello de insumos que impide archivar un cuadre obsoleto (DAT-41).
     expect(saveLiquidacion).toHaveBeenCalledWith(
       TENANT,
       expect.anything(),
-      `${TENANT}/v1.pdf`,
+      `${TENANT}/v1-version-00000000-0000-4000-8000-000000000046.pdf`,
       expect.any(Number),
       { version: 1, hash: 'a'.repeat(64) },
     );

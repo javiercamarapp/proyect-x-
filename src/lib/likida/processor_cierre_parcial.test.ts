@@ -150,7 +150,7 @@ const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', tim
 const cierreParcial = () => new PartialExecutionError(
   'timeout del proveedor',
   new Error('timeout del proveedor'),
-  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
   10, 10, 0,
 );
 
@@ -285,7 +285,7 @@ describe('AGEN-1 — un guardar_liquidacion que reporta fallo sin tumbar el cicl
   it('control: con la tool exitosa no se consulta la base (el snapshot de la tool manda)', async () => {
     runAgent.mockResolvedValue({
       finalText: 'Listo', model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0, costoPorModelo: {},
-      toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+      toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
     });
     await processInbound(listo);
     expect(getLiquidacionDeViaje).not.toHaveBeenCalled();
@@ -308,7 +308,7 @@ describe('AGEN-A1 — el cierre que abortó con la tool en vuelo y commiteó ent
 
   it('manda el PDF, avisa al jefe, y NO registra `pdf.contralor_no_generado`', async () => {
     runAgent.mockRejectedValue(abortoConToolEnVuelo());
-    getLiquidacionDeViaje.mockResolvedValue({ id: 'L-77', pdfUrl: 't-1/v-9.pdf' });
+    getLiquidacionDeViaje.mockResolvedValue({ id: 'L-77', pdfUrl: 't1/v1.pdf' });
     await processInbound(listo);
 
     const dichos = textos().join(' | ');

@@ -219,19 +219,21 @@ export type SelloEntrega = 'entregada_operador_en' | 'avisada_oficina_en';
  * primera. Best-effort y nunca lanza: la liquidación ya está cerrada y el PDF
  * ya salió; perder el sello cuesta a lo sumo un reenvío, no un cierre.
  */
-export async function sellarEntregaLiquidacion(tenantId: string, liquidacionId: string | null | undefined, sello: SelloEntrega): Promise<boolean> {
+export async function sellarEntregaLiquidacion(tenantId: string, liquidacionId: string | null | undefined, sello: SelloEntrega, pdfEsperado: string | null): Promise<boolean> {
   if (!liquidacionId) return false;
   try {
-    const { error } = await acotada(supabaseAdmin()
+    let q = supabaseAdmin()
       .from('liquidacion')
       .update({ [sello]: new Date().toISOString() })
       .eq('tenant_id', tenantId).eq('id', liquidacionId)
-      .is(sello, null), 'sellarEntregaLiquidacion');
+      .is(sello, null);
+    q = pdfEsperado === null ? q.is('pdf_url', null) : q.eq('pdf_url', pdfEsperado);
+    const { data, error } = await acotada(q.select('id').maybeSingle(), 'sellarEntregaLiquidacion');
     if (error) {
       logger.warn('liquidacion.sello_entrega', { tenant: tenantId, liq: liquidacionId, sello, err: error.message });
       return false;
     }
-    return true;
+    return data != null;
   } catch (e) {
     logger.warn('liquidacion.sello_entrega', { tenant: tenantId, liq: liquidacionId, sello, err: e instanceof Error ? e.message : String(e) });
     return false;

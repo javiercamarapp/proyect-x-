@@ -94,6 +94,7 @@ import { atenderConfirmacion, aceptarPorActividad } from './confirmar_viaje';
 import { enviarBriefingInicio } from './briefing_inicio_wa';
 import { transcribirNotaDeVoz, RESPUESTA_NO_ENTENDI, RESPUESTA_SIN_PRESUPUESTO } from './voz_transcrita';
 import { avisarCierreAlJefe } from './avisar_cierre';
+import { rutaPdfOperador } from './liquidacion/rutas_pdf';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { alertarOperador } from '@/lib/observability/alerta';
@@ -1066,7 +1067,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
   } else {
     try {
       // El ejemplar del OPERADOR (`tools.ts`), igual que el camino feliz.
-      const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${liq.viajeId}-operador.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.reentrega');
+      const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(rutaPdfOperador(liq.pdfUrl, op.tenantId, liq.viajeId), TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.reentrega');
       if (firma.error || !firma.data?.signedUrl) throw new Error(firma.error?.message ?? 'storage no devolvió URL firmada');
       const r = await sendDocument(telefono, firma.data.signedUrl, 'liquidacion.pdf', 'Aquí está tu liquidación 📄');
       if (!r.ok) {
@@ -1075,7 +1076,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
         pdf = 'fallo';
       } else {
         await registrarCostoWhatsApp(op.tenantId, liq.viajeId);
-        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en');
+        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en', liq.pdfUrl);
         pdf = 'mandado';
       }
     } catch (e) {
@@ -1092,7 +1093,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
     try {
       let urlPdfJefe: string | null = null;
       if (liq.pdfUrl) {
-        const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${liq.viajeId}.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
+        const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(liq.pdfUrl, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
         if (firma.error || !firma.data?.signedUrl) logger.warn('cierre.pdf_jefe_sin_url', { ...ctx, err: firma.error?.message ?? 'storage no devolvió URL firmada' });
         else urlPdfJefe = firma.data.signedUrl;
       }
@@ -1103,7 +1104,7 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
       // el PDF, ya no queda ningún turno futuro que lo reintente.
       const pdfJefeOk = !liq.pdfUrl || rj.pdfEnviado === true;
       if (rj.enviado && pdfJefeOk) {
-        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'avisada_oficina_en');
+        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'avisada_oficina_en', liq.pdfUrl);
         jefe = 'avisado';
       } else {
         logger.warn('cierre.jefe_no_avisado', { ...ctx, motivo: rj.motivo, pdfJefeOk });
@@ -1193,7 +1194,7 @@ async function confirmarCierreEnBase(tenantId: string, viajeId: string): Promise
       registro: {
         toolName: 'guardar_liquidacion',
         args: {},
-        result: { liquidacion_id: liq.id, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
+        result: { liquidacion_id: liq.id, pdf_url: liq.pdfUrl, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
         durationMs: 0,
       } as ToolCallRecord,
     };
@@ -4354,13 +4355,20 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       // del operador.
       const pdfContralorGenerado = Boolean((guardado?.result as { pdf_contralor_generado?: boolean } | undefined)?.pdf_contralor_generado);
       const liqIdCerrada = (guardado?.result as { liquidacion_id?: string } | undefined)?.liquidacion_id;
+      const resultadoPdf = guardado?.result as { pdf_url?: string | null } | undefined;
+      let pdfPathCerrado = resultadoPdf?.pdf_url ?? null;
+      if (!resultadoPdf || !('pdf_url' in resultadoPdf)) {
+        try { pdfPathCerrado = (await getLiquidacionDeViaje(op.tenantId, viajeId))?.pdfUrl ?? null; }
+        catch { logger.warn('cierre.pdf_puntero_no_leido', { tenant: op.tenantId, viaje: viajeId }); }
+      }
       if (!pdfContralorGenerado) {
         logger.error('pdf.contralor_no_generado', { tenant: op.tenantId, viaje: viajeId, liqId: liqIdCerrada });
       }
       try {
         if (!pdfGenerado) throw new Error('la tool reportó pdf_generado=false');
         // El ejemplar del OPERADOR, no el completo: ver `tools.ts`.
-        const path = `${op.tenantId}/${viajeId}-operador.pdf`;
+        if (!pdfPathCerrado) throw new Error('El cierre no tiene pareja PDF publicada');
+        const path = rutaPdfOperador(pdfPathCerrado, op.tenantId, viajeId);
         // AUDITORÍA 8, ALTO REINCIDENTE: `createSignedUrl` seguía crudo, sin
         // `acotada` — el único de los 13 pasos del cierre que faltaba en este
         // archivo. Ya está dentro de un try/catch que lo maneja bien; lo que
@@ -4407,7 +4415,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           await registrarCostoWhatsApp(op.tenantId, viajeId);
           // AGEN-4: sello de entrega — el reintento de un «listo» no vuelve a
           // mandar este PDF.
-          await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'entregada_operador_en');
+          await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'entregada_operador_en', pdfPathCerrado);
         }
 
       } catch (e) {
@@ -4473,8 +4481,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         logger.warn('cierre.jefe_omitido_sin_margen', { tenant: op.tenantId, viaje: viajeId, margenRealMs });
       } else try {
         let urlPdfJefe: string | null = null;
-        if (pdfContralorGenerado) {
-          const firma = await acotada(supabaseAdmin().storage.from('liquidaciones').createSignedUrl(`${op.tenantId}/${viajeId}.pdf`, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
+        if (pdfContralorGenerado && pdfPathCerrado) {
+          const firma = await acotada(supabaseAdmin().storage.from('liquidaciones').createSignedUrl(pdfPathCerrado, TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.contralor');
           if (firma.error || !firma.data?.signedUrl) {
             logger.warn('cierre.pdf_jefe_sin_url', { viaje: viajeId, err: firma.error?.message ?? 'storage no devolvió URL firmada' });
           } else {
@@ -4494,7 +4502,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         if (!rj.enviado) logger.warn('cierre.jefe_no_avisado', { viaje: viajeId, motivo: rj.motivo });
         else if (!pdfJefeOk) logger.warn('cierre.jefe_avisado_sin_pdf', { viaje: viajeId, teniaUrlFirmada: urlPdfJefe != null });
         // AGEN-4: sello — el reintento de un «listo» no vuelve a avisar.
-        else await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en');
+        else await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en', pdfPathCerrado);
       } catch (e) {
         logger.error('cierre.aviso_jefe_falló', { viaje: viajeId, err: e instanceof Error ? e.message : String(e) });
       }

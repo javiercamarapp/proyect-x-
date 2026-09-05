@@ -27,7 +27,8 @@ import { DatoInvalido } from '@/lib/likida/errores';
 import { sendText } from '@/lib/meta/client';
 import { logger } from '@/lib/logger';
 import { inicioDiaMx, finDiaMx } from '@/lib/formato';
-import { recalcularParaAjuste, regenerarPdfTrasAjuste, type RecalculoAjuste } from './revision_recalculo';
+import { recalcularParaAjuste, regenerarPdfTrasAjuste, conservarPdfAntesDeAjuste, type RecalculoAjuste } from './revision_recalculo';
+import { alertarOperador } from '@/lib/observability/alerta';
 
 export type RevisionLiquidacion = 'pendiente' | 'aprobada' | 'ajustada' | 'rechazada';
 export const REVISIONES: readonly RevisionLiquidacion[] = ['pendiente', 'aprobada', 'ajustada', 'rechazada'];
@@ -363,10 +364,12 @@ export interface ResultadoRevision {
   ajustes: AjusteAplicado[];
   /** Solo al rechazar: si el aviso al chofer salió (o quedó en el outbox). */
   choferAvisado: boolean | null;
+  /** El ajuste quedó firmado aunque falle su pareja de PDF. */
+  pdfPendiente?: boolean;
 }
 
 /** Los SQLSTATE propios de la RPC cuyo mensaje está escrito para la persona. */
-const CODIGOS_PARA_PANTALLA = new Set(['LR001', 'LR010', 'LR011', 'LR012', 'LR013', 'LR014', 'LR015', 'LR016', 'LR017', 'LR018', 'LR019', 'LR020', 'LR022']);
+const CODIGOS_PARA_PANTALLA = new Set(['LR001', 'LR010', 'LR011', 'LR012', 'LR013', 'LR014', 'LR015', 'LR016', 'LR017', 'LR018', 'LR019', 'LR020', 'LR022', 'LP001', 'LP002']);
 
 /**
  * Lo que se le dice al chofer cuando su liquidación se regresa. Tono llano,
@@ -439,6 +442,7 @@ export async function revisarLiquidacion(p: PeticionRevision): Promise<Resultado
       const r = await recalcularParaAjuste(p.tenantId, viajeId, p.ajustes!);
       recalculo = r.recalculo;
       cuadreRecalculado = r.cuadre;
+      await conservarPdfAntesDeAjuste(p.tenantId, p.liquidacionId);
     } catch (e) {
       throw new Error(`revisarLiquidacion.recalculo: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -496,7 +500,9 @@ export async function revisarLiquidacion(p: PeticionRevision): Promise<Resultado
       p.tenantId, resultado.viajeId, p.liquidacionId, cuadreRecalculado, revisadaPor, revisadaEn,
     );
     if (!regenerado) {
+      resultado.pdfPendiente = true;
       logger.warn('revision.pdf_no_regenerado', { tenantId: p.tenantId, liquidacion: p.liquidacionId, viaje: resultado.viajeId });
+      await alertarOperador('revision.pdf_no_regenerado', { tenant: p.tenantId, liquidacion: p.liquidacionId });
     }
   }
 

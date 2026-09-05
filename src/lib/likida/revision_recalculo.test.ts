@@ -9,11 +9,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // CFDI— viaja intacto al motor), y que el resultado se traduce a la forma
 // EXACTA de `p_recalculo` que `revisar_liquidacion` (mig. 0306) espera.
 //
-// `regenerarPdfTrasAjuste` prueba el lado del PAPEL: imprime, sube a la ruta
-// CANÓNICA (la que el resto del sistema ya asume — `processor.ts`,
-// `entregarCierrePendiente`), ARCHIVA el PDF que sustituye (no lo borra) y
-// limpia los sellos de entrega — y que un fallo en cualquier paso NUNCA
-// lanza: el ajuste ya es un hecho consumado en la base cuando esto corre.
+// La pareja se sube a rutas inmutables y se publica con un CAS único. Los
+// fallos de subida o persistencia dejan PDF pendiente y preservan los
+// ejemplares previos. La conservación legacy ocurre antes del ajuste; el
+// reintento reutiliza la firma y exige las mismas cifras persistidas.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const getGastos = vi.fn();
@@ -38,6 +37,7 @@ const copy = vi.fn();
 const upload = vi.fn();
 const rpc = vi.fn();
 const updateCalls: Array<Record<string, unknown>> = [];
+let fila: Record<string, unknown> | null = null;
 
 vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
@@ -49,6 +49,7 @@ vi.mock('@/lib/supabase/admin', () => ({
       }),
     },
     from: () => ({
+      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: fila, error: null }) }) }) }),
       update: (v: Record<string, unknown>) => {
         updateCalls.push(v);
         return {
@@ -61,7 +62,7 @@ vi.mock('@/lib/supabase/admin', () => ({
   }),
 }));
 
-const { recalcularParaAjuste, regenerarPdfTrasAjuste } = await import('./revision_recalculo');
+const { recalcularParaAjuste, regenerarPdfTrasAjuste, conservarPdfAntesDeAjuste, reintentarPdfAjustado } = await import('./revision_recalculo');
 
 const U = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
@@ -70,7 +71,7 @@ beforeEach(() => {
   updateCalls.length = 0;
   copy.mockResolvedValue({ data: { path: 'x' }, error: null });
   upload.mockResolvedValue({ data: { path: 'x' }, error: null });
-  rpc.mockResolvedValue({ data: null, error: null });
+  rpc.mockResolvedValue({ data: true, error: null });
 });
 
 function gasto(over: Partial<Record<string, unknown>> = {}) {
@@ -123,73 +124,69 @@ describe('recalcularParaAjuste', () => {
   });
 });
 
-describe('regenerarPdfTrasAjuste', () => {
+describe('PDF0346: pareja inmutable y publicación condicionada', () => {
   const CUADRE = {
     viajeId: U(9), totalComprobado: 8000, totalAnticipo: 9000, diferencia: 1000, estatus: 'con_diferencias' as const,
     diferencias: [], gastos: [], totalDeducible: 0, totalNoDeducible: 0, totalPorConfirmar: 0,
     iepsAcreditable: 0, litrosDieselAcreditables: 0, ivaAcreditable: 1200, peajeAcreditable: 0,
   };
-
-  it('imprime los DOS ejemplares con el cuadre recalculado y el sello de quién ajustó, archiva el PDF viejo y limpia los sellos de entrega', async () => {
-    getViaje.mockResolvedValueOnce({ id: U(9), anticipo: 9000, folio: 'F-9', operadorId: U(5) });
-    getOperador.mockResolvedValueOnce({ id: U(5), nombre: 'Juan', telefono: '5215500000000' });
-    getDatosFiscales.mockResolvedValueOnce({ razonSocial: 'Transportes ACME SA de CV' });
-    generarLiquidacionPDF.mockResolvedValue(new Uint8Array([1, 2, 3]));
-
-    const r = await regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'contralor@flota.mx', '2026-09-03T10:00:00Z');
-
-    expect(r.regenerado).toBe(true);
-    // Los dos ejemplares, con el cuadre YA ajustado y el sello de revisión.
-    expect(generarLiquidacionPDF).toHaveBeenCalledTimes(2);
-    const destinatarios = generarLiquidacionPDF.mock.calls.map((c) => c[4]);
-    expect(destinatarios.sort()).toEqual(['contralor', 'operador']);
-    for (const call of generarLiquidacionPDF.mock.calls) {
-      const liq = call[0] as Record<string, unknown>;
-      expect(liq).toMatchObject({
-        id: U(1), viajeId: U(9), totalComprobado: 8000, ivaAcreditable: 1200,
-        revision: 'ajustada', revisadaPor: 'contralor@flota.mx', revisadaEn: '2026-09-03T10:00:00Z',
-      });
-    }
-    // Archiva ANTES de sobrescribir la ruta canónica.
-    expect(copy).toHaveBeenCalledWith(`t1/${U(9)}.pdf`, expect.stringContaining(`t1/${U(9)}-ajustada-`));
-    // Sube a las rutas CANÓNICAS — las que `processor.ts`/`entregarCierrePendiente` ya asumen.
-    const rutasSubidas = upload.mock.calls.map((c) => c[0]);
-    expect(rutasSubidas).toContain(`t1/${U(9)}.pdf`);
-    expect(rutasSubidas).toContain(`t1/${U(9)}-operador.pdf`);
-    // Limpia los sellos de entrega (0279) — el chofer puede volver a recibirlo.
-    expect(updateCalls[0]).toMatchObject({ pdf_url: `t1/${U(9)}.pdf`, entregada_operador_en: null, avisada_oficina_en: null });
-    // Y archiva la entrada en pdf_historial vía la RPC dedicada (atómica).
-    expect(rpc).toHaveBeenCalledWith('agregar_pdf_historial', expect.objectContaining({ p_tenant: 't1', p_liquidacion: U(1) }));
+  const FECHA = '2026-09-05T00:00:00Z';
+  beforeEach(() => {
+    getViaje.mockResolvedValue({ id: U(9), anticipo: 9000, operadorId: U(5) });
+    getOperador.mockResolvedValue({ id: U(5), nombre: 'Sintético', telefono: '000' });
+    getDatosFiscales.mockResolvedValue(null);
+    generarLiquidacionPDF.mockResolvedValue(new Uint8Array([8]));
+    fila = { id: U(1), viaje_id: U(9), pdf_url: null, pdf_versionada: true, revision: 'ajustada', revisada_en: FECHA, revisada_por_email: 'synthetic@test' };
   });
-
-  it('sin viaje o sin operador, no revienta — se dice `regenerado: false`', async () => {
-    getViaje.mockResolvedValueOnce(null);
-    const r1 = await regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'x@y.mx', '2026-01-01T00:00:00Z');
-    expect(r1.regenerado).toBe(false);
-    expect(generarLiquidacionPDF).not.toHaveBeenCalled();
-
-    getViaje.mockResolvedValueOnce({ id: U(9), anticipo: 9000, operadorId: U(5) });
-    getOperador.mockResolvedValueOnce(null);
-    const r2 = await regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'x@y.mx', '2026-01-01T00:00:00Z');
-    expect(r2.regenerado).toBe(false);
+  const regenerate = () => regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'synthetic@test', FECHA);
+  it('sube ambas versiones sin upsert y publica un único puntero con CAS de revisión/cifras', async () => {
+    expect(await regenerate()).toEqual({ regenerado: true });
+    const paths = upload.mock.calls.map((call) => String(call[0]));
+    expect(paths[0]).toMatch(new RegExp(`^t1/${U(9)}-version-[0-9a-f-]{36}\\.pdf$`));
+    expect(paths[1]).toBe(paths[0].replace('.pdf', '-operador.pdf'));
+    for (const call of upload.mock.calls) expect(call[2]).toMatchObject({ upsert: false });
+    expect(rpc).toHaveBeenCalledWith('publicar_pdf_liquidacion', expect.objectContaining({ p_tenant: 't1', p_liquidacion: U(1), p_anterior: null, p_pdf: paths[0], p_revision: 'ajustada', p_revisada_en: FECHA, p_cifras: expect.objectContaining({ totalComprobado: 8000, ivaAcreditable: 1200 }) }));
+    expect(updateCalls).toHaveLength(0);
+    expect(copy).not.toHaveBeenCalled();
   });
-
-  it('si el PDF del contralor falla al subir, se dice `regenerado: false` — el vigente se queda con la cifra vieja, y se dice', async () => {
-    getViaje.mockResolvedValueOnce({ id: U(9), anticipo: 9000, operadorId: U(5) });
-    getOperador.mockResolvedValueOnce({ id: U(5), nombre: 'Juan', telefono: '52155' });
-    getDatosFiscales.mockResolvedValueOnce(null);
-    generarLiquidacionPDF.mockResolvedValue(new Uint8Array([1]));
-    upload.mockImplementation((path: string) => Promise.resolve(
-      path.endsWith('-operador.pdf') ? { data: { path }, error: null } : { data: null, error: { message: 'storage caído' } },
-    ));
-
-    const r = await regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'x@y.mx', '2026-01-01T00:00:00Z');
-    expect(r.regenerado).toBe(false);
+  it.each(['contralor', 'operador'])('fallo %s no sobrescribe ninguna ruta vigente ni publica la mitad', async (fails) => {
+    const objects = new Map([[`t1/${U(9)}.pdf`, '800'], [`t1/${U(9)}-operador.pdf`, '800']]);
+    upload.mockImplementation(async (path: string) => {
+      if ((path.endsWith('-operador.pdf') ? 'operador' : 'contralor') === fails) return { error: { message: 'synthetic failure' } };
+      objects.set(path, '8000'); return { error: null };
+    });
+    expect(await regenerate()).toEqual({ regenerado: false });
+    expect(objects.get(`t1/${U(9)}.pdf`)).toBe('800');
+    expect(objects.get(`t1/${U(9)}-operador.pdf`)).toBe('800');
+    expect(rpc).not.toHaveBeenCalled();
   });
-
-  it('un error inesperado (lectura, generación) nunca se propaga — el ajuste ya es un hecho consumado', async () => {
-    getViaje.mockRejectedValueOnce(new Error('la base se cayó'));
-    await expect(regenerarPdfTrasAjuste('t1', U(9), U(1), CUADRE, 'x@y.mx', '2026-01-01T00:00:00Z'))
-      .resolves.toEqual({ regenerado: false });
+  it.each([{ data: null, error: { message: 'persistencia' } }, { data: false, error: null }, { data: null, error: null }])('error o CAS sin publicación jamás es éxito: %j', async (result) => {
+    rpc.mockResolvedValueOnce(result);
+    expect(await regenerate()).toEqual({ regenerado: false });
+  });
+  it('fallo de lectura/generación deja la firma persistida a cargo de la RPC, sin UPDATE compensador', async () => {
+    getViaje.mockRejectedValueOnce(new Error('fallo'));
+    expect(await regenerate()).toEqual({ regenerado: false });
+    expect(updateCalls).toHaveLength(0);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+  it('conserva ambos legacy antes de ajustar; copia parcial o CAS perdido rechazan antes de firmar', async () => {
+    fila = { ...fila, pdf_url: `t1/${U(9)}.pdf`, pdf_versionada: false, revision: 'pendiente', revisada_en: null };
+    await conservarPdfAntesDeAjuste('t1', U(1));
+    expect(copy).toHaveBeenCalledTimes(2);
+    expect(rpc).toHaveBeenCalledWith('publicar_pdf_liquidacion', expect.objectContaining({ p_anterior: `t1/${U(9)}.pdf`, p_revision: 'pendiente' }));
+    rpc.mockClear(); copy.mockResolvedValueOnce({ error: { message: 'copy' } });
+    await expect(conservarPdfAntesDeAjuste('t1', U(1))).rejects.toThrow('no se aplicó');
+    expect(rpc).not.toHaveBeenCalled();
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    await expect(conservarPdfAntesDeAjuste('t1', U(1))).rejects.toThrow('no se aplicó');
+  });
+  it('reintenta el papel con la firma original; una respuesta false no inventa éxito', async () => {
+    cuadrarDesdeDB.mockResolvedValue(CUADRE);
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    expect(await reintentarPdfAjustado('t1', U(1))).toEqual({ regenerado: false });
+    expect(await reintentarPdfAjustado('t1', U(1))).toEqual({ regenerado: true });
+    expect(generarLiquidacionPDF.mock.calls[0][0]).toMatchObject({ revisadaEn: FECHA, revisadaPor: 'synthetic@test' });
+    expect(rpc.mock.calls.every(([name]) => name === 'publicar_pdf_liquidacion')).toBe(true);
   });
 });

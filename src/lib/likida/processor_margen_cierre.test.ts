@@ -119,7 +119,7 @@ const listo = {
 
 const cierre = () => ({
   finalText: 'Listo, cerré tu viaje',
-  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
   model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0,
 });
 

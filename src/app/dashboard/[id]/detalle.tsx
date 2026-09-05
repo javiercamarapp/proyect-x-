@@ -38,6 +38,7 @@ export interface PropsDetalle {
   etiqueta: (g: { concepto: string; ocrExtra?: Record<string, unknown> }) => string;
   /** `/api/export/pdf/<id>` si hay PDF y el rol puede exportar; si no, null. */
   pdfHref: string | null;
+  reintentarPdf?: ((previo: ResultadoAccion, fd: FormData) => Promise<ResultadoAccion>) | null;
   /** `https://wa.me/…` del operador, o null si no hay teléfono. */
   wa: string | null;
   /** El formulario de reasignar, solo si el rol puede asignar. FE-2: ya no
@@ -68,7 +69,7 @@ export interface PropsDetalle {
   } | null;
 }
 
-export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, wa, reasignar, reabrir, revision }: PropsDetalle) {
+export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, reintentarPdf, wa, reasignar, reabrir, revision }: PropsDetalle) {
   // LA FOTO DEL TICKET SE GUARDA (CFF art. 30, conservación 5 años) PERO NO SE
   // ENSEÑA AQUÍ. El aviso de privacidad (privacidad.ts:498) le promete al
   // operador que un dato sensible que aparezca por accidente en su ticket "no
@@ -162,6 +163,12 @@ export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, wa, 
         />
 
         <div className="px-5 py-5 flex-1 space-y-4">
+          {reintentarPdf && (
+            <section className="card p-4" aria-label="PDF pendiente">
+              <p>El ajuste y la firma están guardados. Falta generar los dos ejemplares del PDF.</p>
+              <FormaConAviso accion={reintentarPdf} boton="Reintentar PDF" columnas="md:grid-cols-1"><span>Reintentar no cambia tu firma ni las cifras.</span></FormaConAviso>
+            </section>
+          )}
           {/* ── Cabecera: folio, estatus y la ficha del viaje ── */}
           <section className="card p-4">
             <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -476,4 +483,3 @@ function Celda({ children, vacio }: { children: React.ReactNode; vacio: boolean 
     </td>
   );
 }
-

@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { idLiquidacionDeViaje } from '@/lib/likida/liquidacion/id';
+import { rutasPdfVersionadas } from './liquidacion/rutas_pdf';
 import { registerTool, type ToolContext } from '@/lib/llm/tool-executor';
 import { cuadrarDesdeDB } from './cuadre/desde_db';
 import { copiasDeComprobante } from './cuadre/engine';
@@ -403,7 +404,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
         const subir = async (bytes: Uint8Array, path: string) => {
           const up = await supabaseAdmin().storage.from('liquidaciones').upload(path, Buffer.from(bytes), {
             contentType: 'application/pdf',
-            upsert: true,
+            upsert: false,
           });
           if (up.error) { logger.warn('pdf.upload', { path, err: up.error.message }); return undefined; }
           return path;
@@ -421,11 +422,14 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
         } catch (e) {
           logger.warn('pdf.razon_social', { err: e instanceof Error ? e.message : String(e) });
         }
-        pdfPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'contralor'), `${ctx.tenantId}/${ctx.viajeId}.pdf`);
-        pdfOperadorPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'operador'), `${ctx.tenantId}/${ctx.viajeId}-operador.pdf`);
+        const paths = rutasPdfVersionadas(ctx.tenantId, ctx.viajeId!);
+        pdfPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'contralor'), paths.contralor);
+        pdfOperadorPath = await subir(await generarLiquidacionPDF(full, v, o, razonSocial, 'operador'), paths.operador);
       } catch (e) {
         logger.error('pdf.gen', { err: e instanceof Error ? e.message : String(e) });
       }
+      // Una mitad nunca se publica ni se entrega como pareja completa.
+      if (!pdfPath || !pdfOperadorPath) { pdfPath = undefined; pdfOperadorPath = undefined; }
     };
     await generarPdfs(liq);
 
@@ -478,6 +482,7 @@ async function cerrarLiquidacion(ctx: ToolContext, inicioCorrida: Date) {
     });
     return {
       liquidacion_id: liquidacionId,
+      pdf_url: pdfPath ?? null,
       estatus: liq.estatus,
       diferencia: liq.diferencia,
       pdf_generado: Boolean(pdfOperadorPath),
