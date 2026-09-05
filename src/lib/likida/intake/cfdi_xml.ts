@@ -176,14 +176,14 @@ export interface CfdiXmlData {
   lineas: CfdiLineaXml[];
 }
 
-/** ¿Este CFDI ampara MÁS de una transacción? Único criterio: `lineas.length >
- *  1` — objetivo y barato, sin tocar la base. `false` en un CFDI normal aunque
+/** ¿Este CFDI ampara MÁS de una transacción de gasto? Las notas de crédito
+ *  nunca califican aunque tengan varias líneas. `false` en un CFDI normal aunque
  *  traiga 2+ `Concepto` de UN SOLO consumo (p.ej. producto + IEPS desglosado
  *  en conceptos separados es raro pero posible); ese caso lo sigue resolviendo
  *  el camino de ticket 1:1 existente, y forzarlo por la cola de conciliación
  *  sería más trabajo humano, no menos. */
-export function esConsolidado(xml: Pick<CfdiXmlData, 'lineas'>): boolean {
-  return xml.lineas.length > 1;
+export function esConsolidado(xml: Pick<CfdiXmlData, 'lineas' | 'tipoComprobante'>): boolean {
+  return xml.tipoComprobante !== 'E' && xml.lineas.length > 1;
 }
 
 // Familia SAT de petrolíferos (pista del parser para elegir el concepto de

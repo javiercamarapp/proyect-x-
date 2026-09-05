@@ -342,6 +342,10 @@ export async function guardarYConciliarConsolidado(
   xml: CfdiXmlData,
   xmlText: string,
 ): Promise<ResumenConciliacion> {
+  // Defensa del escritor: también puede llamarse sin pasar por esConsolidado.
+  if (xml.tipoComprobante === 'E') {
+    throw new Error('guardarYConciliarConsolidado: una nota de crédito no es un consolidado de gastos');
+  }
   if (!xml.uuid) throw new Error('guardarYConciliarConsolidado: el CFDI no trae UUID');
 
   const { data: filaXml, error: errXml } = await acotada(supabaseAdmin()

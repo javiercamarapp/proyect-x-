@@ -145,6 +145,18 @@ export interface InboundMessage {
   mediaDataUrlQA?: string;
 }
 
+/** La misma conservación y el mismo acuse para oficina, con y sin viaje. */
+async function conservarNotaCredito(tenantId: string, uuid: string, xmlText: string): Promise<string> {
+  let guardado = false;
+  try {
+    guardado = await saveCfdiXmlRaw(tenantId, uuid, null, xmlText);
+  } catch (e) {
+    logger.warn('xml.nota_credito_no_guardada', { tenant: tenantId, err: e instanceof Error ? e.message : String(e) });
+  }
+  if (!guardado) return 'Ese XML es una *nota de crédito*, no un gasto. No pude guardar el archivo; reenvíalo para conservarlo. No registré ni concilié sus conceptos como gastos.';
+  return 'Ese XML es una *nota de crédito* (comprobante de egreso), no un gasto 🧾. No la registro como deducible — es una devolución o bonificación sobre otra factura. Guardé el archivo; si el gasto original no está registrado, mándame su ticket o su XML de ingreso.';
+}
+
 /**
  * La ubicación del chofer (F-Ruta): guarda en `posicion` si el viaje trae
  * unidad y avisa al jefe con el link del mapa. BEST-EFFORT en cada pata por
@@ -1416,6 +1428,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
                 return;
               }
             }
+            if (xml?.uuid && xml.tipoComprobante === 'E') {
+              await sendText(msg.from, await conservarNotaCredito(cuenta.tenantId, xml.uuid, xmlText!));
+              return;
+            }
             if (xml?.uuid && esConsolidado(xml)) {
               logger.info('oficina.xml_consolidado', { tenant: cuenta.tenantId, user: cuenta.userId, uuid: xml.uuid, lineas: xml.lineas.length });
               const resumen = await guardarYConciliarConsolidado(cuenta.tenantId, xml, xmlText!);
@@ -1770,6 +1786,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // natural para recibirlo: no hace falta viaje de contexto porque el
         // consolidado nunca lo usó. Va ANTES del camino de ticket 1:1 de
         // abajo, que asume 1 CFDI = 1 gasto.
+        if (xml?.uuid && xml.tipoComprobante === 'E') {
+          await sendText(msg.from, await conservarNotaCredito(op.tenantId, xml.uuid, xmlText!));
+          return;
+        }
         if (xml?.uuid && esConsolidado(xml)) {
           const resumen = await guardarYConciliarConsolidado(op.tenantId, xml, xmlText!);
           logger.info('xml.consolidado_sin_viaje', { tenant: op.tenantId, operador: op.operadorId, uuid: xml.uuid, ...resumen });
@@ -3080,8 +3100,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // XML sí se conserva (CFF 30); lo que no se hace es contarlo como gasto.
         if (xml.tipoComprobante === 'E') {
           logger.warn('xml.nota_credito', { tenant: op.tenantId, viaje: viajeId, uuid: xml.uuid });
-          await saveCfdiXmlRaw(op.tenantId, xml.uuid, null, xmlText!);
-          await say('Ese XML es una *nota de crédito* (comprobante de egreso), no un gasto 🧾. No la registro como deducible — es una devolución o bonificación sobre otra factura. Guardé el archivo; si el gasto original no está registrado, mándame su ticket o su XML de ingreso.');
+          await say(await conservarNotaCredito(op.tenantId, xml.uuid, xmlText!));
           return;
         }
 

@@ -39,13 +39,15 @@ function uuidCfdi(u: string | null | undefined): string | null {
 
 /**
  * Conserva el XML CRUDO del CFDI (CFF art. 30). Best-effort: un fallo aquí NO
- * tumba la liquidación (el gasto ya está capturado). 1.8.
+ * tumba la liquidación (el gasto ya está capturado). Devuelve si se conservó
+ * para que un acuse explícito no prometa persistencia cuando falló.
  */
-export async function saveCfdiXmlRaw(tenantId: string, cfdiUuid: string, gastoId: string | null, xml: string): Promise<void> {
+export async function saveCfdiXmlRaw(tenantId: string, cfdiUuid: string, gastoId: string | null, xml: string): Promise<boolean> {
   const { error } = await acotada(supabaseAdmin()
     .from('cfdi_xml')
     .upsert({ tenant_id: tenantId, cfdi_uuid: uuidCfdi(cfdiUuid), gasto_id: gastoId, xml }, { onConflict: 'tenant_id,cfdi_uuid' }), 'saveCfdiXmlRaw');
   if (error) logger.warn('cfdi_xml.save', { err: error.message });
+  return !error;
 }
 
 // `getPolitica` VIVÍA AQUÍ y no la llamaba nadie. Leía `politica_gasto`, una
