@@ -2,7 +2,7 @@
 // Fuente única de verdad del cuadre; la usan las tools del agente Y la guardia
 // determinística del processor (para no depender de que el LLM llame la tool).
 
-import { cuadrarViaje, medioNoAdmitidoCombustible } from './engine';
+import { cuadrarViaje, medioNoAdmitidoCombustible, formaPagoJuzgableDe } from './engine';
 import { ventanaDelViaje } from './fecha_dudosa';
 import { getViaje, getGastos, getOperador, getAcumuladoCombustible, getPerfilCrudo } from '../repo';
 import { getConfig } from '../config';
@@ -143,9 +143,34 @@ export async function cuadrarDesdeDB(
   // la LISR 27-III. Sin este cambio, restar solo el '01' de este viaje contra
   // un total SQL que ahora sí cuenta los demás medios habría dejado el
   // "previo" con la porción no-'01' de ESTE viaje contada DOS veces.
+  //
+  // AUDITORÍA 26, FIS-C2 (CRÍTICO, reincidente de la 23, la 24 y la 25): la
+  // misma frontera, un nivel más adentro. La mig. 0305 movió el ACUMULADO a la
+  // forma EFECTIVA (un '99' con REP cuenta por `pagado_forma`) y dejó esta
+  // resta con la CRUDA, sobre la premisa —escrita en su cabecera y falsa— de
+  // que `Gasto` no trae `pagadoForma`; `repo.ts` lo mapea desde siempre. Con
+  // los dos términos juzgando distinto, un diésel '99' cuyo REP dice efectivo
+  // entraba al acumulado y NO se restaba: el comprobante consumía su propio
+  // cupo del 15% antes de evaluarse y salía «No deducible» en el PDF contra lo
+  // que la RFA 2026 2.9 concede. `formaPagoJuzgableDe` se importa del motor en
+  // vez de reimplementarse; es la regla de la 0305 salvo en un caso que sigue
+  // divergiendo y queda anotado como hallazgo abierto (un REP cuyo
+  // `FormaDePagoP` es a su vez '99': la RPC lo cuenta y este predicado no lo
+  // juzga).
+  //
+  // AUDITORÍA 26, REAUDITORÍA DEL ARREGLO: el `.filter` tiene que espejar el
+  // `where` de la RPC en TODOS sus términos, no solo en el de la forma de
+  // pago. La 0305 acota `fecha >= make_date(anio,1,1) and fecha <=
+  // make_date(anio,12,31)`, y una `fecha` NULL falla las dos comparaciones: el
+  // gasto SIN FECHA no entra al acumulado. El `?? anioEjercicio` lo daba por
+  // del ejercicio y lo restaba igual, dejando el previo CORTO — el error hacia
+  // el otro lado: regalar cupo del 15% que la regla no concede. El comentario
+  // de la AUDITORÍA 16 aquí arriba ya declaraba la regla completa («un gasto
+  // de otro año O SIN FECHA no está en el contador»); solo la mitad de «otro
+  // año» estaba implementada.
   const efectivoDeEsteViaje = gastos
-    .filter((g) => (g.fecha?.slice(0, 4) ?? anioEjercicio) === anioEjercicio
-      && medioNoAdmitidoCombustible(g.formaPago) && (g.concepto === 'diesel' || clavesCombustible.includes(g.claveProdServ ?? '')))
+    .filter((g) => g.fecha != null && g.fecha.slice(0, 4) === anioEjercicio
+      && medioNoAdmitidoCombustible(formaPagoJuzgableDe(g)) && (g.concepto === 'diesel' || clavesCombustible.includes(g.claveProdServ ?? '')))
     .reduce((s, g) => s + Number(g.monto ?? 0), 0);
   const efectivoPrevEjercicio = Math.max(0, totalesEjercicio.efectivo - efectivoDeEsteViaje);
   const totalCombustibleEjercicio = totalesEjercicio.totalCombustible;

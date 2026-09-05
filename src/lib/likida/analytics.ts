@@ -1295,10 +1295,15 @@ export interface LiquidacionDetalle {
    *  `id` cruza el renglón con sus `diferencias` (por `gastoId`) para pintar
    *  su estado; `fecha`, `formaPago`, `cfdiUuid` y `estadoSat` son las
    *  columnas de la tabla del detalle v2. Todo opcional: un gasto viejo sin
-   *  XML no trae forma de pago y la celda dice "—", no "Efectivo". */
+   *  XML no trae forma de pago y la celda dice "—", no "Efectivo".
+   *
+   *  `pagadoEn` es opcional pero NO prescindible (auditoría 26, FE-1): es la
+   *  segunda mitad de `pagoPendiente`, el predicado que `estadoRenglon` importa
+   *  del motor. Sin él la pregunta «¿este crédito ya se pagó?» solo tiene una
+   *  respuesta posible, y es la equivocada. */
   gastos: Array<{
     id?: string; concepto: string; monto: number; folio?: string; fecha?: string;
-    formaPago?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
+    formaPago?: string; pagadoEn?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
     ocrExtra?: Record<string, unknown>; imagenUrl?: string;
   }>;
   /** La ficha del viaje que se liquidó (22-ago-2026, detalle v2): ruta,
@@ -1436,7 +1441,13 @@ async function leerGastos(
   const res = await acotada(
     admin
     .from('gasto')
-    .select('id, concepto, monto, folio, fecha, forma_pago, cfdi_uuid, estado_sat, cfdi_valido, ocr_extra, imagen_url')
+    // AUDITORÍA 26, FE-1 (ALTO): `pagado_en` NO es opcional aquí. `74109dd` le
+    // enseñó a `estadoRenglon` a preguntar `pagoPendiente(g)` —el predicado del
+    // motor, `formaPago === '99' && !pagadoEn`— y esta consulta no traía el
+    // campo, así que la respuesta era siempre «no pagado»: todo CFDI a crédito
+    // con su REP ya ingerido salía «Por confirmar» mientras el bloque de
+    // Deducibilidad de la misma pantalla lo contaba como deducible.
+    .select('id, concepto, monto, folio, fecha, forma_pago, pagado_en, cfdi_uuid, estado_sat, cfdi_valido, ocr_extra, imagen_url')
     .eq('tenant_id', tenantId)
     .eq('viaje_id', viajeId)
     .order('fecha', { ascending: true, nullsFirst: false })
@@ -1451,6 +1462,7 @@ async function leerGastos(
     folio: (g.folio as string) || undefined,
     fecha: (g.fecha as string) || undefined,
     formaPago: (g.forma_pago as string) || undefined,
+    pagadoEn: (g.pagado_en as string) || undefined,
     cfdiUuid: (g.cfdi_uuid as string) || undefined,
     estadoSat: (g.estado_sat as string) || undefined,
     cfdiValido: g.cfdi_valido != null ? Boolean(g.cfdi_valido) : undefined,
@@ -1532,7 +1544,7 @@ async function ventanaComprobantes(
  * `filasDeducibilidad`, y por la misma razón.
  */
 type FilaImprimibleConFiscal = {
-  formaPago?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
+  formaPago?: string; pagadoEn?: string; cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean;
 };
 
 async function reconstruir(
@@ -1625,6 +1637,11 @@ async function reconstruir(
             folio: g.folio || undefined,
             fecha: g.fecha || undefined,
             formaPago: x.formaPago || undefined,
+            // Segunda mitad de `pagoPendiente`, igual que en `leerGastos`. Los
+            // dos caminos llenan esta misma tabla: si uno trae el campo y el
+            // otro no, la misma liquidación pinta el renglón de dos colores
+            // según un portón que el contralor no ve (auditoría 26, FE-1b).
+            pagadoEn: x.pagadoEn || undefined,
             cfdiUuid: x.cfdiUuid || undefined,
             estadoSat: x.estadoSat || undefined,
             cfdiValido: x.cfdiValido,

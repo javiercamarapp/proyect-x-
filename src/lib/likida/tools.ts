@@ -199,12 +199,21 @@ registerTool('cuadrar_viaje', {
       // que el motor: el año del viaje (los comprobantes), no el del reloj.
       const viajeCtx = await getViaje(ctx.viajeId, ctx.tenantId).catch(() => null);
       const ejercicio = viajeCtx?.fechaInicio ? Number(viajeCtx.fechaInicio.slice(0, 4)) : new Date().getUTCFullYear();
-      const acum = await getAcumuladoCombustible(ctx.tenantId, ejercicio);
-      const t = evaluarTope15(acum);
       // AUDITORÍA 14, ALTO: la elegibilidad de la flota (declarada al
       // registrarse) tiene que llegar al aviso — una flota no elegible no
       // recibe "te quedan $X antes de perder la deducción".
+      // AUDITORÍA 26 · continuación, FIS-A3 (ALTO): la config se lee ANTES
+      // porque el acumulado la necesita. Este era el cuarto sitio que mide el
+      // cubo del 15%, y el único que lo pedía sin las claves del SAT: la RPC
+      // de la 0305 sin `p_claves` cuenta solo `concepto = 'diesel'`, así que un
+      // ticket de gasolinera clasificado 'otro' con su CFDI posterior —el
+      // camino normal, foto antes que XML— quedaba fuera del denominador. El
+      // motor decía `excedido` y el agente contestaba «holgado» sobre la misma
+      // liquidación. El año ya se había armonizado por esta misma razón
+      // (auditoría 15); faltaban las claves.
       const cfg = await getConfig(ctx.tenantId);
+      const acum = await getAcumuladoCombustible(ctx.tenantId, ejercicio, cfg.hidrocarburos?.claves ?? []);
+      const t = evaluarTope15(acum);
       const f15 = cfg.facilidadCombustibleEfectivo;
       const elegible = (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
         ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)

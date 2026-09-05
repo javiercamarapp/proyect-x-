@@ -252,7 +252,12 @@ export default async function Autorizar({
         <button
           type="submit" name="decision" value="autorizar"
           className="rounded-full px-6 py-2.5 text-sm font-medium"
-          style={{ background: 'var(--fg)', color: 'var(--bg)' }}
+          // AUDITORÍA 26, FE-4 (ALTO): apuntaba a un token «--fg» que no
+          // existe en ninguna hoja del repo — la tinta de esta paleta es
+          // `--ink`. Sin fallback, `var()` deja la declaración inválida y el
+          // botón se quedaba con el fondo de la página y el texto del color de
+          // la página: 1.00:1 en claro y en oscuro.
+          style={{ background: 'var(--ink)', color: 'var(--bg)' }}
         >
           Autorizar lectura
         </button>
