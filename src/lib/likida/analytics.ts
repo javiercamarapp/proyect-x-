@@ -292,31 +292,33 @@ export interface HechoSolo {
  * renglón sale de un sello real en `viaje`, no de un log decorativo.
  */
 export async function getHechosSolos(tenantId: string, limite = 8): Promise<HechoSolo[]> {
-  const { data, error } = await acotada(
-    supabaseAdmin()
-    .from('viaje')
-    .select('folio, escalado_en, recordatorio_comprobacion_en, operador:operador_id(nombre)')
-    .eq('tenant_id', tenantId)
-    .or('escalado_en.not.is.null,recordatorio_comprobacion_en.not.is.null')
-    .order('id', { ascending: false })
-    .limit(60),
-    'getHechosSolos',
-  );
-  if (error) throw new Error(`getHechosSolos: ${error.message}`);
-  const hechos: HechoSolo[] = [];
-  for (const v of data ?? []) {
-    const operador = ((v.operador as { nombre?: string } | null)?.nombre) ?? null;
-    const folio = (v.folio as string) ?? '—';
-    if (v.recordatorio_comprobacion_en) {
-      hechos.push({ tipo: 'recordatorio', folio, operador, cuando: v.recordatorio_comprobacion_en as string });
-    }
-    if (v.escalado_en) {
-      hechos.push({ tipo: 'escalado', folio, operador, cuando: v.escalado_en as string });
-    }
-  }
-  // Los 60 viajes más recientes pueden traer hasta 120 hechos: se ordenan por
-  // fecha del sello y se recortan — el feed enseña lo último, no un archivo.
-  return hechos.sort((a, b) => b.cuando.localeCompare(a.cuando)).slice(0, limite);
+  if (limite <= 0) return [];
+  const leer = async (campo: 'escalado_en' | 'recordatorio_comprobacion_en', tipo: HechoSolo['tipo']): Promise<HechoSolo[]> => {
+    const { data, error } = await acotada(
+      supabaseAdmin()
+        .from('viaje')
+        .select('folio, escalado_en, recordatorio_comprobacion_en, operador:operador_id(nombre)')
+        .eq('tenant_id', tenantId)
+        .not(campo, 'is', null)
+        .order(campo, { ascending: false })
+        .limit(limite),
+      `getHechosSolos.${tipo}`,
+    );
+    if (error) throw new Error(`getHechosSolos.${tipo}: ${error.message}`);
+    return (data ?? []).map((v) => ({
+      tipo,
+      folio: (v.folio as string) ?? '—',
+      operador: ((v.operador as { nombre?: string } | null)?.nombre) ?? null,
+      cuando: v[campo] as string,
+    }));
+  };
+  // Los N hechos más recientes están entre los N últimos de cada tipo.
+  // Ordenar viajes por UUID antes del límite puede omitir actividad nueva.
+  const grupos = await Promise.all([
+    leer('escalado_en', 'escalado'),
+    leer('recordatorio_comprobacion_en', 'recordatorio'),
+  ]);
+  return grupos.flat().sort((a, b) => b.cuando.localeCompare(a.cuando)).slice(0, limite);
 }
 
 export interface DineroObservadoTipo { tipo: string; monto: number; n: number }
