@@ -141,7 +141,7 @@ function Forma({ accion, gastos, folio, yaFirmadaPorElMotor }: {
         <div>
           <p className="text-[12px] mb-2" style={{ color: 'var(--muted)' }}>
             Escribe el monto CORRECTO del comprobante que se leyó mal. Los que dejes vacíos no se tocan.
-            El total se mueve por la diferencia; el cuadre <strong>no</strong> se vuelve a calcular.
+            El sistema recalcula el cuadre con los montos corregidos antes de guardar el ajuste con tu firma.
           </p>
           {gastos.length === 0 ? (
             <p className="text-[12px] m-0" style={{ color: 'var(--muted)' }}>
