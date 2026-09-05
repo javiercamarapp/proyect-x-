@@ -24,9 +24,9 @@ const CAP_POR_ACCION: Record<string, CapacidadWorker> = {
   'ordenes-resolver': 'bus.ordenes',
 };
 
-/** 4 MB: la media de una pieza viaja en base64 — un video no cabe aquí a
+/** 3 MiB: base64 y metadatos deben caber en el transporte HTTP; un video no cabe aquí a
  *  propósito (la Mac sube el preview, no el master). */
-const TOPE_MEDIA = 4 * 1024 * 1024;
+const TOPE_MEDIA = 3 * 1024 * 1024;
 
 export async function POST(req: Request, ctx: { params: Promise<{ accion: string }> }) {
   const { accion } = await ctx.params;
@@ -35,8 +35,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ accion: string
   const quien = await resolverLlaveWorker(req.headers.get('x-worker-key'), cap);
   if (!quien.ok) return NextResponse.json({ error: quien.error }, { status: 403 });
 
-  // 50 encargos de 20,000 caracteres escapados (~6 MB) o media de 4 MiB en base64.
-  const lecturaCuerpo = await leerTextoAcotado(req, 8 * 1024 * 1024);
+  // El cliente envía UTF8 y divide catálogos en lotes bajo los 4.5 MB
+  // que la plataforma admite antes de alcanzar este handler.
+  const lecturaCuerpo = await leerTextoAcotado(req, 4_400_000);
   if (!lecturaCuerpo.ok) return NextResponse.json({ error: lecturaCuerpo.motivo === 'demasiado_grande' ? 'payload muy grande' : 'JSON inválido' },
     { status: lecturaCuerpo.motivo === 'demasiado_grande' ? 413 : 400 });
   let cuerpo: Record<string, unknown>;
@@ -94,12 +95,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ accion: string
         let mediaPath: string | null = null;
         const b64 = typeof cuerpo?.mediaBase64 === 'string' ? cuerpo.mediaBase64 : null;
         if (b64) {
-          if (b64.length > TOPE_MEDIA * 1.4) return NextResponse.json({ error: 'La media pasa de 4 MB.' }, { status: 413 });
+          if (b64.length > 4 * Math.ceil(TOPE_MEDIA / 3)) return NextResponse.json({ error: 'La vista previa pasa de 3 MB. Reduce la imagen.' }, { status: 413 });
+          const media = Buffer.from(b64, 'base64');
+          if (media.toString('base64') !== b64) return NextResponse.json({ error: 'La media no es base64 válido.' }, { status: 400 });
+          if (media.length > TOPE_MEDIA) return NextResponse.json({ error: 'La vista previa pasa de 3 MB. Reduce la imagen.' }, { status: 413 });
           // El path lo arma el SERVIDOR con la carpeta declarada — el nombre
           // se sanea: un ../ aquí escribiría fuera de piezas/.
           const nombre = String(cuerpo?.mediaNombre ?? 'preview.png').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
           const objeto = `piezas/${carpeta.replace(/\.\./g, '_')}/${nombre}`;
-          const up = await admin.storage.from('bus').upload(objeto, Buffer.from(b64, 'base64'), {
+          const up = await admin.storage.from('bus').upload(objeto, media, {
             contentType: typeof cuerpo?.mediaMime === 'string' ? cuerpo.mediaMime : 'application/octet-stream',
             upsert: true,
           });
@@ -118,7 +122,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ accion: string
         return NextResponse.json({ ok: true, mediaPath });
       }
       case 'catalogo': {
-        const rutinas = Array.isArray(cuerpo?.rutinas) ? cuerpo.rutinas.slice(0, 50) : null;
+        const rutinas = Array.isArray(cuerpo?.rutinas) && cuerpo.rutinas.length <= 50 ? cuerpo.rutinas : null;
         if (!rutinas || rutinas.some((x) => !x || typeof x !== 'object' || Array.isArray(x)
           || ['nombre', 'horario', 'descripcion', 'encargo_md'].some((campo) => {
             const valor = (x as Record<string, unknown>)[campo];

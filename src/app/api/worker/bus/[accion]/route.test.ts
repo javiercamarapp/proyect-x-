@@ -169,15 +169,33 @@ describe('cuerpo acotado durante lectura', () => {
  });
 });
 
-it('el catálogo máximo con Unicode escapado conserva 50 encargos completos',async()=>{
+it('el catálogo máximo UTF8 conserva 50 encargos completos',async()=>{
  const rutinas=Array.from({length:50},(_,i)=>({nombre:`rutina-${i}`,encargo_md:'漢'.repeat(20000)}));
- const p=peticionStream('https://app.likida.ai/api/worker/bus/catalogo',JSON.stringify({rutinas}).replace(/漢/g,'\\u6f22'));
+ const p=peticionStream('https://app.likida.ai/api/worker/bus/catalogo',JSON.stringify({rutinas}));
  expect((await POST(p.req,{params:Promise.resolve({accion:'catalogo'})})).status).toBe(200);
  expect(escrituras[0].valores).toEqual(rutinas.map(x=>expect.objectContaining(x)));expect(p.estado().cancelado).toBe(false);
 });
-it('media de 4 MiB conserva el transporte base64 válido',async()=>{
- expect((await pedir('pieza',{carpeta:'p',mediaBase64:Buffer.alloc(4*1024*1024,255).toString('base64')})).status).toBe(200);
+it('media de 3 MiB conserva el transporte base64 válido',async()=>{
+ expect((await pedir('pieza',{carpeta:'p',mediaBase64:Buffer.alloc(3*1024*1024,255).toString('base64')})).status).toBe(200);
  expect(escrituras).toHaveLength(1);
+});
+it('rechaza media mayor de 3 MiB sin guardar una pieza incompleta',async()=>{
+ expect((await pedir('pieza',{carpeta:'p',mediaBase64:Buffer.alloc(3*1024*1024+1).toString('base64')})).status).toBe(413);
+ expect(escrituras).toHaveLength(0);
+});
+it('rechaza base64 inválido antes de guardar la pieza',async()=>{
+ expect((await pedir('pieza',{carpeta:'p',mediaBase64:'%%%'})).status).toBe(400);
+ expect(escrituras).toHaveLength(0);
+});
+it('no trunca silenciosamente un catálogo de 51 rutinas',async()=>{
+ expect((await pedir('catalogo',{rutinas:Array.from({length:51},(_,i)=>({nombre:`r${i}`}))})).status).toBe(400);
+ expect(escrituras).toHaveLength(0);
+});
+it('el catálogo escapado de 6 MB se rechaza durante lectura',async()=>{
+ const rutinas=Array.from({length:50},(_,i)=>({nombre:`r${i}`,encargo_md:'漢'.repeat(20000)}));
+ const p=peticionStream('https://app.likida.ai/api/worker/bus/catalogo',JSON.stringify({rutinas}).replace(/漢/g,'\\u6f22'));
+ expect((await POST(p.req,{params:Promise.resolve({accion:'catalogo'})})).status).toBe(413);
+ expect(p.estado().cancelado).toBe(true);expect(escrituras).toHaveLength(0);
 });
 it('sin llave válida no lee stream',async()=>{
  resolucion={ok:false,error:'sin permiso'};const p=peticionStream('https://app.likida.ai/api/worker/bus/pieza','{}');
