@@ -4,6 +4,7 @@ No certifica API/Storage/OCR, proveedores, capacidad mensual ni RTO productivo.
 """
 from pathlib import Path
 import argparse, concurrent.futures, datetime, hashlib, json, math, os, re, shutil, signal, stat, subprocess, time
+from continuity import acceptance, continuity, gap_reason
 
 HOST='/private/tmp/likida-db-r3.d0fCDX'
 PORT='55501'
@@ -148,31 +149,41 @@ if a.action=='restore':
  print('RESTORE_PASS')
 if a.action=='soak':
  # Finito, 24h reales por defecto; límites de tasa/duración verificados arriba.
- start=time.time();baseline=int(sql('select pg_database_size(current_database())'));stop=a.out/'STOP'
+ baseline=int(sql('select pg_database_size(current_database())'));stop=a.out/'STOP'
  if stop.exists():raise RuntimeError('STOP ya existe; usa otro out o revísalo manualmente')
  args=['pgbench',*BASE,'-d',a.db,'-n','-c','5','-j','2','-T',str(a.seconds),'-R',str(a.rate),'-f',str(ROOT/'read.sql')+'@8','-f',str(ROOT/'update.sql')+'@1','-f',str(ROOT/'soak-insert.sql')+'@1','-l','--log-prefix',str(a.out/'soak'),'-P','30','--max-tries','1','--exit-on-abort','--random-seed','20260904']
  childenv={**ENV,'PGOPTIONS':'-c statement_timeout=2000 -c lock_timeout=1000','PGAPPNAME':'innovativos_cap_soak'}
  with (a.out/'soak.stdout').open('w') as log:
+  start=time.time();last_sample=start
   proc=subprocess.Popen(args,stdout=log,stderr=subprocess.STDOUT,env=childenv)
-  save('soak-process.json',{'pid':proc.pid,'runner_pid':os.getpid(),'start_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'duration_seconds':a.seconds,'target_tps':a.rate,'db':a.db,'stop_file':str(stop),'baseline_db_bytes':baseline})
+  save('soak-process.json',{'pid':proc.pid,'runner_pid':os.getpid(),'start_epoch':start,'start_utc':datetime.datetime.fromtimestamp(start,datetime.timezone.utc).isoformat(),'duration_seconds':a.seconds,'target_tps':a.rate,'db':a.db,'stop_file':str(stop),'baseline_db_bytes':baseline})
   reason='completed'
   try:
    while proc.poll() is None:
+    interruption=gap_reason(last_sample,time.time())
+    if interruption:reason=interruption;proc.send_signal(signal.SIGINT);break
     if stop.exists():reason='stop-file';proc.send_signal(signal.SIGINT);break
     stat=json.loads(sql("select json_build_object('db_bytes',pg_database_size(current_database()),'backends',(select count(*) from pg_stat_activity where datname=current_database()),'lock_waiters',(select count(*) from pg_stat_activity where datname=current_database() and wait_event_type='Lock'),'oldest_lock_seconds',(select coalesce(max(extract(epoch from(clock_timestamp()-query_start))),0) from pg_stat_activity where datname=current_database() and wait_event_type='Lock'),'deadlocks',(select deadlocks from pg_stat_database where datname=current_database()),'jornada_backlog',(select count(*) from public.jornada_derivacion_trabajo where claim_token is null and siguiente_intento_en<=clock_timestamp()))"))
     stat.update({'epoch':time.time(),'elapsed_seconds':time.time()-start,'disk_free':shutil.disk_usage(a.out).free})
     with (a.out/'soak-telemetry.jsonl').open('a') as f:f.write(json.dumps(stat)+'\n')
+    interruption=gap_reason(last_sample,stat['epoch'])
+    last_sample=stat['epoch']
+    if interruption:reason=interruption;proc.send_signal(signal.SIGINT);break
     if stat['db_bytes']>baseline*2+512*1024**2 or stat['disk_free']<5*1024**3 or stat['oldest_lock_seconds']>5:
      reason='resource-limit';proc.send_signal(signal.SIGINT);break
     # Wait in 1s steps: stop file response under one second; no scheduler needed.
     for _ in range(30):
-     if stop.exists() or proc.poll() is not None:break
+     if stop.exists() or proc.poll() is not None or gap_reason(last_sample,time.time()):break
      time.sleep(1)
    try:proc.wait(timeout=15)
    except subprocess.TimeoutExpired:proc.terminate();proc.wait(timeout=15)
   finally:
    if proc.poll() is None:proc.terminate();proc.wait(timeout=15)
-  save('soak-finished.json',{'reason':reason,'exit_code':proc.returncode,'elapsed_seconds':time.time()-start,'requested_seconds':a.seconds,'completed_full_duration':reason=='completed' and proc.returncode==0 and time.time()-start>=a.seconds})
+  end=time.time()
+  # pgbench may finish while the host sleeps; inspect the final unsampled edge too.
+  interruption=gap_reason(last_sample,end)
+  if reason=='completed' and interruption:reason=interruption
+  save('soak-finished.json',{'reason':reason,'exit_code':proc.returncode,'end_epoch':end,'end_utc':datetime.datetime.fromtimestamp(end,datetime.timezone.utc).isoformat(),'elapsed_seconds':end-start,'requested_seconds':a.seconds,'completed_full_duration':reason=='completed' and proc.returncode==0 and end-start>=a.seconds})
  print('SOAK_FINISHED')
 if a.action=='summary':
  values=[];failures=0
@@ -184,9 +195,13 @@ if a.action=='summary':
     if c[2].isdigit():values.append(int(c[2])/1000)
     else:failures+=1
  values.sort()
- tele=[json.loads(x) for x in (a.out/'soak-telemetry.jsonl').read_text().splitlines()]
+ telepath=a.out/'soak-telemetry.jsonl'
+ tele=[json.loads(x) for x in telepath.read_text().splitlines()] if telepath.exists() else []
  def pct(q):return values[max(0,math.ceil(len(values)*q)-1)] if values else None
  finished=json.loads((a.out/'soak-finished.json').read_text()) if (a.out/'soak-finished.json').exists() else {'completed_full_duration':False,'reason':'running'}
- summary={'successful_transactions':len(values),'failed_transactions':failures,'p50_ms':pct(.5),'p95_ms':pct(.95),'p99_ms':pct(.99),'max_ms':max(values) if values else None,'max_lock_waiters':max(x['lock_waiters'] for x in tele),'max_lock_wait_seconds':max(x['oldest_lock_seconds'] for x in tele),'database_growth_bytes':tele[-1]['db_bytes']-tele[0]['db_bytes'],'deadlocks_delta':tele[-1]['deadlocks']-tele[0]['deadlocks'],'finished':finished}
- summary['local_sql_acceptance']=bool(finished['completed_full_duration'] and failures==0 and len(values)>=a.seconds*a.rate*.9 and pct(.95)<250 and pct(.99)<1000 and summary['deadlocks_delta']==0)
+ process=json.loads((a.out/'soak-process.json').read_text())
+ start_epoch=process.get('start_epoch',datetime.datetime.fromisoformat(process['start_utc']).timestamp())
+ end_epoch=finished.get('end_epoch',start_epoch+finished['elapsed_seconds'] if 'elapsed_seconds' in finished else time.time())
+ summary={'successful_transactions':len(values),'failed_transactions':failures,'p50_ms':pct(.5),'p95_ms':pct(.95),'p99_ms':pct(.99),'max_ms':max(values) if values else None,'max_lock_waiters':max((x['lock_waiters'] for x in tele),default=None),'max_lock_wait_seconds':max((x['oldest_lock_seconds'] for x in tele),default=None),'database_growth_bytes':tele[-1]['db_bytes']-tele[0]['db_bytes'] if tele else None,'deadlocks_delta':tele[-1]['deadlocks']-tele[0]['deadlocks'] if tele else None,'finished':finished,'telemetry_continuity':continuity(start_epoch,[x['epoch'] for x in tele],end_epoch)}
+ summary['local_sql_acceptance']=acceptance(summary,process['duration_seconds'],process['target_tps'])
  save('soak-summary.json',summary);print(json.dumps(summary,indent=2))
