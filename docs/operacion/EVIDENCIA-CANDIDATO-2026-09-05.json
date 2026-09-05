@@ -1,0 +1,76 @@
+{
+  "codigo_probado": "e797f3642b5aea208a832daf30f0ef021f99038c",
+  "fecha": "2026-09-05",
+  "entorno": "macOS local; PostgreSQL17; Node26.7.0; Supabase privado loopback55321/55322; Next build producción",
+  "unidad_cobertura": {
+    "aprobadas": 12010,
+    "fallidas": 0,
+    "omitidas": 3,
+    "detalle_omitidas": "2 mediciones de tiempo se ejecutan aparte sin instrumentación; 1 arnés tickets reales no ejecutado",
+    "cobertura": {
+      "sentencias": 83.2,
+      "ramas": 73.26,
+      "funciones": 86.64,
+      "lineas": 85.89
+    }
+  },
+  "tiempo_sin_instrumentar": {
+    "aprobadas": 96,
+    "fallidas": 0,
+    "omitidas": 0
+  },
+  "typecheck": "PASS",
+  "lint": {
+    "warnings_heredados": 157,
+    "baseline": 194,
+    "nuevos": 0,
+    "errores": 0
+  },
+  "build": "PASS; advertencia heredada importación dinámica cfdi_imagen.ts",
+  "resiliencia_offline": "PASS",
+  "sql": {
+    "migraciones_desde_cero": 324,
+    "contratos_ci": 17,
+    "pgtap": 40,
+    "aislamiento_bloques": 242,
+    "aprobados": 238,
+    "fallos": 0,
+    "reportes": 4
+  },
+  "snapshot": {
+    "archivos_regulares_identicos": 3932,
+    "enlaces_skills_claude_excluidos": 5
+  },
+  "auditoria_runtime": {
+    "high": 0,
+    "critical": 0
+  },
+  "escaneo_secretos_historia": {
+    "hallazgos": 2,
+    "revision": "2 fixtures sintéticos; ningún secreto real identificado"
+  },
+  "navegador_final": {
+    "build_sha": "e797f3642b5aea208a832daf30f0ef021f99038c",
+    "test_sha": "52accdc4",
+    "casos": 72,
+    "aprobados": 72,
+    "fallidos": 0,
+    "entornos": [
+      "Chromium escritorio",
+      "Pixel7 emulado"
+    ],
+    "minutos": 1.5,
+    "intentos": "1 full inicial71PASS1FAIL por recursoCDP descartado; capturade respuesta real corregida; repetición completa72PASS",
+    "limite": "No WebKit/Firefox ni proveedores reales"
+  },
+  "github": "PENDIENTE",
+  "vercel": "PENDIENTE",
+  "limites": [
+    "Sin prueba de proveedores reales ni mensajes externos",
+    "Soak24h incompleto por suspensiones del host",
+    "Storage externo sin destino/credenciales; SQL backup no lo cubre",
+    "Sin catálogos/acuerdos aprobados del cliente ni importación SAP real",
+    "No acredita latencia o capacidad de producción; Node de CI22 y Vercel24 se verifican remotamente"
+  ],
+  "hallazgo_recierre": "CONFIRMADO después de batería: recuperación lee liquidación histórica rechazada y comunica éxito falso; corrección y nueva calidad en curso; bloquea integración/despliegue"
+}

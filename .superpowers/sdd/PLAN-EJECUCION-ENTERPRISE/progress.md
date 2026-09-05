@@ -100,3 +100,40 @@ Guía INNOVATIVOS-ARRANQUE.md mantiene alcance documental del PoC peajes/proveed
 Cierre local Innovativos — 5 sep 2026, 14:44 Mérida. Candidato c4c4b76b integra las pruebas de navegador y sembrador: 71/71 PASS en1.5min, build Next16.3.3/SQL0340 PASS, lint E2E/seed PASS y 2034 hashes de fuentes cotejados por UX. Primera ampliación71 tuvo70PASS/1FAIL de comparación RSC; conservada y repetida completa después de comprobar texto UI inmediato correcto. No cambio de producto para ese ajuste. Evidencia /private/tmp/innovativos-rbac/suite-71-final.log y suite-71-artefactos. 0340 y continuidad ya integrados en be94db90/88d78128.
 
 Revisión readonly final de PDF: anónimo401 y revalidación sesión/tenant/rol; no RED de caché entre usuarios. Ausencia de Cache-Control local no acredita configuración CDN ni revocación efectiva al vencer token de60s. Pendiente verificación remota autorizada. Entrega técnica documentada en INNOVATIVOS-ARRANQUE.md; NO GO productivo por ensayo24h sin aprobación, acceso/identidad del despliegue, respaldo de archivos y datos/acuerdos del cliente. No nueva corrida, push, despliegue ni cambios externos.
+
+
+Publicación autorizada — 5 sep 2026. Usuario pide explícitamente push, merge GitHub y despliegue Vercel, conservar contribuciones reales y seguir corrigiendo con agentes. Esta instrucción sustituye la restricción previa de no publicación. Root único publicador; sin mensajes a clientes ni pruebas pagadas. Atribución comprobada sin mostrar correo: 82/82 commits fuera de master usan correo configurado; GitHub atribuye commit histórico6ae2ba9c a javiercamarapp; repo canónico proyect-x- no es fork. PermisosADMIN, master exige verificar+Postgres sinbypass.
+
+Integración activa: git fetch detectó38commits de master pendientes y82propios. Merge --no-commit origin/master en curso. Rootresolvióci.yml (auditfailclosed alfinal), registroexentas(unión0316/17+0324→0340), verificaciones.sql(bloque89 conserva pendiente→firma, bloque252 terceroperador). UXresuelve conflictoGPS grave sinaviso vsprivacidad histórica conservandoeventomínimo y dedupe; capacidadconstruye nueva0341CHECK+claimconrestricción. DB318migracionesefímerasPASS, 238SQL+40pgTAP+9scripts; ahora0341exigeotraregresión. Branchorigin/claude/auditoria-26/PR326 tiene12commits adicionalesamaster aún pendientesdeintegrar despuésdeestemerge: fiscal15%,pagadoEn,MCPtoken,toolsclaves ydocs. No olvidar revisarlos ypendientesauditoría26.
+
+Nuevoslotessinstage/separar commits: capacidadarregló scripts/ci/audit-runtime.{mjs,test.ts}:69PASSroot, JSONmalformado→inconcluso. Rootcorrigió3tokens inexistentes en dashboard/agentes/liquidacion/cola.tsx (okbg/warnbg/badbg). Operaciónconstruye pipelineProductionstaged (--skip-domain)→smokeexacto→promoverID, conpoolerURLseguraderivada desdeCLIlink/PGPASSWORD, sinsecretoDBURLextra. Aún noejecutarpipelinehastaGOtests/backup.
+
+Vercel identidad recuperada porCLI59.1.4: ownerlikidaai-8016/teamlikida;projectprj_OnrG9eY8WQzj35I3jtAZX2wTJ2sn, GitHubproyect-x-/master; app.likida.ai ylikidaai.vercel.app apuntanREADYdpl_8rAmyG1Xe7dbRqt6aSKQDhJLasco (4f94490...). MCPgrantproyectos404 noesproyectofaltante. Preview/ProductioncompartenDBenvs. RemotoSupabase0303/281versionesconcuerdahashhistóricolocal;37pendientestrasmaster,38tras0341. Production/stagingtienenCLIaccess/password/ref enGHsecrets, noDBURL. BackupStorageenvironmentvacío; usuario consultado porbucketS3/R2 privado yconfiguraciónsinclavesenchat. FaltarestaurabilidadSQL/PITR:managementAPIbackups sóloejecutableconcredencialworkflow. No fabricarbackupniGOenterprise. Últimabatería7%sinAC; no24hsoakrepetido.
+
+
+## Continuación 5-sep — integración y hallazgos fiscales confirmados
+
+- Usuario reiteró resolver bugs en ciclo con agentes. Autorización explícita push/merge/deploy vigente; todavía no se ha publicado este lote.
+- Master integrado en fffafaba y auditoría26 en 48f3c4a2 preservando historial. Cohorte motor+acumulado565 PASS sobre integración26.
+- Pipeline exacto Production/staging commit6379f0b9; revisión root detectó invocación audit-runtime sin archivo JSON (exit2), corregida con captura/reintentos reales más prueba que ejecuta el comando del workflow. Nuevo modo configure_preview prepara separación segura de3variables hacia staging existente, sin exfiltrar secretos de GitHub.
+- REPForma99 corregido6cbac00f/0345. SQLreal RED100123 contra90123, GREEN90123; mismo denominador210123, flotas/ejercicio/claves/ACL. Cohorte fiscal/pipeline63 PASS. npm audit real high/critical0 (JSON /private/tmp/innovativos-root-runtime-audit.json).
+- 0342 póliza en revisión: bloquear periodos con pendientes y ajustes incompatibles con tributos originales. 0344 KPI excluye rechazadas y conserva historial/id/importesnull en registro. 0343 no se necesita.
+- 0346 PDF dual en construcción por operación: ambos objetos inmutables, publicación CAS, preservar firma/ajuste y reintento visible. UX corrige notaE en las tres puertas XML y acuse según persistencia.
+- Mac conectado a AC de nuevo; no se reinició soak24h. El fallo anterior y sus límites permanecen documentados.
+
+
+### Continuación 5-sep — candidato b1758730, QA final en curso
+
+- Commits atómicos nuevos: fd3e32fe preserva orden WA si falla lectura de claim (RED listo adelantado, GREEN22, revisión independiente45); 7923a167 actualiza expectativa del contrato SQL342; 806d04fe corrige identidad original/copia y LR022; eeb7709d publica parejas PDF inmutables, conserva firma y permite reintento; 8f1b1d30 corrige explicación UI; b1758730 ordena actividad por sello real.
+- SQL final: 324 migraciones desde cero +17 contratosCI +40pgTAP PASS; aislamiento242 =238OK/0fallos/4reportes. Fallo inicial de expectativa281 preservado y sólo aislamiento repetido tras fijar342. Evidencia /private/tmp/innovativos-capacidad/final-sql347/.
+- PDF revisión independiente SQL/TS150PASS, CAS2conexiones PASS; cleanup SQL directo de Storage en Supabase real prohibido, registrado como limitación de arnés. Retry navegador nuevo en preparación; no evidencia aún.
+- Coverage inicial12003PASS/1FAIL/3SKIP tomó controlWA antiguo. Control corregido para otroschoferes, no permitiradelantamiento mismochofer. Coverage completo repetido en curso; 2skips rendimiento instrumentado documentados, 1arnés tickets reales no autorizado. Lint157/194warningsheredados/0nuevos/0errores y resilienciaoffline PASS.
+- Runtimebrowser privado55322 respaldado localmente y actualizado9migraciones0316/17/18+341/342/344/345/346/347, grants+reloadPASS. Appvieja3300detenida sólo tras verificarcwd. Snapshotgitarchive b1758730 con5symlinks skillsClaude excluidos; dependenciasCOW mismo lock; buildconllavesloopbacken curso.
+- Master remoto sigue6ae2ba9c, requiredchecks vigentes sinbypass. User ya autorizó push/merge/deploy; aún no ejecutados. Preview debe aislarse usando stagingexistente; Storage externo sigue sin destino/credenciales, soak24h no acreditado.
+
+
+### QA local consolidada y hallazgo de recierre
+
+Coveragefinal12010PASS0FAIL3SKIP; cohortetiempo96PASS0SKIP; build e797f364PASS, type/lint157heredados0nuevos/resilienciaPASS. Snapshot3932regularesidénticos,5skilllinksClaudeexcluidos. Browserfinal72/72PASS1.6min; primerfull71PASS1FAIL porCDPresponse descartada conservado, 52accdc4 capturarespuestaREALloopbackantesnavigation sinmodificarla. FocalPDFfirma/importes+ambosbytes+cleanupPASS; MFAsecretprivadooriginalrestaurado al snapshot600, sinresetpolítica. Evidencia browser-72-green y jsondocs/operacion.
+
+BLOQUEO nuevo confirmado porUX: recierreidéntico23514conservarechazada/en_cuadre, pero confirmarCierreEnBase mira fila histórica y narra cerrado/avisajefe/desanclaconversación. ConstructorUX corrige lecturaúnicacoherente; operaciónrevisará. No publicarproducción hastaRED/GREEN ycalidad nueva. GitHub/Vercel noejecutadosaún.
