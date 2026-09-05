@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/likida/liquidacion/rutas_pdf', async (original) => ({
   ...await original<typeof import('@/lib/likida/liquidacion/rutas_pdf')>(),
@@ -22,7 +23,6 @@ vi.mock('@/lib/likida/liquidacion/rutas_pdf', async (original) => ({
 // del processor; este E2E ejercita el del CIERRE, que es el que cobra.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
 import type { Gasto, Viaje, Operador } from '@/types/likida';
 import { hoyMx } from '@/lib/formato';

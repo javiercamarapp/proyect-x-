@@ -180,7 +180,7 @@ export function mxn(n: number): string {
  * contador MEXICANO leyendo pesos.
  */
 export function usd(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' }).replace('$', 'US$');
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' }).replaceAll('$', 'US$');
 }
 
 /**
@@ -198,7 +198,7 @@ export function usd(n: number): string {
  * centavo: `usd(0.0003)` daría "US$0.00", que se lee como "gratis".
  */
 export function usd4(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).replace('$', 'US$');
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 4, maximumFractionDigits: 4 }).replaceAll('$', 'US$');
 }
 
 /** El corte a partir del cual `mxnCompacto` abrevia. Por debajo, la cifra se

@@ -214,7 +214,7 @@ export function primerNombreDelContacto(contactoNombre: string | null): string |
 export function sustituirMarcador(texto: string, nombre: string | null): string {
   if (nombre) return texto.split(MARCADOR_NOMBRE).join(nombre);
   return texto
-    .replace(new RegExp(`\\s*${MARCADOR_NOMBRE.replace(/[{}]/g, '\\$&')}\\s*,`, 'g'), ',')
+    .replace(new RegExp(`\\s*${MARCADOR_NOMBRE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*,`, 'g'), ',')
     .split(MARCADOR_NOMBRE).join('');
 }
 

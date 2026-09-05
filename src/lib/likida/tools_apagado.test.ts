@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./liquidacion/rutas_pdf', async (original) => ({
   ...await original<typeof import('./liquidacion/rutas_pdf')>(),
@@ -6,7 +7,6 @@ vi.mock('./liquidacion/rutas_pdf', async (original) => ({
     operador: `${tenant}/${viaje}-version-00000000-0000-4000-8000-000000000046-operador.pdf`,
   }),
 }));
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Liquidacion } from '@/types/likida';
 

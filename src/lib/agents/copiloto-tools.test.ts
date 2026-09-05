@@ -100,7 +100,7 @@ vi.mock('@/lib/likida/agentes/cola', () => ({
 const { TOOLS_COPILOTO_LECTURA, PANTALLA_POR_TOOL } = await import('./copiloto-tools');
 const { executeTool, toolSchemas } = await import('@/lib/llm/tool-executor');
 
-import { readdirSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('el contrato de las 14 tools del copiloto', () => {

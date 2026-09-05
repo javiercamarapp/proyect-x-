@@ -8,7 +8,7 @@ async function paginaSana(page: Page, ruta: string, texto: string) {
   page.on('pageerror', (e) => errores.push(e.message));
   const respuesta = await page.goto(ruta);
   expect(respuesta?.status()).toBe(200);
-  await expect(page).toHaveURL(new RegExp(`${ruta.replace(/\?/g, '\\?')}$`));
+  await expect(page).toHaveURL(ruta);
   await expect(page.locator('body')).toContainText(texto);
   await page.waitForLoadState('networkidle');
   await expect(page.getByRole('heading', { name: 'No se pudo cargar el panel.' })).toHaveCount(0);

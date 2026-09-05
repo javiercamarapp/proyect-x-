@@ -1,3 +1,4 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('./liquidacion/rutas_pdf', async (original) => ({
   ...await original<typeof import('./liquidacion/rutas_pdf')>(),
@@ -34,7 +35,6 @@ vi.mock('./liquidacion/rutas_pdf', async (original) => ({
 // red, Supabase ni OpenRouter.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Gasto, Viaje, Operador } from '@/types/likida';
 import { hoyMx } from '@/lib/formato';
 

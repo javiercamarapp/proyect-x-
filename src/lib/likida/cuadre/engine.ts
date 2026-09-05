@@ -807,7 +807,7 @@ export function cuadrarViaje(input: CuadreInput): Omit<Liquidacion, 'id' | 'crea
         const excedenteDeEste = Math.max(0, g.monto - dentro);
         if (g.monto > 0) proporcionDeducible.set(g.id, dentro / g.monto);
         if (excedenteDeEste === 0) {
-          const pct = total > 0 ? Math.round((acumulado / total) * 100) : 0;
+          const pct = Math.round((acumulado / total) * 100);
           diferencias.push({
             tipo: 'combustible_efectivo_dentro15', concepto: g.concepto, monto: 0,
             // FISCAL-19C2-4: `esperado` es lo que `derivoLaConfig` (analytics.ts)
