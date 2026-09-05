@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync, openSync, fstatSync, closeSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { SILENCIOSAS } from './arranque';
 
@@ -166,14 +166,8 @@ describe('DEPLOY.md pide lo que hace falta para que el sistema no arranque ciego
     // convierte ese modo de falla en una alerta de minutos» y dos rondas
     // después nadie la consumía ni el runbook la nombraba.
     expect(deploy()).toContain('/api/health');
-    const flujo = join(RAIZ, '.github/workflows/salud-produccion.yml');
-    const archivo = openSync(flujo, 'r');
-    try {
-      expect(fstatSync(archivo).isFile(), 'falta el monitor de /api/health').toBe(true);
-      expect(readFileSync(archivo, 'utf8')).toContain('/api/health');
-    } finally {
-      closeSync(archivo);
-    }
+    // Leer directamente comprueba existencia y contenido, sin stat separado.
+    expect(readFileSync(join(RAIZ, '.github/workflows/salud-produccion.yml'), 'utf8')).toContain('/api/health');
   });
 
   it('dice dónde se miran los logs cuando algo falla', () => {
