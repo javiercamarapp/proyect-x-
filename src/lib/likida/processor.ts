@@ -1179,22 +1179,41 @@ const TTL_FIRMA_PDF_SEGUNDOS = 900;
  * Tres respuestas, nunca dos: si la lectura truena, `no_verificable` — un
  * error de red no puede leerse como «no se cerró».
  */
+const RESPUESTA_CIERRE_RECHAZADO = 'Tu liquidación sigue rechazada y el viaje sigue abierto. Revisa con tu contralor el motivo y corrige o completa los comprobantes; después escribe *listo* para volver a cuadrar.';
+
 async function confirmarCierreEnBase(tenantId: string, viajeId: string): Promise<
   | { estado: 'cerrado'; liqId: string; registro: ToolCallRecord }
-  | { estado: 'abierto' }
+  | { estado: 'abierto'; rechazada?: boolean }
   | { estado: 'no_verificable'; err: string }
 > {
   try {
-    const liq = await getLiquidacionDeViaje(tenantId, viajeId);
-    if (!liq) return { estado: 'abierto' };
-    const hayPdf = liq.pdfUrl != null;
+    // Una fila histórica rechazada sigue existiendo mientras el viaje vuelve
+    // a cuadre. Leer ambos estados y el puntero en UN snapshot evita tomarla
+    // por un commit nuevo después de que guardar_liquidacion_tx falló.
+    const { data, error } = await acotada(supabaseAdmin().from('liquidacion')
+      .select('id,pdf_url,revision,viaje:viaje_id(estatus)')
+      .eq('tenant_id', tenantId).eq('viaje_id', viajeId).maybeSingle(), 'confirmarCierreEnBase');
+    if (error) throw new Error(`confirmarCierreEnBase: ${error.message}`);
+    if (!data) return { estado: 'abierto' };
+    const liq = data as unknown as { id: string; pdf_url: string | null; revision: string; viaje: { estatus: string } | null };
+    const estadoViaje = liq.viaje?.estatus;
+    if (typeof liq.id !== 'string' || !liq.id || (liq.pdf_url !== null && typeof liq.pdf_url !== 'string')) {
+      return { estado: 'no_verificable', err: 'La lectura del cierre está incompleta' };
+    }
+    if (liq.revision === 'rechazada' && (estadoViaje === 'abierto' || estadoViaje === 'en_cuadre')) {
+      return { estado: 'abierto', rechazada: true };
+    }
+    if (estadoViaje !== 'liquidado' || !['pendiente', 'aprobada', 'ajustada'].includes(liq.revision)) {
+      return { estado: 'no_verificable', err: 'La liquidación y el viaje no confirman un cierre vigente coherente' };
+    }
+    const hayPdf = liq.pdf_url != null;
     return {
       estado: 'cerrado',
       liqId: liq.id,
       registro: {
         toolName: 'guardar_liquidacion',
         args: {},
-        result: { liquidacion_id: liq.id, pdf_url: liq.pdfUrl, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
+        result: { liquidacion_id: liq.id, pdf_url: liq.pdf_url, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
         durationMs: 0,
       } as ToolCallRecord,
     };
@@ -3982,7 +4001,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           reply = 'No pude confirmar cómo va tu liquidación. En un minuto escríbeme *listo* otra vez y te lo digo. 🙏';
         } else {
           logger.warn('agent.cierre_fallido_viaje_sigue_abierto', { tenant: op.tenantId, viaje: viajeId });
-          colofon = 'Tu viaje sigue abierto (todavía *NO* cerré tu liquidación).';
+          if (enBase.rechazada) {
+            reply = RESPUESTA_CIERRE_RECHAZADO;
+            colofon = '';
+          } else colofon = 'Tu viaje sigue abierto (todavía *NO* cerré tu liquidación).';
         }
       }
       ctxCerro = closed;
@@ -4063,6 +4085,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       // error de red no puede leerse como «no se cerró».
       let cierreParcial: ToolCallRecord | undefined =
         recuperar ? parcial?.find((t) => t.toolName === 'guardar_liquidacion' && !t.error) : undefined;
+      let cierreRechazado = false;
+      let cierreNoVerificable = false;
       if (recuperar && !cierreParcial && parcial?.some((t) => t.toolName === 'guardar_liquidacion')) {
         // AGEN-A1/BE-1: el MISMO registro sintético que el camino feliz, con
         // el vocabulario de la tool (`pdf_generado`), que es lo que leen los
@@ -4073,6 +4097,9 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           cierreParcial = enBase.registro;
         } else if (enBase.estado === 'no_verificable') {
           logger.error('agent.cierre_no_verificable', { viaje: viajeId, err: enBase.err });
+          cierreNoVerificable = true;
+        } else {
+          cierreRechazado = enBase.rechazada === true;
         }
       }
       if (cierreParcial) {
@@ -4155,6 +4182,13 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             // Si NI ESO se puede, se queda el mensaje de arriba: es la verdad.
             logger.error('agent.degradado_fallo', { viaje: viajeId, err: eDeg instanceof Error ? eDeg.message : String(eDeg) });
           }
+        }
+        if (cierreRechazado) {
+          reply = RESPUESTA_CIERRE_RECHAZADO;
+          colofon = '';
+        } else if (cierreNoVerificable) {
+          reply = 'No pude confirmar cómo va tu liquidación. En un minuto escríbeme *listo* otra vez y te lo digo. 🙏';
+          colofon = '';
         }
       }
     }
