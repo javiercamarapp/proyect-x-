@@ -89,6 +89,9 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      # Contraseña sintética del servicio efímero de este job. Los scripts
+      # de concurrencia usan psql -h/-p/-d y no leen DATABASE_URL.
+      PGPASSWORD: postgres
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
