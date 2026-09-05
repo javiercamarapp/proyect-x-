@@ -1,3 +1,5 @@
+import { httpsPublico } from '@/lib/http/https_publico';
+
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CONTRATO QUE CUMPLE TODO CONECTOR — ERP, GPS, TAG y monedero.
 //
@@ -352,18 +354,7 @@ export const TIMEOUT_PRUEBA_MS = 15_000;
  * credencial buena — el falso positivo más caro que puede tener esta capa.
  */
 export function httpReal(): Http {
-  return async ({ url, metodo, encabezados, cuerpo }: PeticionHttp): Promise<RespuestaHttp> => {
-    const r = await fetch(url, {
-      method: metodo,
-      headers: encabezados,
-      body: cuerpo,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(TIMEOUT_PRUEBA_MS),
-    });
-    const respuestaHeaders: Record<string, string> = {};
-    r.headers.forEach((valor, llave) => { respuestaHeaders[llave.toLowerCase()] = valor; });
-    return { estado: r.status, cuerpo: await r.text(), encabezados: respuestaHeaders };
-  };
+  return (peticion) => httpsPublico(peticion, TIMEOUT_PRUEBA_MS);
 }
 
 // ── El resultado de probar ─────────────────────────────────────────────────

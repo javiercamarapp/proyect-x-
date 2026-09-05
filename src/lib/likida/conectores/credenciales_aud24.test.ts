@@ -87,3 +87,11 @@ describe('SEG-6 · la dirección del proveedor es pública y por https', () => {
       .toThrow(/https:\/\/|sin cifrar/);
   });
 });
+
+it.each([
+  'https://[::ffff:127.0.0.1]', 'https://[::ffff:7f00:1]', 'https://[64:ff9b::7f00:1]',
+  'https://[2002:7f00:1::]', 'https://127.1', 'https://0x7f000001',
+  'https://localhost.', 'https://metadata.local.', 'https://user:secret@portal.proveedor.com',
+])('cierra formas alternativas antes de guardar: %s', url => {
+  expect(() => validarUrlDeCredencial('base_url', url)).toThrow(DatoInvalido);
+});

@@ -1,3 +1,4 @@
+import { hostNoPublico } from '@/lib/http/destino_publico';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { anotarBitacora } from '@/lib/likida/bitacora_escritura';
@@ -56,32 +57,9 @@ async function anotar(
 // y que la red de Vercel no expone servicios internos de Likida; no lo acota
 // la CSP, porque el POST no sale del navegador.
 //
-// Se valida al GUARDAR y no al usar: es el único punto por el que el valor
-// entra, y así el conector no tiene que desconfiar de su propia credencial.
+// Se valida al guardar y otra vez en el lookup del socket al usar: un dominio
+// público puede resolver después a una red interna (DNS rebinding).
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** Lo que nunca es el portal de un proveedor de GPS: la propia máquina, la
- *  red privada, y los nombres que sólo resuelven dentro de una nube. */
-function hostHaciaAdentro(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h === '::1' || h.endsWith('.localhost')) return true;
-  if (h.endsWith('.internal') || h.endsWith('.local') || h.endsWith('.localdomain')) return true;
-  // IPv4 literal: se juzga por rangos, no por texto.
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if ([a, b, Number(v4[3]), Number(v4[4])].some((n) => n > 255)) return true;
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;          // link-local y el metadata de las nubes
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-    return false;
-  }
-  // IPv6 literal: loopback, link-local (fe80::) y única local (fc00::/7).
-  if (h.includes(':')) return h === '::' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd');
-  return false;
-}
 
 /**
  * `base_url` (y cualquier credencial que termine en `_url`) tiene que ser una
@@ -99,7 +77,10 @@ export function validarUrlDeCredencial(clave: string, valor: string): void {
   if (u.protocol !== 'https:') {
     throw new DatoInvalido(`El campo ${clave} tiene que ir por https:// — por ${u.protocol.replace(':', '')} la credencial viajaría sin cifrar.`);
   }
-  if (hostHaciaAdentro(u.hostname)) {
+  if (u.username || u.password) {
+    throw new DatoInvalido(`El campo ${clave} no debe incluir usuario ni contraseña en la URL.`);
+  }
+  if (hostNoPublico(u.hostname)) {
     throw new DatoInvalido(`El campo ${clave} apunta a una dirección de red interna (${u.hostname}). Se espera el portal público de tu proveedor.`);
   }
 }
