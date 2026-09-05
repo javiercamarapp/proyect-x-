@@ -168,11 +168,21 @@ export function instalarInterceptorSalidaMeta(corridaId: string): () => void {
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    if (!url.includes(HOST_META_GRAPH) || (init?.method ?? 'GET').toUpperCase() !== 'POST') {
+    let host: string;
+    try { host = new URL(url).hostname.replace(/\.$/, ''); } catch { return original(input, init); }
+    const solicitud = input instanceof Request ? input : null;
+    const metodo = (init?.method ?? solicitud?.method ?? 'GET').toUpperCase();
+    if (host !== HOST_META_GRAPH || metodo !== 'POST') {
       return original(input, init);
     }
     let payload: Record<string, unknown> = {};
-    try { payload = init?.body ? JSON.parse(String(init.body)) : {}; } catch { /* cuerpo no-JSON: se registra vacío, no se aborta la corrida por esto */ }
+    try {
+      // init prevalece como en fetch. Leer una copia conserva el Request
+      // original para el llamador; nunca se envía a Meta para capturarlo.
+      const cuerpo = init?.body != null ? await new Response(init.body).text()
+        : solicitud ? await solicitud.clone().text() : '';
+      payload = cuerpo ? JSON.parse(cuerpo) : {};
+    } catch { /* cuerpo no-JSON: se registra vacío, no se aborta la corrida por esto */ }
     try {
       const { error } = await supabaseAdmin().from('wa_outbox').insert({
         payload,

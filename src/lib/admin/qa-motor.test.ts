@@ -811,6 +811,65 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     }
   });
 
+  test.each([
+    'https://graph.facebook.com.evil.example/messages',
+    'https://graph.facebook.com.evil.example./messages',
+    'https://other.example/graph.facebook.com',
+    'https://graph.facebook.com@other.example/messages',
+  ])('un host ajeno %s no se intercepta como si fuera Meta', async url => {
+    const original = vi.fn(async () => new Response('original'));
+    globalThis.fetch = original as typeof fetch;
+    const restaurar = instalarInterceptorSalidaMeta('corrida-host');
+    try {
+      await fetch(url, { method: 'POST', body: '{}' });
+      expect(original).toHaveBeenCalledWith(url, { method: 'POST', body: '{}' });
+      expect(tablas.wa_outbox ?? []).toEqual([]);
+    } finally { restaurar(); }
+  });
+
+  test('el nombre DNS absoluto de Meta también se intercepta', async () => {
+    const original = vi.fn(async () => new Response('no debe salir'));
+    globalThis.fetch = original as typeof fetch;
+    const restaurar = instalarInterceptorSalidaMeta('corrida-fqdn');
+    try {
+      await fetch('https://graph.facebook.com./v21.0/messages', { method: 'POST', body: '{}' });
+      expect(original).not.toHaveBeenCalled();
+      expect(tablas.wa_outbox).toHaveLength(1);
+    } finally { restaurar(); }
+  });
+
+  test('intercepta Request POST y captura su cuerpo sin consumir el original', async () => {
+    const original = vi.fn(async () => new Response('no debe salir'));
+    globalThis.fetch = original as typeof fetch;
+    const restaurar = instalarInterceptorSalidaMeta('corrida-request');
+    const payload = { messaging_product: 'whatsapp', to: 'destino-sintético', text: { body: 'prueba' } };
+    const req = new Request('https://GRAPH.FACEBOOK.COM/v21.0/messages', { method: 'POST', body: JSON.stringify(payload) });
+    try {
+      const res = await fetch(req);
+      expect(original).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(tablas.wa_outbox[0].payload).toEqual(payload);
+      expect(req.bodyUsed).toBe(false);
+      expect(await req.json()).toEqual(payload);
+    } finally { restaurar(); }
+  });
+
+  test('init.method/body tienen precedencia sobre Request sin consumirlo', async () => {
+    const original = vi.fn(async () => new Response('original'));
+    globalThis.fetch = original as typeof fetch;
+    const restaurar = instalarInterceptorSalidaMeta('corrida-override');
+    const req = new Request('https://graph.facebook.com/v21.0/messages');
+    try {
+      await fetch(req, { method: 'POST', body: '{"override":true}' });
+      expect(original).not.toHaveBeenCalled();
+      expect(tablas.wa_outbox[0].payload).toEqual({ override: true });
+      const post = new Request(req.url, { method: 'POST', body: '{}' });
+      await fetch(post, { method: 'GET' });
+      expect(original).toHaveBeenCalledWith(post, { method: 'GET' });
+      expect(post.bodyUsed).toBe(false);
+    } finally { restaurar(); }
+  });
+
   test('restaurar() devuelve el fetch original tal cual', () => {
     const original = vi.fn(async () => new Response('ok'));
     const globalConFetch = globalThis as { fetch: typeof fetch };
