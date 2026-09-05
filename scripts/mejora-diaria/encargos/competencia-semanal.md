@@ -28,5 +28,9 @@ nuestra calculadora debería contrastarlo"). Mantén también el acumulado
 `competencia-timeline.md` (append, una línea por evento con fecha) — el
 patrón de un rival se ve en la serie, no en la semana. NO toques el repo.
 
+La línea VEREDICTO de abajo es OBLIGATORIA sin excepción, aunque el rastreo
+quede a medias: es la única señal que le llega a Javier de que corriste y qué
+encontraste.
+
 Termina con UNA línea:
 VEREDICTO: <n> movimientos detectados (<rivales>), <0-1> implicación accionable | sin movimientos públicos esta semana

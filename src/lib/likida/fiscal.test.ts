@@ -43,6 +43,15 @@ function gasto(over: Partial<GastoFiscal> = {}): GastoFiscal {
     claveProdServ: null, tipoComprobante: 'I', xmlVerificado: true,
     ocrConfianza: 0.9, viajeFolio: 'VJ-1', operadorNombre: 'Juan',
     plazoVencido: null,
+    // Default: liquidación firmada — la mayoría de las pruebas de este
+    // archivo ejercitan otras reglas de `ivaSostenible` y no quieren que la
+    // puerta de FIS-REAUD-1 las tape. Las pruebas de esa puerta la pisan.
+    liquidacionFirmada: true,
+    // Default: receptor de la propia empresa, sin ninguna de las 7 señales
+    // de FIS-REAUD-2 encendida — las pruebas de esas puertas las pisan.
+    rfcReceptor: 'REC010101AA1',
+    monedaExtranjera: false, renglonesAjenos: false, consumoBar: false,
+    complementoHidrocarburosFalta: false, otroEjercicio: false,
     ...over,
   };
 }
@@ -591,6 +600,99 @@ describe('AUDITORÍA 13 — el estándar del motor se propaga al panel del conta
   });
 });
 
+// ── RE-AUDITORÍA 25, FIS-REAUD-1 (CRÍTICO) ──────────────────────────────────
+describe('FIS-REAUD-1 — «IVA acreditable documentado» exige liquidación FIRMADA (mismo criterio que la 0308)', () => {
+  it('sin liquidación todavía (viaje abierto/en cuadre) NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 137.93, liquidacionFirmada: false })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+    expect(r.ivaNoAcreditable).toBe(137.93);
+  });
+
+  it('con liquidación firmada SÍ acredita (no-regresión)', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 137.93, liquidacionFirmada: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(137.93);
+  });
+
+  it('sin liquidación firmada NO tapa el resto del panel: gastoTotal y conCfdi la siguen viendo', () => {
+    const r = resumirFiscal([gasto({ monto: 1000, ivaTraslado: 137.93, liquidacionFirmada: false })], OPTS);
+    expect(r.gastoTotal).toBe(1000);
+    expect(r.conCfdi).toBe(1);
+    expect(r.n).toBe(1);
+  });
+
+  it('sin liquidación firmada NO tapa "pérdidas" (recuperable pidiendo factura sigue viendo tickets sin CFDI de un viaje abierto)', () => {
+    const r = resumirPerdidas([gasto({ cfdiUuid: null, plazoVencido: false, liquidacionFirmada: false })], OPTS);
+    expect(r.montoRecuperable).toBeGreaterThan(0);
+  });
+});
+
+// ── RE-AUDITORÍA 25, FIS-REAUD-2 (CRÍTICO) ──────────────────────────────────
+// Las 7 causas de SIN_IVA_ACREDITABLE (engine.ts) que le faltaban a
+// `ivaSostenible`: rfc_receptor, rfc_receptor_no_verificable,
+// moneda_extranjera, renglones_ajenos, consumo_bar,
+// complemento_hidrocarburos y gasto_otro_ejercicio.
+describe('FIS-REAUD-2 — «IVA acreditable documentado» iguala las 7 causas que le faltaban frente a SIN_IVA_ACREDITABLE', () => {
+  it('receptor ausente (rfc_receptor_no_verificable): NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, rfcReceptor: null })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+    expect(r.ivaNoAcreditable).toBe(100);
+  });
+
+  it('receptor que NO es de la flota (rfc_receptor): NO acredita — aunque fuera el RFC del operador (RLISR 57), el panel agregado no lo sabe y falla cerrado', () => {
+    const o: OpcionesFiscales = { ...OPTS, rfcsPropios: new Set(['EMP010101AA1']), empresaRfcConfigurado: true };
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, rfcReceptor: 'TER010101AA1' })], o);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('receptor que SÍ es de la flota: acredita (no-regresión), sin importar mayúsculas/espacios', () => {
+    const o: OpcionesFiscales = { ...OPTS, rfcsPropios: new Set(['EMP010101AA1']), empresaRfcConfigurado: true };
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, rfcReceptor: ' emp010101aa1 ' })], o);
+    expect(r.ivaAcreditable).toBe(100);
+  });
+
+  it('RFC de empresa capturado pero inválido (rfcsPropios vacío) y receptor presente: NO acredita (rfc_receptor_no_verificable)', () => {
+    const o: OpcionesFiscales = { ...OPTS, rfcsPropios: new Set(), empresaRfcConfigurado: true };
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, rfcReceptor: 'REC010101AA1' })], o);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('sin NINGÚN RFC de empresa capturado, el receptor no se juzga (mismo criterio que cuadrarViaje)', () => {
+    const o: OpcionesFiscales = { ...OPTS, rfcsPropios: new Set(), empresaRfcConfigurado: false };
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, rfcReceptor: 'REC010101AA1' })], o);
+    expect(r.ivaAcreditable).toBe(100);
+  });
+
+  it('moneda_extranjera: NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, monedaExtranjera: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('renglones_ajenos: NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, renglonesAjenos: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('consumo_bar: NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, consumoBar: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('complemento_hidrocarburos (veredicto duro): NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, complementoHidrocarburosFalta: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('gasto_otro_ejercicio: NO acredita', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100, otroEjercicio: true })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+  });
+
+  it('sin ninguna de las 7 señales: acredita (no-regresión)', () => {
+    const r = resumirFiscal([gasto({ ivaTraslado: 100 })], OPTS);
+    expect(r.ivaAcreditable).toBe(100);
+  });
+});
+
 // ── Celdas agregadas (mig. 0151) ───────────────────────────────────────────
 
 describe('celdas agregadas — la ley pesa una celda por sus n comprobantes', () => {
@@ -628,6 +730,12 @@ describe('celdas agregadas — la ley pesa una celda por sus n comprobantes', ()
     const r = resumirFiscal([celda(5, { concepto: 'caseta', subTotal: 900 }, { subTotalNulos: 2 })], OPTS);
     expect(r.subTotalCasetas).toBe(900);
     expect(r.casetasSinSubTotal).toBe(2);
+  });
+
+  it('FIS-REAUD-1: una celda de comprobantes sin liquidación firmada no acredita su IVA', () => {
+    const r = resumirFiscal([celda(3, { ivaTraslado: 300, liquidacionFirmada: false }, { ivaEstado: 'positivo' })], OPTS);
+    expect(r.ivaAcreditable).toBe(0);
+    expect(r.ivaNoAcreditable).toBe(300);
   });
 
   it('resumirPerdidas: porCausa.n y sinFormaPago/sinFecha pesan n', () => {

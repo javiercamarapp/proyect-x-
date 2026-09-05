@@ -8,6 +8,7 @@ import { tenantDemo } from '@/lib/auth/tenant-demo';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '@/lib/likida/presupuesto';
 import { logger } from '@/lib/logger';
+import { mfaSuperadminObligatorio, veredictoMfaSuperadmin } from '@/lib/auth/mfa';
 
 export async function tenantEfectivoChat(
   sesion: SessionTenant,
@@ -20,6 +21,21 @@ export async function tenantEfectivoChat(
   }
 
   if (tenantPedido && sesion.rol === 'superadmin') {
+    // AUDITORÍA 25, SEGURIDAD (ALTO, línea 166, REINCIDENTE, re-auditoría).
+    // `resolverTenantApi` (tenant-api.ts) cerró este mismo bypass en el
+    // commit c3e52ac2 — `?tenant=` de un superadmin sin el segundo factor
+    // seguía entregando CUALQUIER flota — pero esa puerta no cubre las 5
+    // rutas del chat, que llaman a ESTA función. Mismo veredicto que
+    // `guard.ts` y `resolverTenantApi`, sin duplicar su lógica: fail cerrado
+    // ante cualquier veredicto que no sea `ok`.
+    if (mfaSuperadminObligatorio()) {
+      const { supabaseServer } = await import('@/lib/supabase/server');
+      const veredicto = await veredictoMfaSuperadmin(await supabaseServer());
+      if (veredicto !== 'ok') {
+        logger.warn('mfa.superadmin_exigido_api', { veredicto, ruta: 'chat.tenant' });
+        return null;
+      }
+    }
     // BE-16 (auditoría 24): `error` SE MIRA. `acotada` resuelve por valor
     // —`{data:null,error}` en un timeout—, así que sin esta rama un parpadeo
     // de Supabase era indistinguible de «ese uuid no existe»: `tenantId` se

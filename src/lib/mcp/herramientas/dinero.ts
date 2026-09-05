@@ -176,6 +176,13 @@ async function ejecutarFiscal(tenantId: string, args: z.infer<typeof esquemaFisc
     `• ${numero(r.n)} comprobantes por ${mxn(r.gastoTotal)} de gasto total.`,
     `• Con CFDI: ${numero(r.conCfdi)} · Sin CFDI: ${numero(r.sinCfdi)}.`,
     `• IVA acreditable documentado: ${mxn(r.ivaAcreditable)} · IVA desglosado que NO se acredita: ${mxn(r.ivaNoAcreditable)}.`,
+    // RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO): esta cifra incluye combustible en
+    // efectivo prorrateado al 15% de la RFA 2.9 contra el acumulado del
+    // ejercicio A HOY — distinto del acumulado que tenía cada liquidación al
+    // firmarse. No la dictes como si coincidiera con un PDF ya firmado.
+    ...(r.combustible15SujetoADeriva
+      ? ['• Ese IVA acreditable incluye combustible en efectivo prorrateado al 15% con el acumulado de HOY: puede no coincidir con lo que ya firmó una liquidación vieja del mismo periodo — la cifra archivada, que sí coincide con cada PDF, está en el panel del contador ("IVA acreditable de tus liquidaciones").']
+      : []),
     ...(r.conCfdiSinDesglose > 0
       ? [`• ${numero(r.conCfdiSinDesglose)} comprobantes con CFDI pero sin XML leído: su IVA existe en papel y aquí no se afirma.`]
       : []),

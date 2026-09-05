@@ -36,5 +36,9 @@ NO produzcas imagen ni video — eso es de las etapas 2-6. La cadena corre
 AUTÓNOMA hasta las sequence sheets (decisión de Javier 16-ago); su
 autorización llega SEQUENCE POR SEQUENCE, justo antes de animar.
 
+La línea VEREDICTO de abajo es OBLIGATORIA sin excepción, aunque el guion
+quede incompleto: es la única señal que le llega a Javier de que corriste y
+qué produjiste.
+
 Termina con UNA línea:
 VEREDICTO: <n> referencias nuevas al banco, guion "<slug>" propuesto | sin referencias nuevas, guion "<slug>" propuesto

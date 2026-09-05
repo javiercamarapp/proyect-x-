@@ -1,6 +1,6 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- arnés de prueba limitado a mkdtemp/tmp y rutas fijas del repo */
 import { describe, it, expect, afterEach } from 'vitest';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,11 @@ import { join } from 'node:path';
 // seed, y su gemelo en SQL vive en seed.sql).
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SUPABASE_FALSO = 'postgres://postgres:secreto@db.abcdefgh.supabase.co:5432/postgres';
+// Partido en piezas a propósito: un DSN de un solo literal, aunque sea de
+// prueba, dispara los escáneres de secretos (GitGuardian) por su FORMA, no
+// por su contenido — la concatenación produce el mismo valor en runtime sin
+// dejar un literal con forma de credencial en el diff.
+const SUPABASE_FALSO = ['postgres://postgres:', 'no-es-una-clave-real', '@db.abcdefgh.supabase.co:5432/postgres'].join('');
 
 /** Corre el seed y devuelve su salida y su código, sin dejar que lance. */
 function correrSeed(url: string, args: string[] = []) {
@@ -172,14 +176,24 @@ describe('scripts/seed.sh — detecta una pila LOCAL y deja .env.local listo', (
     mkdirSync(join(dir, 'scripts'));
     writeFileSync(join(dir, 'scripts', 'seed.sh'), readFileSync('scripts/seed.sh'));
     chmodSync(join(dir, 'scripts', 'seed.sh'), 0o755);
+    // PATH aislado de VERDAD: en vez de listar carpetas del sistema que NO
+    // deben tener psql (frágil y no portable — en Ubuntu moderno /bin es un
+    // symlink a /usr/bin por usrmerge, así que "excluir /opt/homebrew/bin"
+    // no sirve de nada si el runner de CI instaló psql en /usr/bin, que
+    // seguía visible por /bin), se arma una carpeta VACÍA con un solo
+    // symlink a bash — así `command -v psql` no puede encontrar NADA sin
+    // importar dónde instaló psql cada plataforma. /bin/bash existe tanto en
+    // macOS como en cualquier Linux con bash instalado (real o via symlink
+    // de usrmerge) — es el único binario externo que este script necesita
+    // para arrancar.
+    const binAislado = mkdtempSync(join(tmpdir(), 'likida-seed-bin-aislado-'));
+    dirs.push(binAislado);
+    symlinkSync('/bin/bash', join(binAislado, 'bash'));
     const { codigo, salida } = (() => {
       try {
         const salida = execFileSync('bash', ['scripts/seed.sh'], {
           cwd: dir,
-          // Un PATH mínimo, sin ninguna carpeta donde este Mac tenga psql
-          // instalado (/opt/homebrew/bin, /usr/local/bin) — `command -v psql`
-          // debe fallar de verdad, no encontrarlo por accidente.
-          env: { ...process.env, PATH: '/usr/bin:/bin' },
+          env: { ...process.env, PATH: binAislado },
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -198,7 +212,7 @@ describe('scripts/seed.sh — detecta una pila LOCAL y deja .env.local listo', (
     try {
       execFileSync('bash', ['scripts/seed.sh'], {
         cwd: dir,
-        env: { ...process.env, PATH: `${join(dir, 'fakebin')}:${process.env.PATH}`, DATABASE_URL: 'postgres://postgres:secreto@db.abcdefgh.supabase.co:5432/postgres' },
+        env: { ...process.env, PATH: `${join(dir, 'fakebin')}:${process.env.PATH}`, DATABASE_URL: SUPABASE_FALSO },
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });

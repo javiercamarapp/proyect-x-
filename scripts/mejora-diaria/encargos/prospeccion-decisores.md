@@ -6,7 +6,7 @@ LinkedIn público, el conmutador — y el primer mensaje que Javier mandaría.
 ## El lote del día
 
 Lee las credenciales de `~/likida/.env.local`
-(NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) y trae 10 prospectos
+(NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) y trae 6 prospectos
 por curl al REST de Supabase: `prospecto` con `contacto_nombre=is.null`,
 ordenados así — primero los que YA tienen teléfono o correo (etapa DENUE),
 luego los de notas con "DOLOR DIRECTO". Sáltate los que en notas ya traigan
@@ -33,7 +33,7 @@ nota lo dice ("sin decisor público") — así mañana no se repite el intento.
 
 ## El mensaje hiperpersonalizado (la mitad que vale)
 
-Para los 5 mejores del lote, escribe el primer toque en
+Para los 3 mejores del lote, escribe el primer toque en
 `~/likida-marketing-cola/prospeccion/<fecha>-<slug>.md`:
 tres variantes (WhatsApp ≤6 líneas · correo ≤120 palabras · LinkedIn DM ≤400
 caracteres), cada una anclada en SU evidencia — la vacante que publicaron con
@@ -48,12 +48,19 @@ Reglas duras: cero scraping con sesión iniciada y cero perfiles privados —
 lo que no sea público, no existe; ningún dato inventado (un hueco se declara);
 no toques prospectos en estado cerrado/perdido/negociacion.
 
+Presupuesto: si a la mitad de tu trabajo notas que el lote no va a alcanzar
+—turnos gastados, búsquedas que se alargan—, CORTA ahí (deja el lote a medias,
+las notas de "sin decisor público" evitan reintentar mañana lo mismo) y pasa
+directo al cierre. La línea VEREDICTO de abajo es OBLIGATORIA sin excepción:
+es la única señal que la rutina reporta a Javier, y un lote parcial con
+VEREDICTO vale más que un lote más grande sin él.
+
 Termina con UNA línea:
 VEREDICTO: <n> decisores hallados de <m> trabajados, <k> mensajes en prospeccion/, <faltas notables>
 
 ## El guardado del agente experto (0129)
 
-Para CADA prospecto de los 5 mejores, además del archivo en `prospeccion/`,
+Para CADA prospecto de los 3 mejores, además del archivo en `prospeccion/`,
 escribe el primer toque a la base por curl PATCH al mismo prospecto:
 `mensaje_wa` (la variante WhatsApp), `mensaje_correo_asunto`,
 `mensaje_correo` (la de correo), `mensajes_generados_en` (now, ISO) y

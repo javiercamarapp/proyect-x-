@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "total": 197,
+  "total": 190,
   "porArchivo": {
     "src/app/admin/agentes/contenido.tsx": 1,
     "src/app/admin/evals/page.tsx": 1,
@@ -25,7 +25,7 @@
     "src/lib/auth/llave-api.ts": 1,
     "src/lib/correo/respuesta_campana.ts": 2,
     "src/lib/likida/administracion.ts": 1,
-    "src/lib/likida/agentes/backoffice.ts": 7,
+    "src/lib/likida/agentes/backoffice.ts": 5,
     "src/lib/likida/agentes/cobranza.ts": 1,
     "src/lib/likida/agentes/cola.ts": 4,
     "src/lib/likida/agentes/contenido.ts": 1,
@@ -36,7 +36,7 @@
     "src/lib/likida/agentes/exito.ts": 3,
     "src/lib/likida/agentes/faq.ts": 2,
     "src/lib/likida/agentes/finanzas.ts": 2,
-    "src/lib/likida/agentes/ingenieria_producto.ts": 6,
+    "src/lib/likida/agentes/ingenieria_producto.ts": 1,
     "src/lib/likida/agentes/ingenieria.ts": 3,
     "src/lib/likida/agentes/leads.ts": 14,
     "src/lib/likida/agentes/redactor.ts": 2,

@@ -37,7 +37,9 @@ function diesel(id: string, subTotal: number): GastoFiscal {
     subTotal, ivaTraslado, iepsTraslado: null,
     claveProdServ: null, tipoComprobante: 'I', xmlVerificado: true,
     ocrConfianza: 0.95, viajeFolio: `VJ-${id}`, operadorNombre: 'Juan',
-    plazoVencido: null,
+    plazoVencido: null, liquidacionFirmada: true,
+    rfcReceptor: 'REC010101AA1', monedaExtranjera: false, renglonesAjenos: false,
+    consumoBar: false, complementoHidrocarburosFalta: false, otroEjercicio: false,
   };
 }
 
@@ -86,6 +88,11 @@ describe('FIS-C1/FIS-C2/ARQ-C1 · el panel y el motor acreditan la MISMA proporc
     // largo con `?? 1`.
     expect(panel).toBeCloseTo(motor1 + motor2, 1);
     expect(panel).toBeCloseTo(20689.65, 1); // 0.75 · (13,793.10 + 13,793.10)
+    // RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO): hubo crédito vía el 15% en vivo —
+    // el panel tiene que decirlo, porque el motor de un viaje ANTERIOR de
+    // este mismo ejercicio pudo haber fijado su reparto contra un acumulado
+    // más chico que el de hoy.
+    expect(resumirFiscal([g1, g2], opciones).combustible15SujetoADeriva).toBe(true);
   });
 
   it('sin `combustibleEjercicio` (periodo que cruza años, ej. «todo»): NO se acredita — fail closed, no el `?? 1` de antes', () => {
@@ -93,12 +100,56 @@ describe('FIS-C1/FIS-C2/ARQ-C1 · el panel y el motor acreditan la MISMA proporc
     const r = resumirFiscal([g1], OPTS); // OPTS no trae combustibleEjercicio
     expect(r.ivaAcreditable).toBe(0);
     expect(r.ivaNoAcreditable).toBeCloseTo(g1.ivaTraslado!, 2);
+    // RE-AUDITORÍA 25, FIS-REAUD-3: nada se acreditó vía el 15% — no hay
+    // cifra que pudiera contradecir a un PDF archivado.
+    expect(r.combustible15SujetoADeriva).toBe(false);
   });
 
   it('el mismo CFDI pagado por transferencia (03) sigue acreditando completo — el arreglo no toca el medio SÍ admitido', () => {
     const g = diesel('g1', 86206.90);
     g.formaPago = '03';
     const opciones: OpcionesFiscales = { ...OPTS, combustibleEjercicio: { efectivo: 0, totalCombustible: 1000000 } };
-    expect(resumirFiscal([g], opciones).ivaAcreditable).toBeCloseTo(g.ivaTraslado!, 2);
+    const r = resumirFiscal([g], opciones);
+    expect(r.ivaAcreditable).toBeCloseTo(g.ivaTraslado!, 2);
+    // RE-AUDITORÍA 25, FIS-REAUD-3: transferencia no pasa por el 15% en
+    // absoluto (solo el efectivo/medio no admitido lo hace) — sin deriva.
+    expect(r.combustible15SujetoADeriva).toBe(false);
+  });
+});
+
+// ── RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO) ─────────────────────────────────────
+describe('FIS-REAUD-3 — el panel avisa cuándo su IVA acreditable depende del acumulado de HOY', () => {
+  it('con excedente sobre el 15% (algo se niega Y algo se acredita vía la proporción), sigue habiendo deriva', () => {
+    const g = diesel('g1', 86206.90); // IVA 13,793.10
+    const opciones: OpcionesFiscales = {
+      ...OPTS,
+      // 15% de 1,000,000 = 150,000; efectivo acumulado 200,000 → excedente
+      // 50,000 → proporción = 1 − 50,000/200,000 = 0.75 (no 0, no 1).
+      combustibleEjercicio: { efectivo: 200000, totalCombustible: 1000000 },
+    };
+    const r = resumirFiscal([g], opciones);
+    expect(r.ivaAcreditable).toBeGreaterThan(0);
+    expect(r.ivaNoAcreditable).toBeGreaterThan(0);
+    expect(r.combustible15SujetoADeriva).toBe(true);
+  });
+
+  it('un residuo de redondeo no cuenta como deriva', () => {
+    // Proporción positiva pero ínfima (tope $1.50 contra $500,000 de
+    // efectivo): el crédito por combustible15 redondea a $0.00 y no debe
+    // encender la bandera (round2 > 0, no !== 0).
+    const g = diesel('g1', 6250); // ivaTraslado = 1,000.00
+    const opciones: OpcionesFiscales = {
+      ...OPTS,
+      combustibleEjercicio: { efectivo: 500000, totalCombustible: 10 },
+    };
+    const r = resumirFiscal([g], opciones);
+    expect(r.combustible15SujetoADeriva).toBe(false);
+  });
+
+  it('sin ningún gasto de combustible en efectivo en el periodo, no hay deriva aunque el elegible15 esté declarado', () => {
+    const g = diesel('g1', 1000);
+    g.formaPago = '04'; // tarjeta de crédito — medio admitido, no toca el 15%
+    const opciones: OpcionesFiscales = { ...OPTS, combustibleEjercicio: { efectivo: 200000, totalCombustible: 1000000 } };
+    expect(resumirFiscal([g], opciones).combustible15SujetoADeriva).toBe(false);
   });
 });

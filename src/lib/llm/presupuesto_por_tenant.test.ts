@@ -116,6 +116,23 @@ describe('el techo diario que llega a la RPC sale de la FLOTA, no de una env glo
     expect(topeDerivadoDelPlan(Number.NaN)).toBe(5);
   });
 
+  // RE-AUDITORÍA 25, FASE 3 (CAP-1, MEDIO): el techo por defecto (sin la env
+  // MAX fijada) ya no es el $60 puesto a mano que la auditoría 25 midió y no
+  // subió — se deriva de `COSTO_ESTIMADO_USD.viajeCompleto` con margen. Una
+  // flota de 15,000 viajes/mes (~500/día, el volumen objetivo de
+  // docs/escala-15k.md) YA NO se acota en el freno por defecto.
+  it('CAP-1: sin env MAX fijada, una flota de 15,000 viajes/mes no se acota en el techo por defecto', async () => {
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '5');
+    tablas.set('tenant', { data: { config: { politica: [{ concepto: 'diesel' }] } }, error: null });
+    tablas.set('suscripcion', { data: { plan: { limite_viajes_mes: 15_000 } }, error: null });
+    const budget = createLlmBudget('innovativos', RUN, 'interactivo');
+    await reserveLlmBudget(budget, 0.05);
+    const derivadoReal = (15_000 / 30) * COSTO_ESTIMADO_USD.viajeCompleto;
+    expect(derivadoReal).toBeGreaterThan(60); // el $60 viejo ya no alcanza
+    expect(reservaEnviada()?.p_tope_tenant_usd).toBeCloseTo(derivadoReal, 4);
+    expect(budget.origenTope).toBe('plan');
+  });
+
   it('sin llave y sin plan (o plan sin límite) queda el piso de siempre', async () => {
     vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '7');
     tablas.set('tenant', { data: { config: null }, error: null });

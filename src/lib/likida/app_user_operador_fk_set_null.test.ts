@@ -13,7 +13,7 @@
 // recrear) y exige que el `on delete set null` traiga su lista de columnas,
 // igual que el propio repo hace en sus otras 20 FK compuestas (0145) y en
 // `terminal_id` de la 0298. El comportamiento real —que el DELETE de verdad
-// deje `tenant_id` intacto— lo prueba el bloque 252 de verificaciones.sql
+// deje `tenant_id` intacto— lo prueba el bloque 254 de verificaciones.sql
 // contra Postgres real.
 // ═══════════════════════════════════════════════════════════════════════════
 

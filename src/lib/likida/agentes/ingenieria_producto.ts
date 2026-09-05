@@ -34,6 +34,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
+import { traerTodo } from '../pg';
 import { numero } from '@/lib/formato';
 import { INTERRUPTORES } from '../interruptores';
 import { type DisparoCorrida } from './corridas';
@@ -644,28 +645,37 @@ export interface PendienteBandeja { tipo: string; agente: string; creado: string
 export interface IncidenciaAbierta { tipo: string; prioridad: string }
 
 export async function leerResueltas(desdeIso: string): Promise<PiezaResuelta[]> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('cola_aprobacion')
-    .select('agente, estado, titulo, motivo_rechazo')
-    .neq('estado', 'pendiente')
-    .gte('resuelto_en', desdeIso)
-    .limit(2000), 'ingenieria.producto_resueltas');
-  if (error) throw new Error(`leerResueltas: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(2000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default — `traerTodo` pagina y LANZA en
+  // vez de devolver un backlog truncado.
+  const data = await traerTodo<Record<string, unknown>>(
+    (d, h) => acotada(admin.from('cola_aprobacion')
+      .select('agente, estado, titulo, motivo_rechazo')
+      .neq('estado', 'pendiente')
+      .gte('resuelto_en', desdeIso)
+      .order('id')
+      .range(d, h), 'ingenieria.producto_resueltas'),
+    'ingenieria.producto_resueltas',
+  );
+  return data.map((f) => ({
     agente: String(f.agente), estado: String(f.estado), titulo: String(f.titulo ?? ''),
     motivo: (f.motivo_rechazo as string | null) ?? null,
   }));
 }
 
 export async function leerPendientes(): Promise<PendienteBandeja[]> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('cola_aprobacion')
-    .select('tipo, agente, creado_en')
-    .eq('estado', 'pendiente')
-    .order('creado_en', { ascending: true })
-    .limit(2000), 'ingenieria.producto_pendientes');
-  if (error) throw new Error(`leerPendientes: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
+  const admin = supabaseAdmin();
+  const data = await traerTodo<Record<string, unknown>>(
+    (d, h) => acotada(admin.from('cola_aprobacion')
+      .select('tipo, agente, creado_en')
+      .eq('estado', 'pendiente')
+      .order('creado_en', { ascending: true })
+      .order('id', { ascending: true })
+      .range(d, h), 'ingenieria.producto_pendientes'),
+    'ingenieria.producto_pendientes',
+  );
+  return data.map((f) => ({
     tipo: String(f.tipo), agente: String(f.agente), creado: String(f.creado_en),
   }));
 }
@@ -673,13 +683,18 @@ export async function leerPendientes(): Promise<PendienteBandeja[]> {
 /** Incidencias abiertas, AGREGADAS por tipo. Cross-tenant a propósito (mide al
  *  producto, no a una flota) y sin un solo dato de nadie: tipo y prioridad. */
 export async function leerIncidencias(): Promise<IncidenciaAbierta[]> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('incidencia')
-    .select('tipo, prioridad')
-    .eq('estado', 'abierta')
-    .limit(2000), 'ingenieria.producto_incidencias');
-  if (error) throw new Error(`leerIncidencias: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(2000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default.
+  const data = await traerTodo<Record<string, unknown>>(
+    (d, h) => acotada(admin.from('incidencia')
+      .select('tipo, prioridad')
+      .eq('estado', 'abierta')
+      .order('id')
+      .range(d, h), 'ingenieria.producto_incidencias'),
+    'ingenieria.producto_incidencias',
+  );
+  return data.map((f) => ({
     tipo: String(f.tipo), prioridad: String(f.prioridad),
   }));
 }
@@ -798,13 +813,19 @@ export function armarParteProducto(hallazgos: Hallazgo[], desde: string, lunes: 
 
 /** Los agentes que corrieron en la ventana. LANZA si no se lee. */
 async function agentesQueCorrieron(desdeIso: string): Promise<Set<string>> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('agente_corrida')
-    .select('agente')
-    .gte('inicio', desdeIso)
-    .limit(5000), 'ingenieria.producto_corridas');
-  if (error) throw new Error(`agentesQueCorrieron: ${error.message}`);
-  return new Set(((data ?? []) as Array<{ agente: string }>).map((f) => f.agente));
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(5000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default — `traerTodo` pagina y LANZA en
+  // vez de dejar «agentes mudos» falsos por corridas que no llegaron a leerse.
+  const data = await traerTodo<{ id: unknown; agente: string }>(
+    (d, h) => acotada(admin.from('agente_corrida')
+      .select('id, agente')
+      .gte('inicio', desdeIso)
+      .order('id')
+      .range(d, h), 'ingenieria.producto_corridas'),
+    'ingenieria.producto_corridas',
+  );
+  return new Set(data.map((f) => f.agente));
 }
 
 async function correrProducto(disparo: DisparoCorrida, hoy: string): Promise<ResultadoIngenieria> {
@@ -950,13 +971,18 @@ export interface CoberturaSitio { paginas: string[]; eventos: string[]; filas: n
 
 /** Qué cubre HOY sitio_evento, medido y no supuesto. LANZA si no se lee. */
 export async function leerCoberturaSitio(desdeIso: string): Promise<CoberturaSitio> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('sitio_evento')
-    .select('pagina, evento')
-    .gte('created_at', desdeIso)
-    .limit(5000), 'ingenieria.cobertura_sitio');
-  if (error) throw new Error(`leerCoberturaSitio: ${error.message}`);
-  const filas = (data ?? []) as Array<{ pagina: string; evento: string }>;
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(5000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default — la cuenta de `filas` que este
+  // parte declara «medida y no supuesta» quedaba subestimada sin avisar.
+  const filas = await traerTodo<{ pagina: string; evento: string }>(
+    (d, h) => acotada(admin.from('sitio_evento')
+      .select('pagina, evento')
+      .gte('created_at', desdeIso)
+      .order('id')
+      .range(d, h), 'ingenieria.cobertura_sitio'),
+    'ingenieria.cobertura_sitio',
+  );
   return {
     filas: filas.length,
     paginas: [...new Set(filas.map((f) => f.pagina))].sort(),
@@ -970,15 +996,18 @@ export interface CoberturaProducto { pantallas: string[]; filas: number }
  *  lee — que la tabla no exista todavía en la base TAMBIÉN es un lanzamiento,
  *  y el parte lo dice como «no se pudo leer», no como «cero uso». */
 export async function leerCoberturaProducto(desdeIso: string): Promise<CoberturaProducto> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('producto_evento')
-    .select('pantalla')
-    .gte('created_at', desdeIso)
-    .order('created_at', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(5000), 'ingenieria.cobertura_producto');
-  if (error) throw new Error(`leerCoberturaProducto: ${error.message}`);
-  const filas = (data ?? []) as Array<{ pantalla: string }>;
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(5000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default.
+  const filas = await traerTodo<{ pantalla: string }>(
+    (d, h) => acotada(admin.from('producto_evento')
+      .select('pantalla')
+      .gte('created_at', desdeIso)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(d, h), 'ingenieria.cobertura_producto'),
+    'ingenieria.cobertura_producto',
+  );
   return {
     filas: filas.length,
     pantallas: [...new Set(filas.map((f) => f.pantalla))].sort(),

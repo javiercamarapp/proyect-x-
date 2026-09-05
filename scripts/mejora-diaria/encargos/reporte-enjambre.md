@@ -33,5 +33,9 @@ Sin ambigüedad ni relleno: cada afirmación sale de un archivo que leíste.
 NO toques el repo — este reporte no hace commits. Manda la notificación con
 el resumen en una línea.
 
+La línea VEREDICTO de abajo es OBLIGATORIA sin excepción, aunque el barrido
+quede a medias: es la única señal que le llega a Javier de que corriste y qué
+encontraste.
+
 Termina con UNA línea:
 VEREDICTO: <n> rutinas OK, <n> caídas, <n> PRs esperan, <n> piezas sin publicar, <n> sequences sin autorizar

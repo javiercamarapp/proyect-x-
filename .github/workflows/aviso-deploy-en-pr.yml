@@ -55,18 +55,18 @@ jobs:
           # lee solo esa primera línea, así que ese merge commit NO construiría
           # aunque este PR sí lleve la bandera.
           aviso=$(cat <<EOF
-⚠️ **Este PR lleva \`[deploy]\` en el título, pero un merge commit normal no lo conserva.**
+          ⚠️ **Este PR lleva \`[deploy]\` en el título, pero un merge commit normal no lo conserva.**
 
-Un merge estándar de GitHub le pone al commit resultante el asunto \`Merge pull request #$PR_NUMBER from $PR_HEAD_REF\` — nunca el título del PR. \`scripts/ci/compuerta-deploy.mjs\` (el \`ignoreCommand\` de Vercel, y el mismo veredicto en \`salud-produccion.yml\`) lee **solo la primera línea** del commit a propósito (ver \`CLAUDE.md\` § Despliegue), así que ese merge commit **no publicaría nada** — el push se vería normal en GitHub y producción se quedaría atrás sin avisar.
+          Un merge estándar de GitHub le pone al commit resultante el asunto \`Merge pull request #$PR_NUMBER from $PR_HEAD_REF\` — nunca el título del PR. \`scripts/ci/compuerta-deploy.mjs\` (el \`ignoreCommand\` de Vercel, y el mismo veredicto en \`salud-produccion.yml\`) lee **solo la primera línea** del commit a propósito (ver \`CLAUDE.md\` § Despliegue), así que ese merge commit **no publicaría nada** — el push se vería normal en GitHub y producción se quedaría atrás sin avisar.
 
-Para que \`[deploy]\` sí publique, en este PR:
-- **Squash-merge** con el asunto del commit final llevando \`[deploy]\` (así lo hace \`auto-merge-rutina.yml\`, y por eso los \`[deploy]\` con \`(#NNN)\` en el asunto sí construyen), o
-- Mergea normal y luego usa **Redeploy** en el panel de Vercel sobre el deployment que corresponde, o
-- Empuja después del merge un commit directo a \`master\` con \`[deploy]\` en el asunto.
+          Para que \`[deploy]\` sí publique, en este PR:
+          - **Squash-merge** con el asunto del commit final llevando \`[deploy]\` (así lo hace \`auto-merge-rutina.yml\`, y por eso los \`[deploy]\` con \`(#NNN)\` en el asunto sí construyen), o
+          - Mergea normal y luego usa **Redeploy** en el panel de Vercel sobre el deployment que corresponde, o
+          - Empuja después del merge un commit directo a \`master\` con \`[deploy]\` en el asunto.
 
-Antes de publicar: recuerda que las migraciones van ANTES que \`[deploy]\` (ver \`CLAUDE.md\`).
-EOF
-)
+          Antes de publicar: recuerda que las migraciones van ANTES que \`[deploy]\` (ver \`CLAUDE.md\`).
+          EOF
+          )
           echo "$aviso" >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::[deploy] en el título de este PR se perdería en un merge commit normal — ver el comentario en el PR."
 

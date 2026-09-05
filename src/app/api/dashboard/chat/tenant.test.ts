@@ -31,6 +31,15 @@ vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from: () => bui
 vi.mock('@/lib/likida/presupuesto', () => ({ acotada: (p: unknown) => p }));
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 vi.mock('@/lib/logger', () => ({ logger }));
+// SEC-2 (auditoría 25, re-auditoría): `mfaSuperadminObligatorio` se deja REAL
+// (lee el env, igual que `api-superadmin.test.ts`) para que la palanca sea la
+// que se prueba; solo `veredictoMfaSuperadmin` se mockea.
+const veredictoMfa = vi.fn(async (): Promise<string> => 'ok');
+vi.mock('@/lib/auth/mfa', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  veredictoMfaSuperadmin: () => veredictoMfa(),
+}));
+vi.mock('@/lib/supabase/server', () => ({ supabaseServer: async () => ({}) }));
 
 const { tenantEfectivoChat } = await import('./tenant');
 
@@ -41,6 +50,10 @@ beforeEach(() => {
   respuestaSesion = null;
   llamadaGlobal = 0;
   logger.error.mockClear();
+  logger.warn.mockClear();
+  veredictoMfa.mockReset();
+  veredictoMfa.mockResolvedValue('ok');
+  vi.unstubAllEnvs();
   vi.stubEnv('DEMO_TENANT_ID', 'demo-fija');
 });
 
@@ -111,5 +124,48 @@ describe('tenantEfectivoChat', () => {
     expect(await tenantEfectivoChat(SUPER, null)).toBeNull();
     expect(logger.error).toHaveBeenCalledWith('chat.tenant_sesion_ilegible',
       expect.objectContaining({ tenant: 'demo-fija', err: 'fetch failed' }));
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SEC-2 (auditoría 25, SEGURIDAD, re-auditoría). `resolverTenantApi`
+  // (tenant-api.ts) cerró el mismo bypass en el commit c3e52ac2 para
+  // /api/export/* y /v1, pero `tenantEfectivoChat` — la puerta compartida por
+  // /chat, /conversaciones, /conversaciones/[id], /onboarding-chat e /ingesta
+  // — seguía honrando `?tenant=` de CUALQUIER superadmin sin preguntar por el
+  // segundo factor. Una cookie de superadmin phishada (sin el factor) seguía
+  // pudiendo leer y escribir el historial de chat de CUALQUIER flota con solo
+  // cambiar el query param.
+  // ═══════════════════════════════════════════════════════════════════════
+  describe('SEC-2: el segundo factor gatea `?tenant=` también aquí', () => {
+    it('palanca APAGADA (default): entra sin preguntar por el factor', async () => {
+      respuesta = { data: { id: 't-b', nombre: 'Flota B' }, error: null };
+      expect(await tenantEfectivoChat(SUPER, 't-b')).toEqual({ tenantId: 't-b', nombreFlota: 'Flota B' });
+      expect(veredictoMfa).not.toHaveBeenCalled();
+    });
+
+    it.each(['inscribir', 'retar', 'no_verificable'])(
+      'palanca puesta, veredicto %s: null — la cookie phishada sin factor NO lee la flota pedida',
+      async (veredicto) => {
+        vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+        respuesta = { data: { id: 't-b', nombre: 'Flota B' }, error: null };
+        veredictoMfa.mockResolvedValue(veredicto);
+        expect(await tenantEfectivoChat(SUPER, 't-b')).toBeNull();
+        expect(logger.warn).toHaveBeenCalledWith('mfa.superadmin_exigido_api',
+          expect.objectContaining({ veredicto }));
+      });
+
+    it('palanca puesta, veredicto ok: sí resuelve la flota pedida', async () => {
+      vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+      respuesta = { data: { id: 't-b', nombre: 'Flota B' }, error: null };
+      veredictoMfa.mockResolvedValue('ok');
+      expect(await tenantEfectivoChat(SUPER, 't-b')).toEqual({ tenantId: 't-b', nombreFlota: 'Flota B' });
+    });
+
+    it('palanca puesta, sin `?tenant=`: no se pregunta por el factor (esta rama no aplica)', async () => {
+      vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+      respuesta = { data: { nombre: 'tu flota' }, error: null };
+      expect(await tenantEfectivoChat(SUPER, null)).toEqual({ tenantId: 'demo-fija', nombreFlota: 'tu flota' });
+      expect(veredictoMfa).not.toHaveBeenCalled();
+    });
   });
 });

@@ -32,7 +32,7 @@ function builder(tabla: string) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     select: () => b, eq: () => b, neq: () => b, is: () => b, not: () => b,
-    gte: () => b, lt: () => b, in: () => b, limit: () => b, order: () => b,
+    gte: () => b, lt: () => b, in: () => b, limit: () => b, order: () => b, range: () => b,
     maybeSingle: () => b,
     update: (fila: Record<string, unknown>) => { updates.push({ tabla, fila }); return b; },
     then: (res: (x: unknown) => unknown, rej: (e: unknown) => unknown) =>

@@ -548,7 +548,16 @@ async function BloqueDesglose({ pResumenFiscal, periodoFiscal }: {
               nota={`${resumenFiscal.n} comprobante${resumenFiscal.n === 1 ? '' : 's'} · ${resumenFiscal.conCfdi} con CFDI, ${resumenFiscal.sinCfdi} sin CFDI`} />
             <StatCard icono={<Landmark width={15} height={15} strokeWidth={1.75} />}
               etiqueta="IVA acreditable documentado" valor={resumenFiscal.ivaAcreditable} formato="mxn"
-              nota="LIVA art. 5 — solo el IVA desglosado en CFDI que lo sostiene" />
+              nota={resumenFiscal.combustible15SujetoADeriva
+                // RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO): incluye combustible en
+                // efectivo prorrateado al 15% con el acumulado del ejercicio
+                // A HOY — un PDF ya firmado fijó su reparto contra el
+                // acumulado que tenía al cerrar, así que esta cifra puede no
+                // coincidir con liquidaciones antiguas. La cifra que SÍ
+                // coincide con cada PDF es "IVA acreditable de tus
+                // liquidaciones", arriba.
+                ? 'LIVA art. 5 — incluye combustible en efectivo al 15% del acumulado de HOY: puede diferir de lo firmado en PDFs viejos (ver "de tus liquidaciones", arriba)'
+                : 'LIVA art. 5 — solo el IVA desglosado en CFDI que lo sostiene'} />
             <StatCard icono={<FileX2 width={15} height={15} strokeWidth={1.75} />}
               etiqueta="IVA desglosado que NO se acredita" valor={resumenFiscal.ivaNoAcreditable} formato="mxn"
               nota="Las dos cubetas suman todo el IVA desglosado del periodo — crúzalo con calculadora" />

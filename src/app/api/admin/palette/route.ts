@@ -22,9 +22,14 @@ export const dynamic = 'force-dynamic';
 // misma que usan los server actions de /admin/observabilidad — dos puertas,
 // un solo mecanismo, una sola bitácora.
 //
-// LA PUERTA SE RE-CHEQUEA AQUÍ: las rutas /api no pasan por el layout de
-// /admin, así que este archivo es su propia puerta. Sin sesión: 401. Con
-// sesión de otro rol: 403. Ninguna de las dos dice qué hay detrás.
+// LA PUERTA: las rutas /api no pasan por el layout de /admin, así que esta
+// familia re-chequea sesión vía `@/lib/auth/api-superadmin` — la misma puerta
+// compartida de mapa-prospectos/, qa/ y copiloto/ (auditoría 25, línea 166,
+// REINCIDENTE: este archivo traía su PROPIA copia que solo comprobaba
+// `rol === 'superadmin'`, sin preguntar por el segundo factor — SEC-1/RT-1,
+// re-auditoría). Sin sesión: 401. Con sesión de otro rol: 403. Con el segundo
+// factor exigido (SEG-3) y sin verificar: 403. Ninguna respuesta dice qué hay
+// detrás.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export async function GET() {

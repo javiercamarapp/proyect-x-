@@ -31,7 +31,9 @@ function diesel(over: Partial<GastoFiscal> = {}): GastoFiscal {
     subTotal: 10_000, ivaTraslado: 1600, iepsTraslado: 400,
     claveProdServ: '15101505', tipoComprobante: 'I', xmlVerificado: true,
     ocrConfianza: 0.9, viajeFolio: 'VJ-1', operadorNombre: 'Juan',
-    plazoVencido: null,
+    plazoVencido: null, liquidacionFirmada: true,
+    rfcReceptor: 'REC010101AA1', monedaExtranjera: false, renglonesAjenos: false,
+    consumoBar: false, complementoHidrocarburosFalta: false, otroEjercicio: false,
     ...over,
   };
 }

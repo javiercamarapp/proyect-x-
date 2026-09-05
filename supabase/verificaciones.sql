@@ -6413,8 +6413,17 @@ begin
 
   -- Ejercicio (últimos 30 días aquí), tope efectivo 2000, tope alimentación 750,
   -- cortes: hace 60 y hace 30 días (mes_siguiente / mes_natural simulados).
+  -- RE-AUDITORÍA 25, FIS-REAUD-2 (mig. 0317): la firma ganó 6 parámetros —
+  -- se pasan con nombre para no depender del orden, y con valores que NO
+  -- disparan ninguna de las 7 causas nuevas sobre esta siembra (mismo
+  -- comportamiento que antes de la 0317 para lo que este bloque mide).
   j := gastos_fiscales_agregados_tenant(ta, current_date - 30, current_date, 2000, 750,
-         array['alimentacion','viaticos'], array[(current_date - 60)::date, (current_date - 30)::date]);
+         array['alimentacion','viaticos'], array[(current_date - 60)::date, (current_date - 30)::date],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
 
   select count(*), sum((c->>'n')::int), sum((c->>'monto')::numeric),
          sum((c->>'n')::int) filter (where (c->>'tieneCfdi')::boolean),
@@ -6431,7 +6440,12 @@ begin
 
   -- Sin cota: entran la vieja (banda 2) y la sin fecha
   j := gastos_fiscales_agregados_tenant(ta, null, null, 2000, 750,
-         array['alimentacion','viaticos'], array[(current_date - 60)::date, (current_date - 30)::date]);
+         array['alimentacion','viaticos'], array[(current_date - 60)::date, (current_date - 30)::date],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
   select sum((c->>'n')::int), sum((c->>'n')::int) filter (where (c->>'sinFecha')::boolean),
          string_agg(c->>'banda', ',' order by c->>'banda') filter (where c->>'banda' is not null)
     into sin_cota_n, sin_fecha, bandas
@@ -14676,7 +14690,7 @@ begin
     coalesce(expediente_vacio,false), anon_ok, auth_ok;
 end $$;
 
--- ── 212. La identidad congelada de un token MCP deja de ser válida el instante en que app_user cambia (mig. 0265, HALLAZGO 1) ──
+-- ── 212. La identidad congelada de un token MCP deja de ser válida el instante en que app_user cambia (mig. 0265 + 0318, HALLAZGO 1 + SEC-3) ──
 --
 -- Esto es lo que un test de TypeScript con Supabase mockeado NO puede
 -- demostrar: que la GARANTÍA vive en la base, contra una fila REAL de
@@ -14699,6 +14713,14 @@ end $$;
 --      cubre el caso en que la RPC se llama con un user_id que nunca fue, o
 --      cuya fila se borró por otro camino).
 --
+--  (g) SEC-3 (auditoría 25, MEDIO, re-auditoría, mig. 0318): dado de baja
+--      (`activo = false`) SIN cambiar tenant ni rol — el escenario que el
+--      comentario original de la 0265 decía que no existía todavía
+--      ("app_user no tiene columna de estatus/activo"). Desde la 0294 sí la
+--      tiene: la identidad congelada (tenant, rol) sigue siendo cierta, pero
+--      la cuenta ya no debe poder refrescar. → false. Reactivado → true de
+--      nuevo (no es un candado de un solo uso, igual que (d)).
+--
 --  (f) `revocar_mcp_oauth_usuario`: tumba TODOS los tokens activos de un
 --      usuario en su tenant de un tiro, deja intacto el de OTRO usuario de
 --      la misma flota, y una segunda llamada no vuelve a tocar lo ya
@@ -14716,6 +14738,8 @@ declare
   vigente_tras_tenant boolean;
   vigente_restaurado boolean;
   vigente_usuario_borrado boolean;
+  vigente_desactivado boolean;
+  vigente_reactivado boolean;
   revocados_primera bigint;
   revocados_segunda bigint;
   otro_token_intacto boolean;
@@ -14748,6 +14772,12 @@ begin
   -- (e) la fila ya no existe.
   select public.mcp_oauth_usuario_vigente(gen_random_uuid(), t, 'contador') into vigente_usuario_borrado;
 
+  -- (g) SEC-3: dado de baja SIN tocar tenant ni rol.
+  update public.app_user set activo = false, desactivado_en = now() where id = u;
+  select public.mcp_oauth_usuario_vigente(u, t, 'contador') into vigente_desactivado;
+  update public.app_user set activo = true, desactivado_en = null where id = u;
+  select public.mcp_oauth_usuario_vigente(u, t, 'contador') into vigente_reactivado;
+
   -- (f) revocar_mcp_oauth_usuario: dos tokens activos de `u` en `t`, uno de
   -- `u_otro` en el mismo tenant.
   insert into public.mcp_oauth_token (token_hash, tipo, cliente_id, user_id, tenant_id, rol, familia, expira_en)
@@ -14767,8 +14797,9 @@ begin
   -- Segunda llamada: ya no hay nada activo que tocar (idempotente).
   select public.revocar_mcp_oauth_usuario(t, u) into revocados_segunda;
 
-  raise exception 'MCP_OAUTH_VIGENCIA_0265  inicial=%  tras_rol=%  tras_tenant=%  restaurado=%  usuario_borrado=%  revocados_1=%  revocados_2=%  otro_intacto=%  ambos_revocados=%   (esperado t / f / f / t / f / 2 / 0 / t / t)',
+  raise exception 'MCP_OAUTH_VIGENCIA_0265  inicial=%  tras_rol=%  tras_tenant=%  restaurado=%  usuario_borrado=%  desactivado=%  reactivado=%  revocados_1=%  revocados_2=%  otro_intacto=%  ambos_revocados=%   (esperado t / f / f / t / f / f / t / 2 / 0 / t / t)',
     vigente_inicial, vigente_tras_rol, vigente_tras_tenant, vigente_restaurado, vigente_usuario_borrado,
+    vigente_desactivado, vigente_reactivado,
     revocados_primera, revocados_segunda, otro_token_intacto, ambos_revocados;
 end $$;
 
@@ -17066,7 +17097,13 @@ begin
     values (t, v, 'diesel', 1160, 1000, 160, 'aaaaaaaa-0282-0282-0282-000000000001', '99', 'PPD', current_date, null, null),
            (t, v, 'diesel', 1160, 1000, 160, 'aaaaaaaa-0282-0282-0282-000000000002', '99', 'PPD', current_date, current_date, '03');
 
-  celdas := public.gastos_fiscales_agregados_tenant(t, null, null, 2000, 750, array['alimentacion','viaticos'], '{}'::date[]);
+  -- RE-AUDITORÍA 25, FIS-REAUD-2 (mig. 0317): la firma ganó 6 parámetros — ver el bloque 123.
+  celdas := public.gastos_fiscales_agregados_tenant(t, null, null, 2000, 750, array['alimentacion','viaticos'], '{}'::date[],
+    p_claves_combustible => array['15101505','15101514','15101515'],
+    p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+    p_umbral_renglones_ajenos => 0.15,
+    p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+    p_hoy => current_date);
 
   dos_celdas   := jsonb_array_length(celdas) = 2;
   trae_pagado  := (select bool_and(x ? 'pagado' and x ? 'pagadoForma') from jsonb_array_elements(celdas) x);
@@ -17512,7 +17549,7 @@ end $$;
 -- Esperado: RECHAZADA_NO_CUENTA_0307  poliza-sin-rechazada=t  poliza-con-pendiente=t  reasignar-tras-rechazo=t  reasignar-tras-aprobada-rebota=t
 do $$
 declare
-  v_t uuid; v_u uuid := gen_random_uuid(); v_o1 uuid; v_o2 uuid;
+  v_t uuid; v_u uuid := gen_random_uuid(); v_o1 uuid; v_o2 uuid; v_o3 uuid;
   v_v1 uuid; v_v2 uuid; v_l1 uuid; v_l2 uuid;
   j jsonb;
   poliza_sin_rechazada boolean; poliza_con_pendiente boolean;
@@ -17522,6 +17559,13 @@ begin
   insert into app_user (id, tenant_id, email, rol) values (v_u, v_t, 'zzz-rechazada-0307@likida.test', 'flota_admin');
   insert into operador (tenant_id, nombre, telefono) values (v_t, 'P1', '520000009930') returning id into v_o1;
   insert into operador (tenant_id, nombre, telefono) values (v_t, 'P2', '520000009931') returning id into v_o2;
+  -- v_o1 sigue con RN-1 en 'en_cuadre' tras el rechazo (más abajo): un
+  -- SEGUNDO viaje 'abierto' para el MISMO operador chocaría con
+  -- `uq_viaje_abierto_por_operador` (0029, cubre abierto|en_cuadre) antes de
+  -- llegar a nada de lo que este bloque quiere medir. RN-2 nace con un
+  -- operador NUEVO — v_o2 se deja libre, es el blanco de las dos
+  -- reasignaciones de abajo.
+  insert into operador (tenant_id, nombre, telefono) values (v_t, 'P3', '520000009932') returning id into v_o3;
 
   -- (a) una liquidación que se RECHAZA por la RPC de verdad (el único camino
   -- que la tabla acepta — un INSERT/UPDATE directo de `revision` rebota con
@@ -17532,7 +17576,7 @@ begin
   perform revisar_liquidacion(v_t, v_l1, 'rechazar', 'no es de este viaje', null, v_u, null);
   -- El rechazo YA devolvió el viaje a 'en_cuadre' (0299) — el escenario real.
 
-  insert into viaje (tenant_id, operador_id, folio, anticipo) values (v_t, v_o2, 'RN-2', 5000) returning id into v_v2;
+  insert into viaje (tenant_id, operador_id, folio, anticipo) values (v_t, v_o3, 'RN-2', 5000) returning id into v_v2;
   insert into gasto (tenant_id, viaje_id, concepto, monto) values (v_t, v_v2, 'diesel', 5000);
   v_l2 := guardar_liquidacion_tx(v_t, v_v2, 5000, 5000, 0, 'con_diferencias', '[]'::jsonb, 0, 0, 0, null, 0); -- nace 'pendiente'
 
@@ -17619,7 +17663,11 @@ begin
   select (count(*) = 1) into una_sola_fila from factura_saas where stripe_invoice_id = 'in_zzz_0309';
 
   -- El predicado viejo era decorativo: dos filas SIN invoice (transferencia)
-  -- ya convivían sin él — un único no-parcial no compite entre NULLs.
+  -- ya convivían sin él — un único no-parcial no compite entre NULLs. Con
+  -- periodos DISTINTOS a propósito: mismo periodo chocaría con la unicidad
+  -- real y anterior `factura_saas_una_por_periodo` (0057, sí parcial a
+  -- 'transferencia') — un constraint correcto y sin relación con lo que este
+  -- bloque mide (los NULL de `stripe_invoice_id`).
   insert into factura_saas (tenant_id, periodo_inicio, periodo_fin, monto, metodo_cobro)
     values (v_t, date '2026-09-01', date '2026-09-30', 1000, 'transferencia');
   insert into factura_saas (tenant_id, periodo_inicio, periodo_fin, monto, metodo_cobro)

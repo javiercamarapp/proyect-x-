@@ -40,10 +40,15 @@ function builder(tabla: string) {
 }
 
 const updateUserById = vi.fn(async (..._a: unknown[]): Promise<{ error: { message: string } | null }> => ({ error: null }));
+// SEC-3 (auditoría 25, MEDIO, re-auditoría): `revocar_mcp_oauth_usuario` —
+// la RPC hermana de `mcp_oauth_usuario_vigente` (0265) que tumba de un tiro
+// TODOS los tokens MCP vivos de un usuario en su tenant.
+const rpc = vi.fn(async (..._a: unknown[]): Promise<{ data?: unknown; error: { message: string } | null }> => ({ data: 0, error: null }));
 vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({
     from: (t: string) => builder(t),
     auth: { admin: { updateUserById: (...a: unknown[]) => updateUserById(...a) } },
+    rpc: (...a: unknown[]) => rpc(...a),
   }),
 }));
 const anotarBitacora = vi.fn(async () => true);
@@ -73,6 +78,8 @@ beforeEach(() => {
   colas.clear();
   updateUserById.mockClear();
   updateUserById.mockResolvedValue({ error: null });
+  rpc.mockClear();
+  rpc.mockResolvedValue({ data: 2, error: null });
   anotarBitacora.mockClear();
   enviarCorreo.mockClear();
   enviarCorreo.mockResolvedValue({ ok: true, id: 'm-1' });
@@ -202,6 +209,30 @@ describe('desactivarUsuario — la baja en tres capas', () => {
     await expect(desactivarUsuario(TENANT, U, ACTOR)).rejects.toBeInstanceOf(DatoInvalido);
     expect(updateUserById).not.toHaveBeenCalled();
     expect(anotarBitacora).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SEC-3 (auditoría 25, MEDIO, re-auditoría). El ban en Auth mata el
+  // REFRESH de la cookie del panel, pero un token MCP de acceso sigue vivo
+  // hasta 8h y su refresco hasta 60 días (0265) — sin esto, la baja no
+  // tumbaba esos tokens de inmediato: dependía de que el próximo refresco
+  // topara con `mcp_oauth_usuario_vigente()` (que además, antes de la
+  // migración 0318, ni siquiera preguntaba por `activo`).
+  // ═══════════════════════════════════════════════════════════════════════
+  it('también tumba de un tiro los tokens MCP vivos del usuario (revocar_mcp_oauth_usuario)', async () => {
+    colas.set('app_user', [{ data: fila() }, { data: [{ id: U }] }]);
+    await desactivarUsuario(TENANT, U, ACTOR);
+    expect(rpc).toHaveBeenCalledWith('revocar_mcp_oauth_usuario', { p_tenant: TENANT, p_usuario: U });
+  });
+
+  it('si revocar los tokens MCP falla, la baja NO se revierte — se loguea y sigue', async () => {
+    colas.set('app_user', [{ data: fila() }, { data: [{ id: U }] }]);
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'rpc caída' } });
+    const r = await desactivarUsuario(TENANT, U, ACTOR);
+    expect(r).toEqual({ sesionRevocada: true });
+    expect(logger.error).toHaveBeenCalledWith('equipo.mcp_revocar_fallo',
+      expect.objectContaining({ usuario: U, err: 'rpc caída' }));
   });
 });
 

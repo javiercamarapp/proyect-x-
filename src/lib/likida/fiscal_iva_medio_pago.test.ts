@@ -45,7 +45,9 @@ function refaccion(formaPago: string | null): GastoFiscal {
     subTotal: 50000, ivaTraslado: 8000, iepsTraslado: null,
     claveProdServ: null, tipoComprobante: 'I', xmlVerificado: true,
     ocrConfianza: 0.95, viajeFolio: 'VJ-1', operadorNombre: 'Juan',
-    plazoVencido: null,
+    plazoVencido: null, liquidacionFirmada: true,
+    rfcReceptor: 'REC010101AA1', monedaExtranjera: false, renglonesAjenos: false,
+    consumoBar: false, complementoHidrocarburosFalta: false, otroEjercicio: false,
   };
 }
 

@@ -23,7 +23,7 @@ function builder(tabla: string) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     select: () => b, eq: () => b, is: () => b, neq: () => b, not: () => b,
-    gte: () => b, lt: () => b, order: () => b, limit: () => b,
+    gte: () => b, lt: () => b, order: () => b, limit: () => b, range: () => b,
     insert: () => b, update: () => b,
     then: (res: (x: unknown) => unknown, rej: (e: unknown) => unknown) =>
       Promise.resolve().then(responder).then(res, rej),

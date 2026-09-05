@@ -92,6 +92,27 @@ const MAX_VUELTAS = 14;
  */
 const PROHIBIDOS = /partido|donativ|dona[rc]|suscrib|newsletter|public|acepto.*promo/i;
 
+/**
+ * RE-AUDITORÍA 25, FASE 3 (TC-CANDADO-CLIC-BYPASS, MEDIO): el candado durable
+ * de `emitir` (`reclamarEmision`/`sellarEmision`, ver la cabecera) solo
+ * envolvía el `case 'emitir'`. La tool hermana `clic` — "hace clic en un
+ * botón del inventario", sin más restricción que `PROHIBIDOS` — puede
+ * apretar EL MISMO botón físico de emisión sin pasar por el candado: mismo
+ * clic, mismo CFDI, cero protección contra el doble timbrado.
+ *
+ * No hay forma de conocer de antemano el selector real del botón de emitir
+ * de cada uno de los 37 portales (lo descubre el modelo en el inventario de
+ * CADA portal), así que se reconoce por el mismo tipo de heurística que
+ * `PROHIBIDOS` ya usa: palabras de la ACCIÓN de emitir en el propio selector
+ * — el id/name que el portal le puso, o el texto del botón que `inventario()`
+ * mete en el selector cuando no hay id/name (`button:has-text("Emitir…")`).
+ * Deliberadamente NO incluye "factura" a secas: "ver factura" o "descargar
+ * factura" son botones legítimos para `clic` y un falso positivo aquí no
+ * bloquea el clic — lo enruta por `reclamarEmision`, que lo marcaría
+ * "ya emitido" y le negaría al VERDADERO `emitir` su propio candado.
+ */
+const BOTON_DE_EMISION = /emitir|timbrar|facturar|generar.{0,3}factura|obtener.{0,3}factura|solicitar.{0,3}factura/i;
+
 export interface DatosReceptorPortal {
   rfc: string;
   nombre: string;
@@ -309,6 +330,27 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
           { selector: { type: 'string' } }));
       }
 
+      // El candado durable que usan las demás tools de escritura — ver la
+      // cabecera del archivo. Sin él, un segundo clic sobre el botón de
+      // emisión en la MISMA corrida (botón que sigue en el inventario, un
+      // selector distinto del mismo botón, o la tool `clic` en vez de
+      // `emitir` — TC-CANDADO-CLIC-BYPASS) volvía a apretarlo tal cual.
+      // Compartida entre `case 'emitir'` y el bypass de `case 'clic'`: el
+      // candado protege el CLIC FÍSICO, no el nombre de la tool que lo pidió.
+      const clicDeEmision = async (selector: string): Promise<string> => {
+        const reclamo = await reclamarEmision(this.op.tenantId, efectoId);
+        if (reclamo.kind === 'detenido') return reclamo.mensaje;
+        try {
+          await p.hacerClic(selector);
+        } catch (e) {
+          await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: false, error: e instanceof Error ? e.message : String(e) });
+          throw e;
+        }
+        const inv = await inventario(p);
+        await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: true });
+        return `EMITIDO. Inventario nuevo: ${inv}`;
+      };
+
       const ejecutar = async (nombre: string, args: Record<string, unknown>): Promise<string> => {
         const selector = String(args.selector ?? '');
         if ((nombre === 'clic' || nombre === 'emitir') && PROHIBIDOS.test(selector)) {
@@ -330,27 +372,17 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
             capturado[selector] = valor;
             return `seleccionado ${valor} en ${selector}`;
           }
-          case 'clic':
+          case 'clic': {
+            // TC-CANDADO-CLIC-BYPASS: si el selector apunta al mismo botón de
+            // emisión, `clic` NO es distinto de `emitir` — exige el mismo
+            // candado, sin excepción por el nombre de la tool. Un botón
+            // normal ("validar", "siguiente"…) sigue apretándose tal cual.
+            if (BOTON_DE_EMISION.test(selector)) return clicDeEmision(selector);
             await p.hacerClic(selector);
             return `clic en ${selector}. Inventario nuevo: ${await inventario(p)}`;
-          case 'emitir': {
-            // AUDITORÍA 25 (BAJO, tool-calling.md:209): el mismo candado
-            // durable que usan las demás tools de escritura — ver la
-            // cabecera del archivo. Sin él, un segundo `emitir` en la MISMA
-            // corrida (botón que sigue en el inventario, o un selector
-            // distinto del mismo botón) volvía a apretarlo tal cual.
-            const reclamo = await reclamarEmision(this.op.tenantId, efectoId);
-            if (reclamo.kind === 'detenido') return reclamo.mensaje;
-            try {
-              await p.hacerClic(selector);
-            } catch (e) {
-              await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: false, error: e instanceof Error ? e.message : String(e) });
-              throw e;
-            }
-            const inv = await inventario(p);
-            await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: true });
-            return `EMITIDO. Inventario nuevo: ${inv}`;
           }
+          case 'emitir':
+            return clicDeEmision(selector);
           case 'rendirse':
             rendido = String(args.motivo ?? 'sin motivo');
             if (/captcha/i.test(rendido)) captcha = true;

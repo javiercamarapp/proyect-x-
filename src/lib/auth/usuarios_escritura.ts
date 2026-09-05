@@ -214,6 +214,23 @@ export async function desactivarUsuario(
     logger.error('equipo.ban_fallo', { usuario: usuarioId, err: e instanceof Error ? e.message : String(e) });
   }
 
+  // SEC-3 (auditoría 25, MEDIO, re-auditoría): el ban de arriba mata el
+  // REFRESH de la cookie del panel, pero no toca un token MCP — un acceso
+  // sigue vivo hasta 8h y su refresco hasta 60 días (0265), y sin esto la
+  // baja dependía de que el SIGUIENTE refresco topara con
+  // `mcp_oauth_usuario_vigente()` (que la migración 0318 hizo mirar
+  // `activo`, pero eso solo cierra el refresco, no lo que ya estaba vivo).
+  // `revocar_mcp_oauth_usuario` (la RPC hermana de la propia 0265) tumba de
+  // un tiro TODOS los tokens vivos de esta persona en esta flota. Best-effort
+  // como el ban: la baja de `app_user` ya cerró panel y RLS; si esto falla se
+  // dice y se loguea, no se revierte la baja por ello.
+  try {
+    const { error: errMcp } = await supabaseAdmin().rpc('revocar_mcp_oauth_usuario', { p_tenant: tenantId, p_usuario: usuarioId });
+    if (errMcp) logger.error('equipo.mcp_revocar_fallo', { usuario: usuarioId, err: errMcp.message });
+  } catch (e) {
+    logger.error('equipo.mcp_revocar_fallo', { usuario: usuarioId, err: e instanceof Error ? e.message : String(e) });
+  }
+
   await anotar(tenantId, 'usuario.desactivado', usuarioId, { rol: objetivo.rol, sesion_revocada: sesionRevocada }, actor);
   return { sesionRevocada };
 }

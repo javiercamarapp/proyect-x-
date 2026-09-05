@@ -47,10 +47,18 @@ import {
 // el panel y el PDF no vuelvan a decir dos cifras del mismo comprobante.
 import {
   FORMA_PAGO_SIN_PAGAR, MEDIOS_LISR_27_III, medioNoAdmitidoCombustible, proporcionesDeducibles,
+  SENAL_BAR, UMBRAL_RENGLONES_AJENOS, rfcsUtilizablesDe, normalizarRfc,
 } from './cuadre/engine';
 import { getConfig, type LikidaConfig } from './config';
 import { getAcumuladoCombustible } from './repo';
 import { logger } from '@/lib/logger';
+// RE-AUDITORÍA 25, FIS-REAUD-2: `complemento_hidrocarburos` (SIN_IVA_ACREDITABLE
+// de engine.ts) solo declara no deducible con una fecha de EXIGIBILIDAD
+// respaldada por FICHA — la misma que `engine.ts` resuelve de `NORMAS`
+// cuando `hidrocarburos.exigibleDesde` no se declara en config. Importado a
+// propósito, en vez de copiar la fecha, para que el panel y el PDF prendan
+// el veredicto duro el mismo día.
+import { NORMAS } from './normas/indice';
 
 // ── La fila de `gasto` leída con ojos de contador ──────────────────────────
 
@@ -111,6 +119,53 @@ export interface GastoFiscal {
    * sobre un ticket cuyo plazo no conocemos es la mentira cara.
    */
   plazoVencido: boolean | null;
+  /**
+   * RE-AUDITORÍA 25, FIS-REAUD-1 (CRÍTICO): ¿el viaje de este comprobante
+   * tiene YA una liquidación FIRMADA (`revision` aprobada|ajustada — mismo
+   * criterio que la 0308, `acreditables_liquidacion_tenant`)? `false` cubre
+   * tanto "sin liquidación todavía" (viaje abierto/en cuadre) como
+   * "liquidación pendiente de firma" o "rechazada". Solo lo consulta
+   * `ivaSostenible`: sin liquidación firmada no hay liquidación (con su
+   * propio veredicto) que sostenga el acreditamiento de LIVA 5 — el resto de
+   * `resumirFiscal`/`resumirPerdidas` (gastoTotal, sinCfdi, "pídelo antes de
+   * que venza") NO se filtra por esto, porque existe precisamente para
+   * pescar comprobantes de viajes TODAVÍA abiertos.
+   */
+  liquidacionFirmada: boolean;
+  // ── RE-AUDITORÍA 25, FIS-REAUD-2 (CRÍTICO) ──────────────────────────────
+  // Las 7 causas de `SIN_IVA_ACREDITABLE` (engine.ts) que `ivaSostenible` no
+  // juzgaba: `rfc_receptor`, `rfc_receptor_no_verificable`,
+  // `moneda_extranjera`, `renglones_ajenos`, `consumo_bar`,
+  // `complemento_hidrocarburos` y `gasto_otro_ejercicio`. Ya vienen
+  // PRE-JUZGADAS (booleano/valor, no el JSON crudo) para que `ivaSostenible`
+  // se lea igual sobre un comprobante suelto o sobre una celda: quien las
+  // llena (`aGastoFiscal` para una celda; un caller directo para un
+  // comprobante suelto, como ya hace `plazoVencido`) es quien tiene el
+  // contexto para calcularlas una sola vez.
+  /** El RFC del RECEPTOR del CFDI (`rfcReceptor` en engine.ts/`Gasto`; no
+   *  confundir con `rfcEmisor`, arriba). `null` = no se pudo leer. */
+  rfcReceptor: string | null;
+  /** `ocr_extra.moneda` presente y distinta de 'MXN' (DAT-19). */
+  monedaExtranjera: boolean;
+  /** El ticket es una canasta mixta cuyas partidas ajenas al viaje suman
+   *  ≥ `UMBRAL_RENGLONES_AJENOS` del total (mismo umbral que engine.ts). */
+  renglonesAjenos: boolean;
+  /** `pareceBar` (engine.ts, LISR 28-XX): alimentación cuyo emisor/producto
+   *  leído hace match con `SENAL_BAR`. */
+  consumoBar: boolean;
+  /**
+   * El CFDI de combustible NO trae el complemento de hidrocarburos exigido
+   * (regla 2.7.1.48 RMF) — el veredicto DURO de `engine.ts` (NIVEL 2, con
+   * XML verificado y fecha de exigibilidad respaldada por ficha). Mientras
+   * `NORMAS['rmf-2026-2.7.1.48'].exigibleDesde` siga en `null`, esto es
+   * siempre `false` (el motor tampoco lo declara no deducible) — el
+   * interruptor real vive en la ficha, no aquí.
+   */
+  complementoHidrocarburosFalta: boolean;
+  /** El comprobante está fechado en un ejercicio ANTERIOR al corriente
+   *  (mismo criterio que `fechaDudosa` → 'otro_ejercicio', con la tolerancia
+   *  de enero para el cierre de año). */
+  otroEjercicio: boolean;
   /**
    * Presente cuando la fila es una CELDA AGREGADA (mig. 0151): representa
    * `celda.n` comprobantes con EXACTAMENTE las mismas dimensiones fiscales
@@ -380,6 +435,30 @@ export interface OpcionesFiscales {
    * (`proporcionCombustible15`, fail closed).
    */
   combustibleEjercicio?: { efectivo: number; totalCombustible: number };
+  /**
+   * RE-AUDITORÍA 25, FIS-REAUD-2 (CRÍTICO). RFCs propios de la flota,
+   * normalizados y validados — MISMO criterio que `rfcsOk` en engine.ts
+   * (descarta el genérico del SAT y cualquiera que no pase el dígito
+   * verificador). Vacío/`undefined` = ningún RFC utilizable: `ivaSostenible`
+   * entonces solo mira `empresaRfcConfigurado` para decidir si el receptor
+   * es "no verificable" o si la validación se salta por completo (sin RFC
+   * capturado, como hace engine.ts).
+   */
+  rfcsPropios?: Set<string>;
+  /** ¿El tenant declaró ALGÚN RFC de empresa (aunque no sirva)? Distingue
+   *  "sin capturar" (no se juzga el receptor, como engine.ts) de "capturado
+   *  y no sirve" (rfc_receptor_no_verificable). */
+  empresaRfcConfigurado?: boolean;
+  /**
+   * RE-AUDITORÍA 25, FIS-REAUD-2. Complemento de hidrocarburos (RMF
+   * 2.7.1.48): `vigenteDesde` es el filtro de ruido (desde cuándo se MIRA,
+   * `config.ts:hidrocarburos.vigenteDesde`) y `exigibleDesde` es la fecha
+   * que DECIDE dinero, resuelta igual que `engine.ts` (`NORMAS` si la config
+   * no la declara). `undefined`/`null` en `exigibleDesde` = el motor NUNCA
+   * declara `complemento_hidrocarburos` todavía, y el panel tampoco.
+   */
+  hidrocarburosVigenteDesde?: string;
+  hidrocarburosExigibleDesde?: string | null;
 }
 
 /**
@@ -476,6 +555,14 @@ export function opcionesDe(cfg: LikidaConfig): OpcionesFiscales {
     elegible15: (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
       ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)
       : undefined,
+    // RE-AUDITORÍA 25, FIS-REAUD-2: el MISMO conjunto que `cuadrarViaje`
+    // calcula para validar el receptor — importado, no reinventado.
+    rfcsPropios: rfcsUtilizablesDe(cfg.empresa.rfc, cfg.empresa.rfcsAdicionales),
+    empresaRfcConfigurado: !!cfg.empresa.rfc,
+    hidrocarburosVigenteDesde: cfg.hidrocarburos.vigenteDesde,
+    // Mismo criterio de resolución que `engine.ts`: la config puede fijar su
+    // propia `exigibleDesde`; sin ella, la ficha de `NORMAS` decide (hoy: null).
+    hidrocarburosExigibleDesde: NORMAS['rmf-2026-2.7.1.48']?.exigibleDesde ?? null,
   };
 }
 
@@ -822,6 +909,20 @@ export interface ResumenFiscal {
   vigentes: number;
   /** Con CFDI y respuesta del SAT `cancelado`. */
   cancelados: number;
+  /**
+   * RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO). `true` = una parte de
+   * `ivaAcreditable` pasó por el prorrateo del 15% de la RFA 2.9 calculado
+   * contra el acumulado de combustible del ejercicio A HOY
+   * (`combustibleEjercicioDe`/`proporcionCombustible15`). Cada liquidación
+   * FIRMADA fijó su propio reparto contra el acumulado que existía AL
+   * MOMENTO de cerrarse — uno más chico que el de hoy, casi siempre — así
+   * que esta cifra puede "perdonar" retroactivamente un excedente que un PDF
+   * más viejo ya negó. El llamador (el panel, la herramienta de chat) tiene
+   * que decirlo en vez de imprimir el número solo: mismo espíritu que
+   * `derivoLaConfig` en analytics.ts para el detalle de un viaje, adaptado a
+   * un periodo con muchas liquidaciones en vez de una.
+   */
+  combustible15SujetoADeriva: boolean;
 }
 
 /**
@@ -836,6 +937,13 @@ export interface ResumenFiscal {
  */
 function ivaSostenible(g: GastoFiscal, o: OpcionesFiscales): boolean {
   if (!g.cfdiUuid) return false;
+  // RE-AUDITORÍA 25, FIS-REAUD-1 (CRÍTICO, reincidente de la 0308 por otra
+  // puerta): sin una liquidación FIRMADA (aprobada|ajustada) sobre el viaje
+  // de este comprobante, no hay liquidación que sostenga el requisito de
+  // deducibilidad de LIVA 5 — mismo criterio que ya usa
+  // `acreditables_liquidacion_tenant` (0308). Cubre viajes sin liquidación
+  // todavía, liquidaciones pendientes de firma y liquidaciones rechazadas.
+  if (!g.liquidacionFirmada) return false;
   if (g.estadoSat === 'cancelado') return false;
   if (g.estadoSat === 'pendiente' || g.estadoSat === 'no_encontrado') return false;
   if (g.efos === true) return false;
@@ -878,6 +986,38 @@ function ivaSostenible(g: GastoFiscal, o: OpcionesFiscales): boolean {
   // 0282 como dimensión del agregado) el '99' deja de cerrar la puerta — igual
   // que `pagadoConRep` en el motor. Sin el sello, todo queda como antes.
   if (g.formaPago === FORMA_PAGO_SIN_PAGAR && !g.pagado) return false;
+  // ── RE-AUDITORÍA 25, FIS-REAUD-2 (CRÍTICO) ──────────────────────────────
+  // Las 7 causas de `SIN_IVA_ACREDITABLE` (engine.ts) que le faltaban a esta
+  // función: `rfc_receptor`, `rfc_receptor_no_verificable`,
+  // `moneda_extranjera`, `renglones_ajenos`, `consumo_bar`,
+  // `complemento_hidrocarburos` y `gasto_otro_ejercicio`.
+  //
+  // El receptor: `g.cfdiUuid` ya es verdadero aquí (primera línea de la
+  // función), así que el "sin receptor" de abajo replica EXACTO el segundo
+  // candado de `cuadrarViaje` (auditoría 8: `g.cfdiUuid && !g.rfcReceptor`).
+  if (!g.rfcReceptor) return false;
+  const rfcsPropios = o.rfcsPropios ?? new Set<string>();
+  if (rfcsPropios.size > 0) {
+    // Sin el RFC del OPERADOR del viaje —que esta vista, agregada por
+    // celda, no conserva— no se puede aplicar la excepción de RLISR 57
+    // (viático a nombre del operador). `cuadrarViaje` sí la aplica por
+    // viaje; aquí, sin ese contexto, se falla CERRADO: cualquier receptor
+    // que no sea de la empresa no sostiene el acreditamiento en el panel,
+    // aunque el PDF de un viaje concreto pudiera acreditarlo por RLISR 57.
+    // Nunca al revés (nunca acredita algo que el motor negaría).
+    if (!rfcsPropios.has(normalizarRfc(g.rfcReceptor))) return false;
+  } else if (o.empresaRfcConfigurado) {
+    // RFC de empresa capturado pero inválido/genérico: no hay con qué
+    // comparar — mismo tercer estado que `rfc_receptor_no_verificable`.
+    return false;
+  }
+  // Sin `empresaRfcConfigurado` (el tenant no ha capturado su RFC todavía),
+  // `cuadrarViaje` tampoco valida el receptor — mismo criterio aquí.
+  if (g.monedaExtranjera) return false;
+  if (g.renglonesAjenos) return false;
+  if (g.consumoBar) return false;
+  if (g.complementoHidrocarburosFalta) return false;
+  if (g.otroEjercicio) return false;
   return true;
 }
 
@@ -886,6 +1026,10 @@ export function resumirFiscal(gastos: GastoFiscal[], o: OpcionesFiscales): Resum
   let iepsDieselDocumentado = 0, subTotalCasetas = 0;
   let conCfdi = 0, conCfdiSinDesglose = 0, casetasSinSubTotal = 0;
   let porValidar = 0, vigentes = 0, cancelados = 0;
+  // RE-AUDITORÍA 25, FIS-REAUD-3 (ALTO): cuánto de `ivaAcreditable` pasó por
+  // la proporción del 15% de la RFA 2.9 EN VIVO (`propCombustible15`, abajo)
+  // — la que decide `combustible15SujetoADeriva` al final.
+  let ivaViaCombustible15 = 0;
 
   // AUDITORÍA 4, E4: esto sumaba el IVA COMPLETO de un viático que el motor
   // acreditaba en proporción al tope de LISR 28-V (LIVA 5-I: "en la proporción
@@ -957,6 +1101,12 @@ export function resumirFiscal(gastos: GastoFiscal[], o: OpcionesFiscales): Resum
         // El resto del traslado existe en el papel y NO se acredita: va a la
         // otra cubeta para que las dos sigan sumando el IVA desglosado.
         ivaNoAcreditable += g.ivaTraslado * (1 - proporcion);
+        // RE-AUDITORÍA 25, FIS-REAUD-3: este crédito depende del acumulado de
+        // combustible A HOY (`propCombustible15`/`o.combustibleEjercicio`),
+        // que sigue creciendo cada día — una liquidación FIRMADA hace tres
+        // meses fijó su reparto contra el acumulado que existía ENTONCES, no
+        // contra éste. Se marca aparte para que el llamador lo diga.
+        if (esCombustibleEfectivo) ivaViaCombustible15 += g.ivaTraslado * proporcion;
       } else {
         ivaNoAcreditable += g.ivaTraslado;
       }
@@ -996,6 +1146,10 @@ export function resumirFiscal(gastos: GastoFiscal[], o: OpcionesFiscales): Resum
     porValidar,
     vigentes,
     cancelados,
+    // RE-AUDITORÍA 25, FIS-REAUD-3: `> 0` y no `!== 0` — un residuo de
+    // redondeo de un centavo no es "hay combustible en efectivo tocando el
+    // 15% del ejercicio", y marcar por eso desconfiaría del panel siempre.
+    combustible15SujetoADeriva: round2(ivaViaCombustible15) > 0,
   };
 }
 
@@ -1173,6 +1327,16 @@ interface CeldaCruda {
   sobreTopeEfectivo: boolean;
   banda: number | null; rfcEmisor: string | null; host: string | null; emisor: string | null;
   totalTimbradoDia: number | null;
+  /** RE-AUDITORÍA 25, FIS-REAUD-1 (mig. 0316): ¿el viaje tiene liquidación FIRMADA? */
+  liquidacionFirmada: boolean;
+  /** RE-AUDITORÍA 25, FIS-REAUD-2 (mig. 0317): las 7 causas que le faltaban
+   *  a `ivaSostenible` frente a `SIN_IVA_ACREDITABLE` de engine.ts. */
+  rfcReceptor: string | null;
+  monedaExtranjera: boolean;
+  renglonesAjenos: boolean;
+  consumoBar: boolean;
+  complementoHidrocarburosFalta: boolean;
+  otroEjercicio: boolean;
   n: number; monto: number; iva: number; ieps: number; iepsNulos: number;
   subTotal: number; subTotalNulos: number;
   muestraId: string; muestraCfdi: string | null; fechaMax: string | null;
@@ -1221,6 +1385,13 @@ function leerCelda(x: unknown, i: number): CeldaCruda {
     sobreTopeEfectivo: boolReq('sobreTopeEfectivo'),
     banda: numOpt('banda'), rfcEmisor: str('rfcEmisor'), host: str('host'), emisor: str('emisor'),
     totalTimbradoDia: numOpt('totalTimbradoDia'),
+    liquidacionFirmada: boolReq('liquidacionFirmada'),
+    rfcReceptor: str('rfcReceptor'),
+    monedaExtranjera: boolReq('monedaExtranjera'),
+    renglonesAjenos: boolReq('renglonesAjenos'),
+    consumoBar: boolReq('consumoBar'),
+    complementoHidrocarburosFalta: boolReq('complementoHidrocarburosFalta'),
+    otroEjercicio: boolReq('otroEjercicio'),
     n, monto: num('monto'), iva: num('iva'), ieps: num('ieps'), iepsNulos: num('iepsNulos'),
     subTotal: num('subTotal'), subTotalNulos: num('subTotalNulos'),
     muestraId: strReq('muestraId'), muestraCfdi: str('muestraCfdi'), fechaMax: str('fechaMax'),
@@ -1407,6 +1578,13 @@ function aGastoFiscal(c: CeldaCruda, cortes: CortesPlazo): GastoFiscal {
     viajeFolio: null,
     operadorNombre: null,
     plazoVencido: plazoVencidoDeCelda(c, cortes),
+    liquidacionFirmada: c.liquidacionFirmada,
+    rfcReceptor: c.rfcReceptor,
+    monedaExtranjera: c.monedaExtranjera,
+    renglonesAjenos: c.renglonesAjenos,
+    consumoBar: c.consumoBar,
+    complementoHidrocarburosFalta: c.complementoHidrocarburosFalta,
+    otroEjercicio: c.otroEjercicio,
     celda: {
       n: c.n,
       sobreTopeEfectivo: c.sobreTopeEfectivo,
@@ -1447,6 +1625,19 @@ export async function getGastosFiscales(
     p_tope_alimentacion: o.viaticosTopeFiscalDiarioMxn,
     p_conceptos_alimentacion: [...CONCEPTOS_CON_TOPE_ALIMENTACION],
     p_cortes: cortes.cortes,
+    // RE-AUDITORÍA 25, FIS-REAUD-2: los parámetros de las 7 causas nuevas —
+    // SQL solo los aplica fila por fila, la ley (qué umbral, qué patrón, qué
+    // fecha) sigue viniendo de TS, igual que `p_tope_efectivo` de arriba.
+    p_claves_combustible: o.clavesCombustible,
+    p_vigente_desde: o.hidrocarburosVigenteDesde ?? null,
+    p_exigible_desde: o.hidrocarburosExigibleDesde ?? null,
+    p_umbral_renglones_ajenos: UMBRAL_RENGLONES_AJENOS,
+    // El motor de regex de Postgres (ARE) no entiende `\b` como límite de
+    // palabra —ahí `\b` es BACKSPACE—; su equivalente es `\y`. `SENAL_BAR` se
+    // sigue definiendo una sola vez en engine.ts; aquí solo se traduce el
+    // escape antes de mandarlo como parámetro (mismo patrón, dos motores).
+    p_patron_bar: SENAL_BAR.source.replace(/\\b/g, '\\y'),
+    p_hoy: hoy,
   }), 'getGastosFiscales');
   if (error) throw new Error(`getGastosFiscales: ${error.message}`);
   if (!Array.isArray(data)) {

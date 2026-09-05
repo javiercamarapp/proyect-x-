@@ -14,8 +14,8 @@
 // se confirma el watermark cuya ventana HTTP terminó completa.
 //
 // ── QUÉ DISPARA Y QUÉ SOLO SE REGISTRA ────────────────────────────────────
-// TODO evento entra a `evento_seguridad_flota` (el futuro agente de coaching
-// leerá de ahí — fuera de alcance hoy, documentado en el plan maestro). Solo
+// Los datos de cámara sólo entran con aviso histórico acreditado. Un grave
+// sin esa autorización conserva únicamente metadatos operativos mínimos. Sólo
 // los GRAVES (`esEventoGrave`: crash/impacto/volcadura) disparan el circuito
 // de asistencia — y el disparo es un BARRIDO idempotente sobre las filas
 // `grave` con unidad y `procesado_en` NULL, no un efecto del INSERT.
@@ -125,6 +125,7 @@ interface GravePendiente {
   operador_id?: unknown;
   viaje_folio?: unknown;
   intentos?: unknown;
+  privacidad_minima?: unknown;
 }
 
 interface EvaluacionPrivacidad {
@@ -401,7 +402,7 @@ async function reclamarGraves(
   if (process.env.NODE_ENV !== 'test') return { error: 'el cliente Supabase no expone rpc' };
   const { data, error } = await acotada(
     admin.from('evento_seguridad_flota')
-      .select('evento_id_externo, unidad_id, etiquetas, lat, lng, ocurrido_en, url_evento, max_g, viaje_id, operador_id, viaje_folio, intentos')
+      .select('evento_id_externo, unidad_id, etiquetas, lat, lng, ocurrido_en, url_evento, max_g, viaje_id, operador_id, viaje_folio, intentos, privacidad_minima')
       .eq('tenant_id', tenantId)
       .eq('proveedor', proveedor)
       .eq('grave', true)
@@ -486,6 +487,22 @@ async function drenarGravesPersistidos(
       if (opciones.venceEn !== undefined && opciones.ahoraMs() >= opciones.venceEn) {
         salida.backlog = true;
         return salida;
+      }
+      const minimoInvalido = p.privacidad_minima === true && (
+        typeof p.unidad_id !== 'string' || !p.unidad_id ||
+        !Array.isArray(p.etiquetas) || p.etiquetas.length !== 0 ||
+        [p.lat, p.lng, p.url_evento, p.max_g, p.viaje_id, p.operador_id, p.viaje_folio].some((v) => v !== null) ||
+        !Number.isFinite(Date.parse(String(p.ocurrido_en))) ||
+        Date.parse(String(p.ocurrido_en)) % 3_600_000 !== 0
+      );
+      const historicoInvalido = p.privacidad_minima === false && (!p.viaje_id || !p.operador_id);
+      if (minimoInvalido || historicoInvalido) {
+        await finalizarGrave(tenantId, proveedor, p, false, null, null, null, null,
+          'el claim no cumple el contrato de privacidad');
+        salida.backlog = true;
+        salida.error = 'el claim no cumple el contrato de privacidad';
+        if (typeof p.claim_token !== 'string') falloSinBackoffSimulado = true;
+        continue;
       }
       const disparo = await dispararAsistenciaPorEventoCamara({
         tenantId,
@@ -699,7 +716,12 @@ export async function sincronizarEventosDeFlota(
     return unidadId ? [{ evento, unidadId }] : [];
   });
   const privacidad = await evaluarPrivacidadHistorica(tenantId, conUnidad);
-  if (privacidad.error) return { ...base, backlog: true, error: privacidad.error };
+  if (privacidad.error) {
+    // La incertidumbre bloquea los datos de cámara y el watermark, pero no
+    // impide registrar una alerta mínima por unidad para asistencia.
+    base.backlog = true;
+    base.error = privacidad.error;
+  }
 
   const filas: Array<Record<string, unknown>> = [];
   const paraCuarentena: Array<{ evento: EventoSeguridadLeido; motivo: string; unidadId?: string | null }> = [];
@@ -725,9 +747,21 @@ export async function sincronizarEventosDeFlota(
         motivo: evaluacion?.motivo ?? 'sin_viaje_historico',
         unidadId,
       });
+      if (esEventoGrave(e.etiquetas)) {
+        filas.push({
+          tenant_id: tenantId, proveedor: conectorId,
+          // Clave operativa estable: evita una segunda asistencia cuando la
+          // misma referencia reaparece con autorización. No es anonimización.
+          evento_id_externo: e.eventoId, unidad_id: unidadId,
+          privacidad_minima: true, grave: true, ocurrido_en: horaOpaca(e.ocurridoEn),
+          asset_id: null, etiquetas: [], lat: null, lng: null,
+          url_evento: null, max_g: null, viaje_id: null, operador_id: null, viaje_folio: null,
+        });
+      }
       continue;
     }
     filas.push({
+      privacidad_minima: false,
       tenant_id: tenantId,
       proveedor: conectorId,
       evento_id_externo: e.eventoId,
@@ -781,7 +815,10 @@ export async function sincronizarEventosDeFlota(
   // Una fila legacy con unidad_id=NULL ya ocupa la llave única. El upsert con
   // ignoreDuplicates no puede repararla, por eso los eventos recuperados
   // actualizan explícitamente esa misma fila después de pasar privacidad.
-  const persistidos = new Set(filas.map((f) => String(f.evento_id_externo)));
+  // Una alerta mínima no resuelve el permiso del dato original. Tampoco
+  // debe enriquecerse al reparar otra referencia del mismo evento.
+  const persistidos = new Set(filas.filter((f) => f.privacidad_minima === false)
+    .map((f) => String(f.evento_id_externo)));
   const recuperadosUnicos = [...new Map(
     recuperados.eventos.map((evento) => [evento.eventoId, evento]),
   ).values()];
@@ -797,7 +834,8 @@ export async function sincronizarEventosDeFlota(
         })
         .eq('tenant_id', tenantId)
         .eq('proveedor', conectorId)
-        .eq('evento_id_externo', e.eventoId),
+        .eq('evento_id_externo', e.eventoId)
+        .eq('privacidad_minima', false),
       'eventos.reparar_legacy_null',
     );
     const claims = recuperados.claims.get(e.eventoId) ?? [];

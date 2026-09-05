@@ -38,6 +38,7 @@
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
+import { traerTodo } from '../pg';
 import { hoyMx, usd, numero, round2 } from '@/lib/formato';
 import { appUrl } from '@/lib/env';
 import { estadoLegalProduccion } from '@/lib/legal/config';
@@ -425,16 +426,22 @@ async function leerCorridas(desdeIso: string, hastaIso: string): Promise<{ corri
 /** La vara: costo por corrida de cada agente en los 28 días ANTERIORES a la
  *  ventana. Solo corridas con costo medido — las nulas no promedian. */
 async function leerBaseCosto(desdeIso: string, hastaIso: string): Promise<BaseCosto[]> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('agente_corrida')
-    .select('agente, costo_usd')
-    .not('costo_usd', 'is', null)
-    .gte('inicio', desdeIso)
-    .lt('inicio', hastaIso)
-    .limit(5000), 'backoffice.calidad_base');
-  if (error) throw new Error(`leerBaseCosto: ${error.message}`);
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(5000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default — `traerTodo` pagina y LANZA en
+  // vez de devolver una base de costo truncada.
+  const data = await traerTodo<{ agente: string; costo_usd: unknown }>(
+    (d, h) => acotada(admin.from('agente_corrida')
+      .select('agente, costo_usd')
+      .not('costo_usd', 'is', null)
+      .gte('inicio', desdeIso)
+      .lt('inicio', hastaIso)
+      .order('id')
+      .range(d, h), 'backoffice.calidad_base'),
+    'backoffice.calidad_base',
+  );
   const acc = new Map<string, { suma: number; n: number }>();
-  for (const f of (data ?? []) as Array<{ agente: string; costo_usd: unknown }>) {
+  for (const f of data) {
     const a = acc.get(f.agente) ?? { suma: 0, n: 0 };
     a.suma += Number(f.costo_usd);
     a.n += 1;
@@ -445,15 +452,20 @@ async function leerBaseCosto(desdeIso: string, hastaIso: string): Promise<BaseCo
 
 /** Las piezas que un humano resolvió en la ventana. LANZA si no se leen. */
 async function leerPiezasResueltas(desdeIso: string, hastaIso: string): Promise<PiezaResuelta[]> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('cola_aprobacion')
-    .select('agente, estado, titulo, motivo_rechazo')
-    .neq('estado', 'pendiente')
-    .gte('resuelto_en', desdeIso)
-    .lt('resuelto_en', hastaIso)
-    .limit(2000), 'backoffice.calidad_piezas');
-  if (error) throw new Error(`leerPiezasResueltas: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
+  const admin = supabaseAdmin();
+  // CAP-2 (re-auditoría 25, MEDIO): `.limit(2000)` recortaba en silencio a los
+  // 1,000 que PostgREST entrega por default.
+  const data = await traerTodo<Record<string, unknown>>(
+    (d, h) => acotada(admin.from('cola_aprobacion')
+      .select('agente, estado, titulo, motivo_rechazo')
+      .neq('estado', 'pendiente')
+      .gte('resuelto_en', desdeIso)
+      .lt('resuelto_en', hastaIso)
+      .order('id')
+      .range(d, h), 'backoffice.calidad_piezas'),
+    'backoffice.calidad_piezas',
+  );
+  return data.map((f) => ({
     agente: String(f.agente),
     estado: f.estado as PiezaResuelta['estado'],
     titulo: String(f.titulo ?? ''),

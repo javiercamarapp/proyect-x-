@@ -15,13 +15,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 let sesion: { userId: string; tenantId: string | null; rol: string; nombre: string } | null = null;
 vi.mock('@/lib/auth/session', () => ({ getSessionTenant: async () => sesion }));
 
-let veredictoMfa: 'ok' | 'inscribir' | 'retar' | 'no_verificable' = 'ok';
-vi.mock('@/lib/auth/mfa', async (original) => ({
-  ...(await original<Record<string, unknown>>()),
-  veredictoMfaSuperadmin: async () => veredictoMfa,
-}));
-vi.mock('@/lib/supabase/server', () => ({ supabaseServer: async () => ({}) }));
-
 const apagar = vi.fn(async (_id: string, _motivo: string, _quien: string) => { void _id; void _motivo; void _quien; });
 const encender = vi.fn(async (_id: string, _quien: string) => { void _id; void _quien; });
 vi.mock('@/lib/likida/interruptores', () => ({
@@ -35,8 +28,17 @@ vi.mock('@/lib/supabase/admin', () => ({
   }),
 }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+// SEC-1 / RT-1 (auditoría 25, re-auditoría): `mfaSuperadminObligatorio` se
+// deja REAL (lee el env, igual que `api-superadmin.test.ts`) para que la
+// palanca sea la que se prueba; solo `veredictoMfaSuperadmin` se mockea.
+const veredictoMfa = vi.fn(async (): Promise<string> => 'ok');
+vi.mock('@/lib/auth/mfa', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  veredictoMfaSuperadmin: () => veredictoMfa(),
+}));
+vi.mock('@/lib/supabase/server', () => ({ supabaseServer: async () => ({}) }));
 
-const { POST } = await import('./route');
+const { POST, GET } = await import('./route');
 
 const apagarGlobal = (cabeceras: Record<string, string>) =>
   POST(new Request('https://app.likida.ai/api/admin/palette', {
@@ -47,9 +49,10 @@ const apagarGlobal = (cabeceras: Record<string, string>) =>
 
 beforeEach(() => {
   sesion = { userId: 'u-javier', tenantId: 't-1', rol: 'superadmin', nombre: 'Javier' };
-  veredictoMfa = 'ok';
-  vi.unstubAllEnvs();
   apagar.mockClear(); encender.mockClear();
+  veredictoMfa.mockReset();
+  veredictoMfa.mockResolvedValue('ok');
+  vi.unstubAllEnvs();
 });
 
 describe('la puerta de origen (SEG-9)', () => {
@@ -93,7 +96,7 @@ describe('la puerta de rol sigue en pie', () => {
     'superadmin con MFA obligatorio y veredicto %s: 403 y cero mutaciones',
     async (resultado) => {
       vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
-      veredictoMfa = resultado;
+      veredictoMfa.mockResolvedValue(resultado);
       expect((await apagarGlobal({ 'sec-fetch-site': 'same-origin' })).status).toBe(403);
       expect(apagar).not.toHaveBeenCalled();
       expect(encender).not.toHaveBeenCalled();
@@ -117,4 +120,47 @@ describe('cuerpo acotado durante lectura', () => {
 it.each([{operacion:'apagar',id:['global']},{operacion:'apagar',id:'global',motivo:42}])('tipos inválidos no cambian interruptores %j',async(cuerpo)=>{
  const p=peticionStream('https://app.likida.ai/api/admin/palette',JSON.stringify(cuerpo));
  expect((await POST(p.req)).status).toBe(400);expect(apagar).not.toHaveBeenCalled();expect(encender).not.toHaveBeenCalled();
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEC-1 / RT-1 (auditoría 25, SEGURIDAD, re-auditoría, encontrado dos veces).
+// Esta ruta traía su PROPIA copia local de `sesionSuperadmin()` que solo
+// comprobaba `rol === 'superadmin'`, sin preguntar por `veredictoMfaSuperadmin`
+// — el mismo hueco que esta ronda ya cerró en mapa-prospectos/puerta.ts,
+// qa/puerta.ts y copiloto/puerta.ts consolidándolos en
+// `@/lib/auth/api-superadmin`. Una cookie de superadmin phishada (sin el
+// segundo factor) seguía pudiendo apagar el kill switch global, WhatsApp o
+// facturación con solo el POST same-origin.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('SEC-1 / RT-1: el segundo factor gatea el palette también', () => {
+  it('GET: palanca puesta, veredicto no ok: 403 — ni interruptores ni flotas se enseñan', async () => {
+    vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+    veredictoMfa.mockResolvedValue('retar');
+    const r = await GET();
+    expect(r.status).toBe(403);
+  });
+
+  it.each(['inscribir', 'retar', 'no_verificable'])(
+    'POST: palanca puesta, veredicto %s: 403 y NINGÚN interruptor se toca',
+    async (veredicto) => {
+      vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+      veredictoMfa.mockResolvedValue(veredicto);
+      const r = await apagarGlobal({ 'sec-fetch-site': 'same-origin' });
+      expect(r.status).toBe(403);
+      expect(apagar).not.toHaveBeenCalled();
+    });
+
+  it('POST: palanca puesta, veredicto ok: sí apaga', async () => {
+    vi.stubEnv('LIKIDA_SUPERADMIN_MFA', 'obligatorio');
+    veredictoMfa.mockResolvedValue('ok');
+    const r = await apagarGlobal({ 'sec-fetch-site': 'same-origin' });
+    expect(r.status).toBe(200);
+    expect(apagar).toHaveBeenCalledWith('global', 'prueba', 'u-javier');
+  });
+
+  it('palanca APAGADA (default): entra sin preguntar por el factor', async () => {
+    const r = await apagarGlobal({ 'sec-fetch-site': 'same-origin' });
+    expect(r.status).toBe(200);
+    expect(veredictoMfa).not.toHaveBeenCalled();
+  });
 });

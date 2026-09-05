@@ -262,6 +262,67 @@ describe('emitir lleva el mismo candado de una-sola-vez que las demás tools de 
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RE-AUDITORÍA 25, FASE 3 (TC-CANDADO-CLIC-BYPASS, MEDIO) — el candado de
+// arriba solo envolvía `case 'emitir'`. La tool hermana `clic` podía apretar
+// EL MISMO botón físico sin pasar por `reclamarEmision`/`sellarEmision`.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('TC-CANDADO-CLIC-BYPASS: `clic` sobre el botón de emisión lleva el MISMO candado que `emitir`', () => {
+  it('un solo `clic` en el botón de emisión reclama y sella el candado — exactamente como `emitir`', async () => {
+    guion = [{ tool: 'clic', args: { selector: '#facturar' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(claimMutation).toHaveBeenCalledTimes(1);
+    const [tenantId, llave, nombreTool] = claimMutation.mock.calls[0] as [string, string, string];
+    expect(tenantId).toBe('t-1');
+    expect(nombreTool).toBe('facturacion.computer_use.emitir');
+    expect(clicado).toEqual(['#facturar']);
+    expect(completeMutation).toHaveBeenCalledTimes(1);
+    expect(completeMutation).toHaveBeenCalledWith('t-1', llave, 'tok-1', { clicado: true });
+  });
+
+  it('el bypass exacto del hallazgo: `emitir` primero y luego `clic` sobre el MISMO botón NO lo vuelve a apretar', async () => {
+    claimMutation
+      .mockResolvedValueOnce({ kind: 'execute', token: 'tok-1' })
+      .mockResolvedValueOnce({ kind: 'cached', result: { clicado: true } });
+    guion = [
+      { tool: 'emitir', args: { selector: '#facturar' } },
+      // El modelo, en vez de reintentar con `emitir`, usa `clic` sobre el
+      // botón que sigue en el inventario — la ruta que antes NO pasaba por
+      // el candado.
+      { tool: 'clic', args: { selector: '#facturar' } },
+    ];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toEqual(['#facturar']);              // un solo clic físico
+    expect(completeMutation).toHaveBeenCalledTimes(1);    // no se vuelve a sellar
+  });
+
+  it('si la llave de emisión coincide con "busy", `clic` tampoco aprieta el botón', async () => {
+    claimMutation.mockResolvedValueOnce({ kind: 'busy' });
+    guion = [{ tool: 'clic', args: { selector: '#facturar' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toHaveLength(0);
+  });
+
+  it('CONTROL — `clic` en un botón que NO es el de emisión sigue sin candado (no rompe el uso normal de `clic`)', async () => {
+    guion = [{ tool: 'clic', args: { selector: '#validar' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toEqual(['#validar']);
+    expect(claimMutation).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — "ver factura"/"descargar factura" no disparan el candado: solo la ACCIÓN de emitir, no la palabra "factura"', async () => {
+    guion = [{ tool: 'clic', args: { selector: 'a:has-text("Descargar factura")' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toEqual(['a:has-text("Descargar factura")']);
+    expect(claimMutation).not.toHaveBeenCalled();
+  });
+});
+
 describe('lo que no se toca nunca', () => {
   it('el checkbox de partidos políticos se niega, aunque el modelo insista', async () => {
     // Marcarlo convierte el CFDI en un donativo a un partido. Ya estaba
