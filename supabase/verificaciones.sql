@@ -17008,7 +17008,7 @@ end $$;
 --
 -- Lo que este bloque asevera (la FORMA del contrato, que es lo que la base
 -- puede demostrar; la clasificación sigue viviendo en TS — bloque 220):
---   (a) cada fila trae `version` = 281;
+--   (a) cada fila trae `version` = 342 (contrato vigente, mig. 0342);
 --   (b) cada gasto trae `monto`, `folioNorm`, `cfdiUuid` y `formaPago` — lo que
 --       `copiasDeComprobante`, `cubetaDe` y `proporcionesDeducibles` leen —, y
 --       las DOS fotos del mismo ticket vienen las dos (deduplica la ruta con la
@@ -17021,7 +17021,7 @@ declare
   l uuid := gen_random_uuid(); op uuid := gen_random_uuid();
   g1 uuid := gen_random_uuid(); g2 uuid := gen_random_uuid();
   fila jsonb;
-  version_281 boolean := false;
+  version_vigente boolean := false;
   insumos_por_gasto boolean := false;
   dos_fotos boolean := false;
   piso_subtotal boolean := false;
@@ -17061,7 +17061,7 @@ begin
     from jsonb_array_elements(public.poliza_datos_tenant(t, current_date - 1, current_date + 1)) x
    limit 1;
 
-  version_281       := (fila->>'version')::int = 281;
+  version_vigente   := (fila->>'version')::int = 342;
   insumos_por_gasto := (fila->'gastos'->0->>'monto')::numeric = 3480
                        and (fila->'gastos'->0->>'folioNorm') = '5461'
                        and (fila->'gastos'->0->>'formaPago') = '01'
@@ -17071,7 +17071,7 @@ begin
   dos_fotos         := jsonb_array_length(fila->'gastos') = 2;
 
   raise exception E'POLIZA_V2_0281  version=%  insumos-por-gasto=%  dos-fotos=%  piso-subtotal=%  piso-descuento=%   (esperado t / t / t / t / t)',
-    version_281, insumos_por_gasto, dos_fotos, piso_subtotal, piso_descuento;
+    version_vigente, insumos_por_gasto, dos_fotos, piso_subtotal, piso_descuento;
 end $$;
 
 -- ── 229. El agregado fiscal parte las celdas por el sello del complemento de pago (mig. 0282) ──
