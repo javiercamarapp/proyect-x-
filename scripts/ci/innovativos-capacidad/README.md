@@ -61,3 +61,8 @@ Para detener con seguridad, crear el archivo `STOP` en el directorio de salida. 
 ## Evidencia del 4–5 de septiembre de 2026
 
 Reporte y artefactos completos: `/private/tmp/innovativos-capacidad/REPORT.md`. El soak iniciado el 5 de septiembre a las 02:50:29 UTC utiliza una copia congelada del runtime en `soak24h/runtime`; los cambios posteriores de estos scripts no alteran ese proceso. Fin previsto: 6 de septiembre a las 02:50:29 UTC. Su estado se conserva en `soak24h/soak-process.json`, `soak-telemetry.jsonl` y, cuando termine, `soak-finished.json`.
+
+
+### Resultado del primer intento largo
+
+El intento iniciado el 5 de septiembre a las 02:50:29 UTC quedó **NO APROBADO** y se detuvo mediante `STOP` aproximadamente a las 20:19:09 UTC. Duró 17 h 28 min 40 s; `completed_full_duration=false`. El Mac entró repetidamente en reposo y la latencia programada final incumplió los umbrales (p95 902,529.732 ms, p99 990,498.052 ms). Se conservaron las muestras originales; la diferencia entre latencia y retraso de planificación se usa sólo para diagnóstico, nunca para aprobar la corrida. La repetición está pendiente de condiciones de energía/host acordadas. No hay otro soak iniciado. Ver el cierre fechado en `RESULTADOS-2026-09-04.md`.

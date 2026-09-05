@@ -1,6 +1,6 @@
 # Capacidad y recuperación sintética para Transportes Innovativos
 
-Estado: evidencia SQL local aprobada en el alcance descrito. Soak de 24 horas **en curso**, sin calificación final. No constituye autorización de producción ni certificación de 50,000 viajes mensuales E2E.
+Estado actualizado 2026-09-05 20:19 UTC: evidencia SQL local aprobada en el alcance descrito. Soak de 24 horas **NO APROBADO**, detenido por suspensión repetida del host y por incumplir sus percentiles originales. No constituye autorización de producción ni certificación de 50,000 viajes mensuales E2E.
 
 ## Entorno y método
 
@@ -71,3 +71,22 @@ Stop seguro: crear `/private/tmp/innovativos-capacidad/soak24h/STOP`. El resulta
 - Reproducción versionable: `scripts/ci/innovativos-capacidad/README.md` y sus scripts.
 
 Pendientes fuera de este alcance: finalización de las 24 horas, E2E con proveedores autorizados, imágenes y Storage reales, cuota/costo por flujo, carga HTTP distribuida, backup externo/PITR y verificación de drift productivo antes de un despliegue.
+
+
+## Cierre del soak: no aprobado por suspensión del host
+
+La muestra inicial de diez minutos se conserva arriba como observación histórica; no es el resultado de la corrida larga. El registro original también quedó preservado en el commit local `2e6203a7`. No se descartaron muestras lentas ni se cambiaron los umbrales.
+
+Tras la autorización del coordinador se creó `STOP` el 5 de septiembre de 2026. `soak-finished.json` registra `reason: stop-file`, código de salida `-2`, duración real observada de **62,920.144 segundos (17 h 28 min 40 s)** y `completed_full_duration: false`. El cierre ocurrió aproximadamente a las **20:19:09 UTC**. A las 20:19:21 UTC ya no existían los PID propios 19175/19208 ni conexiones PostgreSQL con `application_name=innovativos_cap_soak`. No se detuvo ninguna pila UX ni otra base.
+
+Resultado final sin eliminar muestras: **125,704 transacciones registradas como exitosas, cero fallos de transacción registrados, p50 345,165.595 ms, p95 902,529.732 ms, p99 990,498.052 ms, máximo 1,077,239.321 ms**. Cero deadlocks y cero locks en las muestras disponibles. Crecimiento de base: 21,798,912 bytes. `local_sql_acceptance: false`. Que no haya fallos SQL registrados no convierte la corrida interrumpida en un éxito.
+
+El diagnóstico de las 15:53 UTC identificó suspensión del Mac: sólo 102 muestras de telemetría en aproximadamente trece horas, 61 huecos de más de sesenta segundos y uno de 3,768.472 segundos. Se preservaron 481 entradas de sleep/wake del intervalo. `pmset` registra suspensiones repetidas de 928–1,029 segundos y despertares de mantenimiento mientras el equipo estaba en batería.
+
+El log de pgbench distingue latencia programada y retraso de planificación. En la muestra diagnóstica de 93,440 transacciones, p95 de latencia fue 902,906.690 ms y p95 del retraso de planificación fue 902,905.710 ms. La diferencia diagnóstica tuvo p95 de 1.848 ms, **pero no sustituye ni recalifica la latencia original**. Incluso su outlier de 976,856.176 ms coincide con una suspensión: operación iniciada a las 05:25:29 UTC y completada a las 05:41:46 UTC; el host registra sleep de 980 segundos en ese intervalo.
+
+Una consulta contemporánea mostró los cinco clientes idle/ClientRead y la bandeja de documentos ejecutó en 0.066 ms. Esto respalda que la suspensión y el retraso del generador contaminan la corrida; no demuestra ausencia de problemas durante períodos sin telemetría ni capacidad SQL sostenida de 24 horas.
+
+**Repetición pendiente**: requiere un host efectivamente despierto durante toda la corrida, condiciones de energía acordadas y nuevo directorio/base de medición. No se reinició el soak ni se desactivó el reposo global. Conviene fallar la siguiente corrida si existen huecos de telemetría incompatibles con continuidad; ese cambio de arnés debe revisarse y aplicarse antes de comenzar otra prueba.
+
+Artefactos adicionales preservados en `/private/tmp/innovativos-capacidad/soak24h/`: `STOP`, `soak-finished.json`, `soak-summary.json`, `suspension-diagnostic.json`, `longest-execution-diagnostic.json`, `host-sleep-evidence.log` y los logs originales completos de pgbench.
