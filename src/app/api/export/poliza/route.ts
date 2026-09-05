@@ -47,6 +47,7 @@ type Formato = 'contpaqi' | 'sap_b1';
 
 interface FilaPoliza {
   liquidacionId: string;
+  revision?: 'pendiente' | 'aprobada' | 'ajustada' | 'rechazada';
   folioViaje: string;
   operador: string;
   fecha: string;
@@ -89,6 +90,8 @@ interface GastoRpc {
   pagadoForma?: string | null;
   ivaRetenido?: number | null;
   isrRetenido?: number | null;
+  ivaTraslado?: number | null;
+  iepsTraslado?: number | null;
 }
 
 /**
@@ -99,14 +102,33 @@ interface GastoRpc {
  * contador asentaba el 100% como deducible. Aquí se FALLA CERRADO y se dice
  * qué migración falta.
  */
-const RPC_VERSION_MINIMA = 281;
+const RPC_VERSION_MINIMA = 342;
 
 function rpcDesactualizada(f: FilaPoliza): string | null {
   if (!Array.isArray(f.gastos)) return 'la RPC no entrega `gastos` por comprobante (anterior a la 0272)';
   if (typeof f.version !== 'number' || f.version < RPC_VERSION_MINIMA) {
-    return `la RPC va en una versión anterior a la ${RPC_VERSION_MINIMA} (sin monto, forma de pago ni folio por comprobante)`;
+    return `la RPC va en una versión anterior a la ${RPC_VERSION_MINIMA} (sin revisión humana ni traslados fiscales por comprobante)`;
   }
+  if (!['pendiente', 'aprobada', 'ajustada', 'rechazada'].includes(f.revision ?? '')) return 'la RPC no entrega un estado de revisión reconocido';
   return null;
+}
+
+/** El ajuste cambia monto; el CFDI conserva base, descuentos y tributos. */
+function ajustesIncompatibles(f: FilaPoliza): string[] {
+  if (f.revision !== 'ajustada') return [];
+  const copias = copiasDeComprobante((f.gastos ?? []).map(aGasto));
+  return (f.gastos ?? []).flatMap((g) => {
+    if (copias.has(g.id) || (num(g.monto) ?? 0) <= 0) return [];
+    const campos = [g.monto, g.subtotal, g.descuento ?? 0, g.ivaTraslado,
+      g.iepsTraslado, g.ivaRetenido ?? 0, g.isrRetenido ?? 0];
+    if (!Object.hasOwn(g, 'ivaTraslado') || !Object.hasOwn(g, 'iepsTraslado') || campos.some((v) => num(v) === undefined)) {
+      return [`ajuste del comprobante ${g.id}: falta un desglose fiscal completo para comprobar su importe. Revisa o corrige el XML antes de exportar.`];
+    }
+    const [monto, subtotal, descuento, iva, ieps, retenidoIva, retenidoIsr] = campos as number[];
+    const totalFiscal = round2(subtotal - descuento + iva + ieps - retenidoIva - retenidoIsr);
+    if (Math.abs(round2(monto - totalFiscal)) <= 0.01) return [];
+    return [`ajuste del comprobante ${g.id}: el importe ${monto.toFixed(2)} no coincide con el desglose fiscal ${totalFiscal.toFixed(2)}. Revisa el ajuste y corrige los datos del comprobante antes de exportar; la diferencia no se convierte en IVA/IEPS.`];
+  });
 }
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
@@ -323,13 +345,27 @@ export async function GET(req: Request) {
     return NextResponse.json({
       error: 'rpc_desactualizada',
       detalle:
-        `No se puede armar la póliza: ${desactualizada}. Sin esos insumos el archivo asentaría el 100% ` +
-        'de cada gasto como deducible, contradiciendo el PDF de cada liquidación. No se genera.',
-      migracionEsperada: `supabase/migrations/0${RPC_VERSION_MINIMA}_poliza_v2_cubetas_sin_copias.sql`,
+        `No se puede armar la póliza: ${desactualizada}. Faltan insumos para comprobar la revisión humana ` +
+        'y el desglose fiscal; actualiza la base de datos antes de exportar. No se genera un archivo parcial.',
+      migracionEsperada: 'supabase/migrations/0342_poliza_revision_y_desglose.sql',
+    }, { status: 409 });
+  }
+
+  const sinFirma = filas.filter((f) => f.revision !== 'aprobada' && f.revision !== 'ajustada');
+  if (sinFirma.length > 0) {
+    return NextResponse.json({
+      error: 'liquidaciones_sin_firma',
+      detalle: 'El periodo contiene liquidaciones sin revisión aprobada o ajustada. Revísalas antes de exportar: no se genera un archivo parcial ni se asienta IVA sin firma.',
+      folios: sinFirma.map((f) => f.folioViaje),
     }, { status: 409 });
   }
 
   for (const f of filas) {
+    const ajustes = ajustesIncompatibles(f);
+    if (ajustes.length > 0) {
+      bloqueos.push({ folio: f.folioViaje, falta: ajustes });
+      continue;
+    }
     const sinBase = (f.porConcepto ?? []).filter((c) => c.baseConocida !== true || c.subtotal === null);
     if (sinBase.length > 0) {
       bloqueos.push({
