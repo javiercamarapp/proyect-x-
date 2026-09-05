@@ -109,7 +109,7 @@ export default async function PaginaViajes({
       return { error: 'No pude leer el archivo — asegúrate de que sea CSV o Excel.' };
     }
 
-    const lectura = interpretarFilasViajes(matriz);
+    const lectura = interpretarFilasViajes(matriz, { permitirFinanzas: puedeVerArea(sesion.rol, 'dinero') });
     if (lectura.error && lectura.viajes.length === 0) return { error: lectura.error };
 
     const r = await importarViajes(tenantId, lectura.viajes);

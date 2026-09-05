@@ -44,8 +44,10 @@ function BotonCrear() {
   );
 }
 
-export function FormaViaje({ action, buscarCatalogo, totalOperadores, totalClientes, totalUnidades }: {
+export function FormaViaje({ action, buscarCatalogo, totalOperadores, totalClientes, totalUnidades, puedeCapturarDinero = false }: {
   action: AccionCrearViaje;
+  /** Sólo visibilidad; la acción vuelve a exigir el permiso de la sesión viva. */
+  puedeCapturarDinero?: boolean;
   /** La búsqueda de catálogos en el servidor (server action del host, con el
    *  tenant por closure). Una sola referencia para los tres combos. */
   buscarCatalogo: BuscarCatalogo;
@@ -85,11 +87,11 @@ export function FormaViaje({ action, buscarCatalogo, totalOperadores, totalClien
           <input id="destino" name="destino" type="text" maxLength={120} placeholder="Monterrey"
             className={CAMPO} style={{ background: 'var(--surface)' }} />
         </div>
-        <div>
+        {puedeCapturarDinero && <div>
           <label htmlFor="anticipo" className={ETIQUETA}>Anticipo (MXN)</label>
           <input id="anticipo" name="anticipo" type="number" min={0} step="0.01" placeholder="8000"
             className={`${CAMPO} cifra-mono`} style={{ background: 'var(--surface)' }} />
-        </div>
+        </div>}
         <div>
           <label htmlFor="operadorId" className={ETIQUETA}>Operador</label>
           {/* SIN "Sin asignar todavía". `viaje.operador_id` es NOT NULL desde la
@@ -127,7 +129,7 @@ export function FormaViaje({ action, buscarCatalogo, totalOperadores, totalClien
           quien conoce lo que se le cobra al cliente. Juntos en la misma
           cuadrícula, el anticipo y el ingreso se confunden — y confundirlos
           produce márgenes que se ven bien y están mal. */}
-      <fieldset className="pt-3.5 border-t" style={{ borderColor: 'var(--line)' }}>
+      {puedeCapturarDinero && <fieldset className="pt-3.5 border-t" style={{ borderColor: 'var(--line)' }}>
         <legend className="etiqueta-mono text-[10px] uppercase mb-2.5" style={{ color: 'var(--faint)' }}>
           Lo que se le cobra al cliente · opcional
         </legend>
@@ -167,7 +169,13 @@ export function FormaViaje({ action, buscarCatalogo, totalOperadores, totalClien
           Sin el ingreso capturado, este viaje no entra en la medición de margen — ni la suya ni la de
           su ruta, su cliente o su unidad. Se puede llenar después.
         </p>
-      </fieldset>
+      </fieldset>}
+
+      {!puedeCapturarDinero && <div>
+        <label htmlFor="kmRecorridos" className={ETIQUETA}>Kilómetros</label>
+        <input id="kmRecorridos" name="kmRecorridos" type="text" inputMode="numeric" placeholder="1,240"
+          className={`${CAMPO} cifra-mono`} style={{ background: 'var(--surface)' }} />
+      </div>}
 
       {estado?.error && (
         <div className="rounded-lg px-3 py-2.5 text-[13px]" style={{ background: 'var(--badbg)', color: 'var(--bad)' }}>

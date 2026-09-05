@@ -31,15 +31,14 @@ function hrefPaginaActivos(sufijo: string, folioPedido: string, pagina: number):
  * La foto de la mañana (tablero de solo lectura) vive en el Resumen del
  * encargado; aquí cada sección tiene su botón y todos funcionan.
  *
- * CERO PESOS EN TODA LA PANTALLA a propósito: esta página es del área
- * `operacion` y el jefe de tráfico no ve dinero. El anticipo se CAPTURA en
- * la forma (el motor lo necesita) pero no se lista ni se suma en ninguna
- * columna — el estándar de siempre del despacho.
+ * El encargado captura sólo operación. Los campos financieros y comerciales
+ * se ofrecen únicamente a quien tiene permiso de dinero.
  */
 export function VistaDespacho({
   tablero, sinAsignar, activos, sufijo, folioPedido, buscarCatalogo, totalOperadores, totalClientes, totalUnidades,
-  carga, crear, asignarYAvisar, asignarUnidadViaje, reenviarAviso, altaOperador,
+  puedeCapturarDinero = false, carga, crear, asignarYAvisar, asignarUnidadViaje, reenviarAviso, altaOperador,
 }: {
+  puedeCapturarDinero?: boolean;
   tablero: TableroOperacion | null;
   sinAsignar: ViajeSinAsignar[];
   /** FE-2: consulta propia, ordenada por urgencia y con `count` real —
@@ -135,7 +134,7 @@ export function VistaDespacho({
               <p className="text-[11px] mb-3" style={{ color: 'var(--faint)' }}>
                 Nace abierto: desde ese momento el operador puede mandar comprobantes por WhatsApp
               </p>
-              <FormaViaje action={crear} buscarCatalogo={buscarCatalogo}
+              <FormaViaje action={crear} buscarCatalogo={buscarCatalogo} puedeCapturarDinero={puedeCapturarDinero}
                 totalOperadores={totalOperadores} totalClientes={totalClientes} totalUnidades={totalUnidades} />
             </section>
           </div>

@@ -151,7 +151,7 @@ export function VistaViajes({
                     <div className="absolute left-0 right-0 z-10 mt-2 px-4">
                       <div className="card p-4 shadow-[var(--shadow-pop)]">
                         <h2 className="font-display text-[15px] font-semibold mb-2">Importar desde tu TMS</h2>
-                        <ImportarViajes importar={importar} />
+                        <ImportarViajes importar={importar} verDinero={verDinero} />
                       </div>
                     </div>
                   </details>

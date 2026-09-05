@@ -36,7 +36,7 @@ export type AccionImportar = (prev: ResultadoImportarUI | null, fd: FormData) =>
  * esto, el conciliador de peajes no tiene contra qué cruzar. La lectura y
  * la inserción viven en el servidor; NADIE recibe WhatsApp por un import.
  */
-export function ImportarViajes({ importar }: { importar: AccionImportar }) {
+export function ImportarViajes({ importar, verDinero = false }: { importar: AccionImportar; verDinero?: boolean }) {
   const [estado, accion] = useActionState(importar, null);
   const router = useRouter();
 
@@ -58,8 +58,13 @@ export function ImportarViajes({ importar }: { importar: AccionImportar }) {
       </form>
       <p className="text-[11px] mt-1.5" style={{ color: 'var(--faint)' }}>
         Máximo 4 MB por archivo.{' '}
-        Columnas: folio (obligatoria), origen, destino, fecha, anticipo, operador, unidad, cliente, ingreso, km.
-        La unidad y el cliente se amarran contra el catálogo; ingreso vacío no es cero.
+        {verDinero ? <>
+          Columnas: folio (obligatoria), origen, destino, fecha, anticipo, operador, unidad, cliente, ingreso, km.
+          La unidad y el cliente se amarran contra el catálogo; ingreso vacío no es cero.
+        </> : <>
+          Columnas: folio (obligatoria), origen, destino, fecha, operador, unidad y km.
+          Sube únicamente estas columnas operativas. La unidad se amarra contra su catálogo.
+        </>}{' '}
         Sin avisos de WhatsApp; los folios que ya existen se saltan solos.
       </p>
       {estado?.error && <p className="text-[12px] mt-1.5" style={{ color: 'var(--bad)' }}>{estado.error}</p>}
@@ -96,7 +101,7 @@ export function ImportarViajes({ importar }: { importar: AccionImportar }) {
               Regístrala en Unidades y vuelve a subir el archivo: los ya creados se saltan solos.
             </p>
           )}
-          {r.sinCliente.length > 0 && (
+          {verDinero && r.sinCliente.length > 0 && (
             <p style={{ color: 'var(--warn)' }}>
               {r.sinCliente.length === 1 ? '1 viaje NO se creó' : `${r.sinCliente.length} viajes NO se crearon`} porque
               su cliente no está dado de alta ({r.sinCliente.join(', ')})
