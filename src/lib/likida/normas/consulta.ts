@@ -58,7 +58,7 @@ export const TEMAS: Record<TemaNormativo, readonly string[]> = {
     'rfa-2026-2.2', 'lft-110-111-263',
   ],
   cfdi_y_facturacion: [
-    'cff-29-A', 'criterio-1-CFF-PI', 'cff-69-B', 'rmf-2026-2.7.1.21',
+    'cff-29-A', 'criterio-1-CFF-PI', 'cff-69-B', 'rmf-2026-2.7.1.21', 'rmf-2026-2.7.1.29',
     'rmf-2026-2.7.1.48', 'politica-portales-plazos-facturacion',
   ],
   iva_acreditable: ['liva-art-5', 'lif-2026-art-20-A', 'rliva-3-fr-II'],

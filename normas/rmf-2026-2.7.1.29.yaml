@@ -1,0 +1,38 @@
+id: rmf-2026-2.7.1.29
+tipo: regla_general
+jerarquia: 3
+instrumento: "Resolución Miscelánea Fiscal para 2026"
+articulo_o_regla: "2.7.1.29"
+titulo: "Forma de pago por definir y complemento de recepción de pagos"
+citas_en_codigo: ["RMF 2.7.1.29"]
+texto_vigente: >
+  indicar la clave 99 “Por definir” en el caso de no haberse recibido el pago
+  de la contraprestación
+alcance_extracto: "Fragmento literal de la fracción II; no es la transcripción completa de la regla."
+resumen_contexto: >
+  La fracción II permite esa clave en el CFDI antes de recibir el pago y exige
+  emitir el comprobante con complemento de recepción de pagos cuando se reciba.
+  Exceptúa las operaciones de la regla 3.3.1.34 y el pago íntegro previo o al
+  expedir el CFDI: en esos casos debe registrarse la forma correspondiente.
+fecha_publicacion: 2025-12-28
+fecha_vigencia_desde: 2026-01-01
+fuente_url: "https://www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/documentos2026/rmf/rmf/RMF_2026-DOF-28122025.pdf#page=112"
+fuente_tipo: sat_oficial
+estado_verificacion: verificado_fuente_primaria
+verificado_el: 2026-09-05
+verificado_por: "Codex: lectura del PDF oficial, página 112, fracción II; revisión de la primera modificación."
+nota_verificacion: >
+  El índice oficial SAT de 2026 consultado el 5-sep enumera la resolución
+  original y la primera modificación del 9-jul. El resolutivo Primero de esa
+  modificación no incluye esta regla. Verificación documental; no dictamen.
+fuente_modificaciones: "https://www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/documentos2026/rmf/rmf/1aRM_RMF2026.pdf"
+fuente_indice: "https://www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/normatividad_rmf_rgce2026.html"
+limite_interpretacion: >
+  Esta regla explica el 99 del CFDI original; no autoriza usar 99 como medio
+  efectivo en un REP. La migración 0345 corrige paridad SQL/motor ante datos
+  incompletos, sin certificar ese REP. El acreditamiento mensual depende además
+  del pago efectivo que exige LIVA 5-III y de los demás requisitos aplicables.
+usado_en_codigo:
+  - "cuadre/engine.ts — formaPagoJuzgableDe y medioNoAdmitidoCombustible"
+  - "fiscal.ts — pago pendiente y forma efectiva"
+  - "supabase/migrations/0345_combustible_rep_por_definir.sql — paridad del numerador"
