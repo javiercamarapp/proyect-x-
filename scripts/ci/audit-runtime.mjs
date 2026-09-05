@@ -9,14 +9,28 @@ import { pathToFileURL } from 'node:url';
 
 export function clasificarAuditoriaRuntime(reporte) {
   const conteos = reporte?.metadata?.vulnerabilities;
-  if (!conteos || typeof conteos !== 'object') {
+  if (!conteos || typeof conteos !== 'object' || Array.isArray(conteos)) {
     const codigo = reporte?.error?.code ?? reporte?.code ?? 'sin-codigo';
     const resumen = reporte?.error?.summary ?? reporte?.error?.detail ?? reporte?.message ?? 'reporte sin metadata.vulnerabilities';
     return { tipo: 'inconclusa', codigo: String(codigo), resumen: String(resumen) };
   }
 
-  const high = Number(conteos.high) || 0;
-  const critical = Number(conteos.critical) || 0;
+  // npm audit entrega números para las cinco severidades y el total.
+  // Nunca convertir ausencias, strings, negativos o NaN en un cero limpio.
+  const esperados = ['info', 'low', 'moderate', 'high', 'critical', 'total'];
+  const invalidos = esperados.filter((clave) =>
+    !Object.hasOwn(conteos, clave)
+    || !Number.isSafeInteger(conteos[clave])
+    || conteos[clave] < 0);
+  if (invalidos.length > 0) {
+    return {
+      tipo: 'inconclusa',
+      codigo: 'AUDIT_COUNTS_INVALID',
+      resumen: `Conteos ausentes o inválidos en metadata.vulnerabilities: ${invalidos.join(', ')}`,
+    };
+  }
+
+  const { high, critical } = conteos;
   if (high + critical > 0) return { tipo: 'vulnerable', high, critical };
   return { tipo: 'limpia', high: 0, critical: 0 };
 }
