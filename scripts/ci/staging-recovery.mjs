@@ -12,6 +12,13 @@ export const STAGING = 'dmhhygwzgudwgcbixuwp';
 const PARENT = 'gngoqsvrxdguxvsizpbw';
 const BRANCH = 'f4996abd-1c9b-46e3-89d9-91a2d2053f03';
 const SCHEMAS = ['auth', 'extensions', 'graphql', 'graphql_public', 'net', 'public', 'realtime', 'storage', 'supabase_functions', 'supabase_migrations', 'vault'];
+// Capturado de PostgreSQL17 propio tras aplicar0046+0126; no copiar las
+// expresiones viejas de staging al reconstruir las policies.
+const STORAGE_POLICIES = JSON.parse(readFileSync(new URL('./fixtures/staging-storage-policies.json', import.meta.url), 'utf8'));
+// Management API puede serializar name[] como literal PostgreSQL. JSON fija
+// el contrato de roles como array, igual al catálogo canónico capturado.
+const POLICIES_QUERY = "select schemaname,tablename,policyname,permissive,to_json(roles) as roles,cmd,qual,with_check from pg_policies where schemaname <> 'public' order by schemaname,tablename,policyname";
+const schemaOwner = (name) => ({ public: 'pg_database_owner', extensions: 'postgres', supabase_migrations: 'postgres', pgbouncer: 'pgbouncer' }[name] ?? 'supabase_admin');
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const canonical = (value) => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -41,8 +48,10 @@ export async function inspectEmpty(env, deps = {}) {
   const query = (sql) => request(`/v1/projects/${STAGING}/database/query`, sql);
   const branch = await request(`/v1/projects/${PARENT}/branches/staging`);
   validateBranch(branch);
-  const schemas = await query("select nspname as name from pg_namespace where nspname !~ '^pg_' and nspname <> 'information_schema' order by nspname");
-  if (!Array.isArray(schemas) || canonical(schemas.map((s) => s.name)) !== canonical(SCHEMAS)) fail('RECOVERY_UNKNOWN_SCHEMA');
+  const schemas = await query("select nspname as name, nspowner::regrole::text as owner from pg_namespace where nspname !~ '^pg_' and nspname <> 'information_schema' order by nspname");
+  if (!Array.isArray(schemas) || canonical(schemas.filter((s) => s.name !== 'pgbouncer').map((s) => s.name)) !== canonical(SCHEMAS)
+    || schemas.filter((s) => s.name === 'pgbouncer').length > 1) fail('RECOVERY_UNKNOWN_SCHEMA');
+  if (schemas.some((s) => s.owner !== schemaOwner(s.name))) fail('RECOVERY_SCHEMA_OWNER');
   const tables = await query("select c.relname as name, c.relkind as kind from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relkind in ('r','p','m','f') order by c.relname");
   if (!Array.isArray(tables) || tables.length !== 59 || tables.some((t) => !/^[a-z_][a-z0-9_]*$/.test(t.name) || !['r', 'p'].includes(t.kind))
     || new Set(tables.map((t) => t.name)).size !== tables.length || !tables.some((t) => t.name === 'plan')) fail('RECOVERY_UNEXPECTED_TABLES');
@@ -52,10 +61,22 @@ export async function inspectEmpty(env, deps = {}) {
   const privateCounts = await query('select (select count(*)::text from auth.users) as users, (select count(*)::text from storage.objects) as objects, (select count(*)::text from vault.secrets) as secrets');
   if (!Array.isArray(privateCounts) || privateCounts.length !== 1
     || ['users', 'objects', 'secrets'].some((key) => String(privateCounts[0][key]) !== '0')) fail('RECOVERY_PRIVATE_DATA');
+  const truncated = await query("select n.nspname as schema, c.relname as name from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.relkind='r' and ((n.nspname='auth' and c.relname<>'schema_migrations') or (n.nspname='supabase_functions' and c.relname<>'migrations')) order by n.nspname,c.relname");
+  if (!Array.isArray(truncated) || !truncated.length || truncated.some((t) => !['auth', 'supabase_functions'].includes(t.schema) || !/^[a-z_][a-z0-9_]*$/.test(t.name)
+    || t.name === (t.schema === 'auth' ? 'schema_migrations' : 'migrations'))
+    || new Set(truncated.map((t) => `${t.schema}.${t.name}`)).size !== truncated.length) fail('RECOVERY_TRUNCATED_INVENTORY');
+  const truncatedCounts = await query(truncated.map((t) => `select '${t.schema}.${t.name}' as truncated_table, count(*)::text as rows from "${t.schema}"."${t.name}"`).join(' union all '));
+  if (!Array.isArray(truncatedCounts) || truncatedCounts.length !== truncated.length
+    || new Set(truncatedCounts.map((t) => t.truncated_table)).size !== truncated.length
+    || truncatedCounts.some((r) => !truncated.some((t) => `${t.schema}.${t.name}` === r.truncated_table) || String(r.rows) !== '0')) fail('RECOVERY_TRUNCATED_DATA');
+  const policies = await query(POLICIES_QUERY);
+  const policyIdentity = (p) => ({ schemaname: p.schemaname, tablename: p.tablename, policyname: p.policyname, roles: p.roles, cmd: p.cmd, permissive: p.permissive });
+  if (!Array.isArray(policies) || canonical(policies.map(policyIdentity)) !== canonical(STORAGE_POLICIES.map(policyIdentity))) fail('RECOVERY_UNEXPECTED_POLICIES');
   const plans = await query('select * from public.plan order by clave');
   if (canonical(plans) !== canonical(PLAN)) fail('RECOVERY_PLAN_DRIFT');
   return { branch: { id: BRANCH, project_ref: STAGING, parent_project_ref: PARENT }, schemas, tables,
-    counts: counts.sort((a, b) => a.name.localeCompare(b.name)), privateCounts, plans };
+    counts: counts.sort((a, b) => a.name.localeCompare(b.name)), privateCounts, plans, policies,
+    truncated, truncatedCounts: truncatedCounts.sort((a, b) => a.truncated_table.localeCompare(b.truncated_table)) };
 }
 
 export async function recover(mode, env = process.env, deps = {}) {
@@ -95,9 +116,11 @@ export async function recover(mode, env = process.env, deps = {}) {
     if (schema.length < 100 || !schema.includes('CREATE TABLE')) fail('RECOVERY_BACKUP_EMPTY');
     const metadata = await query(`select jsonb_build_object(
       'history', (select jsonb_agg(to_jsonb(m) order by version) from supabase_migrations.schema_migrations m),
-      'policies', (select jsonb_agg(to_jsonb(p)) from pg_policies p where schemaname in ('auth','storage')),
+      'policies', (select jsonb_agg(to_jsonb(p) order by schemaname,tablename,policyname) from pg_policies p),
       'triggers', (select jsonb_agg(jsonb_build_object('schema',n.nspname,'table',c.relname,'definition',pg_get_triggerdef(t.oid))) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where not t.tgisinternal and n.nspname in ('auth','storage')),
       'default_acls', (select jsonb_agg(to_jsonb(a)) from pg_default_acl a),
+      'roles', (select jsonb_agg(jsonb_build_object('name',rolname,'superuser',rolsuper,'inherit',rolinherit,'create_role',rolcreaterole,'create_db',rolcreatedb,'login',rolcanlogin,'replication',rolreplication,'bypass_rls',rolbypassrls) order by rolname) from pg_roles),
+      'role_memberships', (select jsonb_agg(jsonb_build_object('role',roleid::regrole::text,'member',member::regrole::text,'admin_option',admin_option)) from pg_auth_members),
       'storage_buckets', (select jsonb_agg(to_jsonb(b) order by id) from storage.buckets b)
     ) as metadata`);
     if (!Array.isArray(metadata) || metadata.length !== 1 || !metadata[0].metadata) fail('RECOVERY_METADATA_FORMAT');
@@ -142,6 +165,13 @@ export async function recover(mode, env = process.env, deps = {}) {
     (select count(*) from pg_index where indexrelid in (to_regclass('public.wa_conversacion_purga_idx'),to_regclass('public.codigo_pendiente_purga_idx')) and indisvalid and indisready) as valid_indexes`);
   if (!Array.isArray(physical) || physical.length !== 1 || Number(physical[0].tables) !== 154
     || Number(physical[0].rep_columns) !== 3 || physical[0].cfdi_pago !== true || Number(physical[0].valid_indexes) !== 2) fail('RECOVERY_FINAL_SCHEMA');
+  const policiesAfter = await query(POLICIES_QUERY);
+  const normalizePolicies = (rows) => rows.map((p) => ({ ...p,
+    qual: p.qual?.replace(/\s+/g, ' ').trim() ?? null,
+    with_check: p.with_check?.replace(/\s+/g, ' ').trim() ?? null,
+  }));
+  if (!Array.isArray(policiesAfter) || canonical(normalizePolicies(policiesAfter)) !== canonical(normalizePolicies(STORAGE_POLICIES))) fail('RECOVERY_FINAL_POLICIES');
+  write(join(directory, 'policies-after.json'), canonical(policiesAfter), { mode: 0o600 });
   write(join(directory, 'physical.json'), canonical(physical), { mode: 0o600 });
   write(join(directory, 'applied.json'), canonical(applied), { mode: 0o600 });
   console.log('RECOVERY_MIGRATIONS_COMPLETE: historial reconstruido hasta 0347; verificar catálogo, permisos API y Preview antes del release.');

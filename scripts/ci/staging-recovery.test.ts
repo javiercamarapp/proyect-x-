@@ -4,11 +4,17 @@ import { recover, STAGING } from './staging-recovery.mjs';
 
 function fixture() {
   const branch = { id: 'f4996abd-1c9b-46e3-89d9-91a2d2053f03', project_ref: STAGING, parent_project_ref: 'gngoqsvrxdguxvsizpbw', name: 'staging', is_default: false, persistent: false, with_data: false, preview_project_status: 'ACTIVE_HEALTHY' };
-  const schemas = ['auth', 'extensions', 'graphql', 'graphql_public', 'net', 'public', 'realtime', 'storage', 'supabase_functions', 'supabase_migrations', 'vault'].map(name => ({ name }));
+  const schemas = ['auth', 'extensions', 'graphql', 'graphql_public', 'net', 'public', 'realtime', 'storage', 'supabase_functions', 'supabase_migrations', 'vault'].map(name => ({ name,
+    owner: name === 'public' ? 'pg_database_owner' : ['extensions', 'supabase_migrations'].includes(name) ? 'postgres' : 'supabase_admin' }));
   const tables = [{ name: 'plan', kind: 'r' }, ...Array.from({ length: 58 }, (_, i) => ({ name: `table_${i}`, kind: 'r' }))];
   const counts = tables.map(t => ({ name: t.name, rows: t.name === 'plan' ? '3' : '0' }));
   const plans = [['demo', 'Demo', 50, 5, 0], ['empresa', 'Empresa', null, null, 2], ['flota', 'Flota', 500, 50, 1]].map(([clave, nombre, limite_viajes_mes, limite_operadores, orden]) => ({ clave, nombre, limite_viajes_mes, limite_operadores, orden, activo: true, moneda: 'MXN', precio_mensual: null, stripe_price_id: null, precio_iva_incluido: null }));
   const privateCounts = [{ users: '0', objects: '0', secrets: '0' }];
+  const truncated = [{ schema: 'auth', name: 'users' }, { schema: 'auth', name: 'flow_state' }, { schema: 'supabase_functions', name: 'hooks' }];
+  const truncatedCounts = truncated.map(t => ({ truncated_table: `${t.schema}.${t.name}`, rows: '0' }));
+  const policies = JSON.parse(readFileSync('scripts/ci/fixtures/staging-storage-policies.json', 'utf8'));
+  const policiesAfter = structuredClone(policies);
+  let didReset = false;
   const physical = [{ tables: 154, rep_columns: 3, cfdi_pago: true, valid_indexes: 2 }];
   const migrations = readdirSync('supabase/migrations');
   const history = migrations.filter(x => /^\d{4}_.+\.sql$/.test(x)).map(x => ({ version: x.slice(0, 4) })).sort((a, b) => a.version.localeCompare(b.version));
@@ -25,19 +31,22 @@ function fixture() {
     expect(body.read_only).toBe(true);
     expect(body.query).toMatch(/^select\s/);
     const sql: string = body.query;
-    const result = sql.includes('nspname as name') ? schemas : sql.includes('c.relname as name') ? tables : sql.includes('union all') ? counts
+    if (sql.includes("schemaname <> 'public'")) expect(sql).toContain('to_json(roles) as roles');
+    const result = sql.includes('nspname as name') ? schemas : sql.includes('n.nspname as schema') ? truncated : sql.includes('as truncated_table') ? truncatedCounts
+      : sql.includes("schemaname <> 'public'") ? (didReset ? policiesAfter : policies) : sql.includes('c.relname as name') ? tables : sql.includes('union all') ? counts
       : sql.includes('as users') ? privateCounts : sql.includes('select * from public.plan') ? plans : sql.includes('as metadata') ? [{ metadata: { history, policies: [], triggers: [], default_acls: [], storage_buckets: [] } }]
       : sql.includes('select version') ? history : physical;
     return { ok: true, json: async () => result };
   });
   const spawn = vi.fn((_command: string, args: string[]) => {
     if (args.includes('dump')) files.set(args[args.indexOf('--file') + 1], `CREATE TABLE public.plan (clave text);\n${'-- schema\n'.repeat(20)}`);
+    if (args.includes('reset')) didReset = true;
     return { status: 0 };
   });
   const deps = { directory: '/owned-backup', fetch, spawn, mkdir: vi.fn(), read: (path: string) => {
     const value = files.get(path); if (value === undefined) throw new Error('fixture missing'); return value;
   }, write: (path: string, content: string) => { files.set(path, content); }, readdir: () => migrations };
-  return { branch, schemas, tables, counts, privateCounts, plans, physical, history, files, env, deps, spawn, fetch, migrations };
+  return { branch, schemas, tables, counts, privateCounts, truncated, truncatedCounts, policies, policiesAfter, plans, physical, history, files, env, deps, spawn, fetch, migrations };
 }
 
 describe('recuperación excepcional de staging vacío', () => {
@@ -59,11 +68,37 @@ describe('recuperación excepcional de staging vacío', () => {
     if (mode === 'public') f.counts[1].rows = '1';
     else if (mode === 'users' || mode === 'objects' || mode === 'secrets') f.privateCounts[0][mode] = '1';
     else if (mode === 'plans') f.plans[0].nombre = 'Modified';
-    else if (mode === 'schema') f.schemas.push({ name: 'business' });
+    else if (mode === 'schema') f.schemas.push({ name: 'business', owner: 'postgres' });
     else if (mode === 'foreign') f.tables[0].kind = 'f';
     else f.counts.pop();
     await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_');
     expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it.each(['auth.flow_state', 'supabase_functions.hooks'])('rechaza datos auxiliares truncables aunque auth.users=0: %s', async table => {
+    const f = fixture(); f.truncatedCounts.find(r => r.truncated_table === table)!.rows = '1';
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_TRUNCATED_DATA');
+    expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it('rechaza un conteo omitido de tabla truncable', async () => {
+    const f = fixture(); f.truncatedCounts.pop();
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_TRUNCATED_DATA');
+  });
+  it('pgbouncer opcional sólo con su owner protegido; auth requiere supabase_admin', async () => {
+    const f = fixture(); f.schemas.push({ name: 'pgbouncer', owner: 'pgbouncer' });
+    await expect(recover('capture', f.env, f.deps)).resolves.toBeUndefined();
+    f.schemas.at(-1)!.owner = 'postgres';
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_SCHEMA_OWNER');
+    f.schemas.pop(); f.schemas[0].owner = 'supabase_auth_admin';
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_SCHEMA_OWNER');
+  });
+  it('policy ajena no reconstruida exige revisión antes de reset', async () => {
+    const f = fixture(); f.policies.push({ ...f.policies[0], schemaname: 'auth', policyname: 'custom' });
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_UNEXPECTED_POLICIES');
+    expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it('una policy final con nombre correcto y permiso ampliado no obtiene verde', async () => {
+    const f = fixture(); await recover('capture', f.env, f.deps); f.policiesAfter[1].qual = 'true';
+    await expect(recover('execute', f.env, f.deps)).rejects.toThrow('RECOVERY_FINAL_POLICIES');
   });
   it.each(['missing-confirm', 'wrong-sha', 'corrupt-backup', 'new-data', 'future-migration'])('no ejecuta reset con %s', async mode => {
     const f = fixture(); await recover('capture', f.env, f.deps); f.spawn.mockClear();

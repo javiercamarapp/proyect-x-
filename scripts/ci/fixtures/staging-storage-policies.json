@@ -1,0 +1,50 @@
+[
+  {
+    "schemaname": "storage",
+    "tablename": "objects",
+    "policyname": "avatares_lectura_publica",
+    "permissive": "PERMISSIVE",
+    "roles": [
+      "public"
+    ],
+    "cmd": "SELECT",
+    "qual": "(bucket_id = 'avatares'::text)",
+    "with_check": null
+  },
+  {
+    "schemaname": "storage",
+    "tablename": "objects",
+    "policyname": "avatares_propio_delete",
+    "permissive": "PERMISSIVE",
+    "roles": [
+      "authenticated"
+    ],
+    "cmd": "DELETE",
+    "qual": "((bucket_id = 'avatares'::text) AND ((storage.foldername(name))[1] = (( SELECT auth.uid() AS uid))::text))",
+    "with_check": null
+  },
+  {
+    "schemaname": "storage",
+    "tablename": "objects",
+    "policyname": "avatares_propio_insert",
+    "permissive": "PERMISSIVE",
+    "roles": [
+      "authenticated"
+    ],
+    "cmd": "INSERT",
+    "qual": null,
+    "with_check": "((bucket_id = 'avatares'::text) AND ((storage.foldername(name))[1] = (auth.uid())::text))"
+  },
+  {
+    "schemaname": "storage",
+    "tablename": "objects",
+    "policyname": "avatares_propio_update",
+    "permissive": "PERMISSIVE",
+    "roles": [
+      "authenticated"
+    ],
+    "cmd": "UPDATE",
+    "qual": "((bucket_id = 'avatares'::text) AND ((storage.foldername(name))[1] = (( SELECT auth.uid() AS uid))::text))",
+    "with_check": null
+  }
+]

@@ -38,6 +38,8 @@ Conteos exactos de staging después del fallo: cero auth.users, cero storage.obj
 
 Se prepara una recuperación exclusiva de ese staging: respaldo e inventario previos, revisión antes de ejecutar, revalidación inmediata de ausencia de datos, reconstrucción real hasta 0331 sin seed de usuarios, preflight concurrente y aplicación del resto de las migraciones. No se sustituye la aplicación de SQL por migration repair. El resultado remoto de la recuperación debe registrarse antes de declararla terminada.
 
+La revisión del código oficial de Supabase CLI 2.115.0 confirmó que reset remoto trunca también las tablas auxiliares de auth y supabase_functions, y elimina todas las políticas de acceso. Los 23 conteos auxiliares dieron cero. Auth, Storage, Realtime y supabase_functions pertenecen a supabase_admin; el procedimiento verifica ese propietario para conservar sus esquemas. Las únicas cuatro políticas externas a public son las de avatares y se reconstruyen mediante 0046 y 0126. Las guardas y el respaldo incluyen estos objetos; la comprobación final compara la definición canónica reconstruida, sin restaurar políticas antiguas. El esquema administrado pgbouncer, si aparece, sólo se acepta con su propietario pgbouncer.
+
 ## Ajuste de alcance sobre estabilidad prolongada
 
 Ante la petición del usuario de reducir consumo de tokens y evaluar omitir la prueba de un día, el ensayo de 24 horas queda pospuesto y no bloquea por sí solo el despliegue. Su ejecución anterior conserva estado no aprobado. No se inició otro proceso ni monitor y no se afirma estabilidad prolongada acreditada. Las comprobaciones funcionales, aislamiento, seguridad y migraciones del release se mantienen.
