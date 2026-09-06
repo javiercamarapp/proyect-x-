@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auditoría 27 — Likida</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --surface:#ffffff; --ink:#1a1a19; --ink2:#4a4a47; --ink3:#75736e;
+    --line:#e3e1dc; --line2:#cfccc5;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --accent:#3d6fd6;
+  }
+  :root:not([data-theme="light"]){ @media (prefers-color-scheme: dark){
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:28px 24px 56px;}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13px;margin-bottom:20px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);
+     margin:30px 0 11px;font-weight:600}
+
+  /* ── barra de compuerta ── */
+  .gate{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .chip{background:var(--surface);border:1px solid var(--line);border-radius:7px;
+        padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .chip b{font-weight:600}
+  .chip span{color:var(--ink3)}
+  .note{font-size:12.5px;color:var(--ink2);background:var(--surface);
+        border:1px solid var(--line);border-left:3px solid var(--warn);
+        border-radius:0 7px 7px 0;padding:9px 13px;margin-top:8px}
+
+  /* ── titular ── */
+  .hero{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;margin-top:18px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .glob{min-width:190px}
+  .glob .n{font-size:44px;font-weight:650;letter-spacing:-.03em;line-height:1.05}
+  .glob .d{font-size:14px;color:var(--crit);font-weight:600;margin-top:2px}
+  .glob .l{font-size:12px;color:var(--ink3);margin-top:5px}
+  .spark{flex:1;min-width:330px}
+
+  /* ── rejilla ── */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:11px}
+  .r{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+     padding:13px 15px;border-left-width:4px;border-left-style:solid;position:relative}
+  .r.g4{border-left-color:var(--crit)} .r.g5{border-left-color:var(--warn)}
+  .r.g7{border-left-color:var(--good)}
+  .rh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .rn{font-weight:600;font-size:13.5px}
+  .rg{font-size:25px;font-weight:650;letter-spacing:-.02em;white-space:nowrap}
+  .rg small{font-size:12px;color:var(--ink3);font-weight:500}
+  .delta{font-size:12px;font-weight:600;margin-left:6px}
+  .dn{color:var(--crit)} .du{color:var(--good)} .de{color:var(--ink3)}
+  .rr{font-size:12.5px;color:var(--ink2);margin-top:7px;line-height:1.45}
+  .sev{margin-top:9px;display:flex;gap:6px;flex-wrap:wrap}
+  .b{font-size:11px;padding:2px 7px;border-radius:20px;border:1px solid var(--line2);color:var(--ink2)}
+  .b.c{border-color:var(--crit);color:var(--crit);font-weight:600}
+
+  /* ── tablas ── */
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;font-size:13px;min-width:660px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+     color:var(--ink3);padding:10px 13px;border-bottom:1px solid var(--line);font-weight:600}
+  td{padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .st{font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;white-space:nowrap;
+      border:1px solid currentColor;display:inline-block}
+  .s-fix{color:var(--good)} .s-pend{color:var(--crit)} .s-prop{color:var(--ink3)}
+  .s-rev{color:var(--serious)}
+  code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+       background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .rei{color:var(--serious);font-weight:600;font-size:11px}
+  footer{margin-top:34px;font-size:12px;color:var(--ink3);border-top:1px solid var(--line);padding-top:13px}
+</style>
+</head>
+<body data-palette="#0ca30c,#fab219,#ec835a,#d03b3b">
+<div class="wrap">
+
+  <h1>Auditoría 27 — Likida</h1>
+  <div class="sub">Ronda COMPLETA · 6-sep-2026 · rama <code>claude/auditoria-27</code> ·
+      base <code>06b2eca4</code> · 181 commits y +27,031/−2,631 desde la ronda 26</div>
+
+  <h2>Compuerta</h2>
+  <div class="gate">
+    <div class="chip"><span class="dot" style="background:var(--warn)"></span>
+      <b>npm test</b> <span>12,169 pasan · 5 fallan · 1 saltada</span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span>
+      <b>tsc --noEmit</b> <span>exit 0</span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span>
+      <b>lint</b> <span>0 errores · 156 avisos</span></div>
+    <div class="chip"><span class="dot" style="background:var(--ink3)"></span>
+      <b>build</b> <span>no se corre en la nube (sin credenciales)</span></div>
+  </div>
+  <div class="note"><b>Los 5 fallos son INFRA, no código.</b> Los cinco viven en
+    <code>scripts/ci/e2e/proxy-local.test.ts</code> y fallan con
+    <code>listen EAFNOSUPPORT ::1</code>: este contenedor no tiene loopback IPv6
+    (comprobado aparte con un <code>net.createServer().listen(0,'::1')</code>).
+    Son la línea base contra la que se midió cada arreglo, y no cuentan contra el rubro de pruebas.</div>
+
+  <div class="hero">
+    <div class="card glob">
+      <div class="n">5.4</div>
+      <div class="d">▼ 0.4 &nbsp;<span style="color:var(--ink3);font-weight:400">antes 5.8</span></div>
+      <div class="l">Media de los 12 · 65/12 = 5.42</div>
+    </div>
+    <div class="card spark">
+      <div style="font-size:12px;color:var(--ink3);margin-bottom:6px">Global por ronda</div>
+      <svg viewBox="0 0 520 132" width="100%" height="132" role="img"
+           aria-label="Serie de la nota global: 6.2 en la ronda 24, 5.3 en la 25, 6.0 en la 26, 5.8 en la continuación de la 26 y 5.4 en la 27.">
+        <line x1="40" y1="106" x2="508" y2="106" stroke="var(--line2)" stroke-width="1"/>
+        <line x1="40" y1="20" x2="508" y2="20" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="8" y="24" font-size="10" fill="var(--ink3)">7.0</text>
+        <text x="8" y="110" font-size="10" fill="var(--ink3)">5.0</text>
+        <!-- y = 106 - (v-5)*43 ; 24:6.2→54.4  25:5.3→93.1  26:6.0→63  26c:5.8→71.6  27:5.4→88.8 -->
+        <polyline points="70,54.4 179,93.1 288,63 397,71.6 490,88.8"
+                  fill="none" stroke="var(--accent)" stroke-width="2"
+                  stroke-linejoin="round" stroke-linecap="round"/>
+        <g fill="var(--accent)">
+          <circle cx="70" cy="54.4" r="4.5"/><circle cx="179" cy="93.1" r="4.5"/>
+          <circle cx="288" cy="63" r="4.5"/><circle cx="397" cy="71.6" r="4.5"/>
+          <circle cx="490" cy="88.8" r="6" stroke="var(--surface)" stroke-width="2"/>
+        </g>
+        <g font-size="11" fill="var(--ink)" text-anchor="middle" font-weight="600">
+          <text x="70" y="44">6.2</text><text x="179" y="83">5.3</text>
+          <text x="288" y="53">6.0</text><text x="397" y="61.6">5.8</text>
+          <text x="490" y="78">5.4</text>
+        </g>
+        <g font-size="10.5" fill="var(--ink3)" text-anchor="middle">
+          <text x="70" y="124">24</text><text x="179" y="124">25</text>
+          <text x="288" y="124">26</text><text x="397" y="124">26·cont</text>
+          <text x="490" y="124">27</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <h2>Los 12 rubros</h2>
+  <div class="grid">
+
+    <div class="r g7"><div class="rh"><span class="rn">Seguridad</span>
+      <span class="rg">8<small>/10</small><span class="delta du">▲1</span></span></div>
+      <div class="rr">Único rubro que sube por trabajo hecho: los cierres de la 26 aguantaron al reabrirlos.</div>
+      <div class="sev"><span class="b">1 alto</span><span class="b">2 medios</span></div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Modelo de datos</span>
+      <span class="rg">7<small>/10</small><span class="delta du">▲1</span></span></div>
+      <div class="rr">Sin un solo escenario «entra X → sale Y mal» con dinero: dominios, unicidades y FK compuestas puestos. 7 auto-refutaciones documentadas.</div>
+      <div class="sev"><span class="b">2 medios</span><span class="b">3 bajos</span></div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Pruebas</span>
+      <span class="rg">8<small>/10</small><span class="delta de">=</span></span></div>
+      <div class="rr"><b>No auditado esta ronda</b> — el auditor no entregó su archivo. La nota no se mueve: mover la de un rubro que nadie miró es el ruido que la serie no debe tener.</div>
+      <div class="sev"><span class="b">sin cubrir</span></div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Tool calling</span>
+      <span class="rg">6<small>/10</small><span class="delta de">=</span></span></div>
+      <div class="rr">Ningún commit de los 181 tocó el rubro; los 5 cierres de la 26 aguantan y los 5 abiertos siguen vivos. Ninguna de las tres razones aplica.</div>
+      <div class="sev"><span class="b">2 altos</span><span class="b">4 medios</span></div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Backend y API</span>
+      <span class="rg">5<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr">Una foto que agotó sus 5 intentos bloquea para siempre todos los cierres de ese chofer, en silencio y sin salida.</div>
+      <div class="sev"><span class="b">3 altos</span><span class="b">1 medio</span></div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Sistema agéntico</span>
+      <span class="rg">5<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr">Cero commits del rubro en 181; 7 de sus 9 hallazgos son reincidentes.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">4 altos</span></div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Cumplimiento legal</span>
+      <span class="rg">5<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr"><code>tenant.url_aviso_privacidad</code> no tiene un solo escritor: ninguna flota puede señalar su aviso integral (art. 16 fr. II).</div>
+      <div class="sev"><span class="b">5 altos</span><span class="b">3 medios</span></div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Rendimiento y costo</span>
+      <span class="rg">5<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr">En 181 commits no se tocó ni una línea de los diez archivos que la 26 dejó abiertos, y el margen de 20 s que marcó como insuficiente se copió a un cron nuevo.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">3 altos</span></div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Frontend</span>
+      <span class="rg">4<small>/10</small><span class="delta de">=</span></span></div>
+      <div class="rr">El despacho ya no ofrece el Anticipo: el viaje nace en 0 y la pantalla de firma presenta ese cero como una medición.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">1 alto</span></div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Cumplimiento fiscal</span>
+      <span class="rg">4<small>/10</small><span class="delta de">=</span></span></div>
+      <div class="rr">Los 7 cierres que se mandaron verificar cerraron de verdad — y aparece un CRÍTICO nuevo en el mismo cubo del 15 %: la copia de un ticket entra por la RPC y no por el motor.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">2 altos</span></div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Arquitectura</span>
+      <span class="rg">4<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr">De los seis hallazgos que la 26 dejó abiertos, cero se cerraron y uno creció. La póliza tras <code>ajustar</code> va por su 5ª aparición.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">3 altos</span></div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Operabilidad y DX</span>
+      <span class="rg">4<small>/10</small><span class="delta dn">▼1</span></span></div>
+      <div class="rr">Producción lleva 224 commits congelada — y la alarma que debía denunciarlo se cerraba sola en cada push.</div>
+      <div class="sev"><span class="b c">3 críticos</span><span class="b">2 altos</span></div></div>
+
+  </div>
+
+  <h2>Críticos y altos arreglados o revertidos</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>ID</th><th>Estado</th><th>Qué era</th></tr></thead>
+    <tbody>
+      <tr><td><b>OP-C2</b><br><span class="b c">crítico</span></td>
+        <td><span class="st s-fix">arreglado <code>5569437e</code></span></td>
+        <td>El paso que cierra el issue de salud estaba en <code>if: success()</code> a secas, pero el cotejo de deriva
+            <b>no corre en un push</b>. Una corrida por push que nunca miró la deriva certificaba la recuperación.
+            Medido contra la API de GitHub: <b>#339</b> abierto 04:53:03Z por un schedule en rojo y cerrado 11:01:53Z por
+            un push, con 20 schedules rojos seguidos y <b>ningún issue abierto</b>. Prueba roja
+            (<code>Received: "success()"</code>) → verde.</td></tr>
+      <tr><td><b>BE-3</b><br><span class="b">alto</span> <span class="rei">REINCIDENTE</span></td>
+        <td><span class="st s-rev">revertido</span></td>
+        <td>La liquidación <b>rechazada</b> sigue sumando en 4 agregadas (<code>liquidado_semanal_tenant</code>,
+            <code>serie_comparativa_tenant</code>, <code>operadores_detalle_tenant</code>, <code>stats_operador_tenant</code>):
+            el banner dice «$80,000» donde el KPI dice «$50,000». La migración 0348 y su prueba se escribieron y midieron
+            rojo→verde, <b>pero la suite completa se puso roja (41 fallos)</b>:
+            <code>staging-recovery.mjs:121</code> fija el inventario a <code>324/'0347'</code>. Subir ese número debilita
+            un candado sobre una operación destructiva y se sale del alcance → revertido, hallazgo a pendiente.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Críticos pendientes — con la razón por la que no se arreglaron</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Rubro</th><th>Crítico</th><th>Por qué no se arregló</th></tr></thead>
+    <tbody>
+      <tr><td>Fiscal</td>
+        <td>La <b>copia</b> de un comprobante entra al cubo del 15 % por la RPC y no por el motor: el mismo diésel
+            imprime «deducible $11,600 · IVA $1,600» o «no deducible $11,600 · IVA $0» según si el operador fotografió
+            un ticket dos veces. <code>engine.ts:687</code> salta duplicados; <code>0345:19-24</code> y
+            <code>desde_db.ts:171</code> no.</td>
+        <td>No es quirúrgico: exige una <b>sexta</b> implementación del predicado «esto es una copia» dentro de SQL,
+            con la normalización de folios que hoy vive en TS. Es la 5ª vuelta sobre este cubo y las cuatro anteriores
+            metieron un defecto nuevo en la línea que acababan de editar. Y no se puede medir aquí: no hay base.</td></tr>
+      <tr><td>Frontend</td>
+        <td>El jefe de tráfico no puede capturar el Anticipo (<code>forma-viaje.tsx:90</code>), el viaje nace en
+            <code>anticipo = 0</code> y <code>detalle.tsx:212</code> lo presenta como «$0.00 entregado al operador»
+            mientras el motor emite «El operador puso $18,400.00 de su bolsa».</td>
+        <td>Exige decidir el producto: enseñarle el campo, bloquear la creación, o inventar un estado «no capturado»
+            que hoy no cabe (<code>NOT NULL DEFAULT 0</code>: 0 tecleado y 0 por ausencia son indistinguibles).
+            Además <code>permisos-dinero.test.tsx:51-54</code> fija el <code>anticipo: 0</code> como esperado.</td></tr>
+      <tr><td>Arquitectura</td>
+        <td>La póliza tras <code>ajustar</code>, <b>5ª aparición desde la 24</b>: hoy un ajuste firmado inhabilita el
+            export contable del periodo completo (409 <code>polizas_incompletas</code> para las 40 liquidaciones del mes).</td>
+        <td>Reincidente de convención, no de línea: la 26 ya lo dejó pendiente por lo mismo. Necesita una decisión
+            sobre qué hace el producto con una liquidación ajustada, no un cuarto intento.</td></tr>
+      <tr><td>Agéntico<br>· Rendimiento</td>
+        <td><code>ingerirRep</code> sin reloj ni tope de doctos (<code>intake/rep.ts:190-241</code>): el REP muere a la
+            mitad, media factura queda sellada como pagada y quien lo mandó no recibe una palabra.
+            <b>Lo encontraron dos auditores por separado.</b></td>
+        <td>Reincidente de la 26, que ya lo dejó pendiente. El corte llega a los 63 doctos; arreglarlo es rediseñar el
+            troceado del lote, no poner un <code>Date.now()</code>.</td></tr>
+      <tr><td>Operabilidad</td>
+        <td><b>Producción congelada</b>: corre <code>4f94490</code> (3-sep) con base <code>0303</code> contra código
+            <code>0347</code>. <code>deploy-preview-promote.yml</code> lleva 28 corridas y <b>cero</b> han ejecutado el
+            job <code>promote</code>. Cinco arreglos de seguridad del 5-sep no están corriendo.</td>
+        <td><b>Necesita una mano humana</b>: aplicar 0304→0347 en la base y publicar. Ninguna rutina puede hacerlo,
+            y el Redeploy del panel no basta.</td></tr>
+      <tr><td>Operabilidad</td>
+        <td>Toda la operación depende de GitHub Actions <b>sin monitor externo</b>. Reincidente.</td>
+        <td>Exige contratar o cablear un servicio de fuera: no cabe en un commit del repo.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Hallazgo nuevo que no traía ningún auditor</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>ID</th><th>Severidad</th><th>Qué es</th></tr></thead>
+    <tbody>
+      <tr><td><b>OP-C4</b></td><td><span class="b c">alto</span></td>
+        <td><b>El repo no acepta una sola migración nueva sin ponerse rojo.</b>
+            <code>scripts/ci/staging-recovery.mjs:121</code> exige
+            <code>expected.length === 324</code> y <code>expected.at(-1) === '0347'</code>, así que cualquier migración
+            legítima tumba <b>35 pruebas</b> de <code>staging-recovery.test.ts</code> con un error
+            (<code>RECOVERY_LOCAL_MIGRATIONS</code>) que no dice nada de lo que el autor tocó. Salió al intentar BE-3 y
+            se verificó revirtiendo: sin la 0348, las 35 vuelven a verde.</td></tr>
+    </tbody>
+  </table></div>
+
+  <footer>
+    Doce rubros; once auditados esta ronda y uno (<b>Pruebas</b>) sin cubrir — su nota no se mueve y se marca como tal.
+    El color codifica la nota (rojo ≤4 · ámbar 5–6 · verde ≥7), nunca el delta.
+    Compuerta en la nube: <code>npm test</code> + <code>tsc</code> + <code>lint</code>, sin <code>build</code>.
+  </footer>
+</div>
+</body>
+</html>
