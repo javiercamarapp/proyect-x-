@@ -166,8 +166,17 @@ jobs:
           gh label create salud-produccion --color B60205 --description 'El pulso de producción está en rojo' --force >/dev/null 2>&1 || true
           gh issue create --title 'Salud de producción en rojo' --label salud-produccion --body "$(printf 'El workflow **Salud de producción** falló: %s\n\nQué mirar, en este orden: `docs/conocimiento/DEPLOY.md` § «Algo se rompió». El cuerpo de `/api/health` (status, checks.crons, migracion) está en el log de la corrida.\n\nEste issue se cierra solo cuando el pulso vuelva a verde.' "$RUN_URL")"
 
+      # AUDITORÍA 27, OP-C2 (CRÍTICO): CERRAR EXIGE HABER EVALUADO.
+      # El cotejo de deriva de arriba NO corre en un push (`event_name !=
+      # 'push'`). Con `if: success()` a secas, una corrida por push que jamás
+      # miró la deriva cerraba el issue que una corrida por schedule había
+      # abierto justo por deriva: #339 abierto 06-sep 04:53:03Z y cerrado a las
+      # 11:01:53Z por un push, con producción 224 commits atrás y 20 schedules
+      # en rojo seguidos. La bandeja quedaba limpia y el rojo sin dueño.
+      # La condición replica la del paso que evalúa: solo quien comprobó el
+      # invariante puede declarar la recuperación.
       - name: Cerrar el issue al recuperarse
-        if: success()
+        if: success() && github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
