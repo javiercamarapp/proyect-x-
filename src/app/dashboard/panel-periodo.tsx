@@ -38,7 +38,8 @@ export function PanelPeriodo({
 }: {
   /** Viajes iniciados por día, contados en SQL. `null` = no se pudo leer. */
   porDia: DiaViajes[] | null;
-  porMes: Array<{ dia: string; valor: number }>;
+  /** Viajes por mes (histórico). `null` = no se pudo leer — ver `Actividad`. */
+  porMes: Array<{ dia: string; valor: number }> | null;
   seriesKpis: SeriesKpiCards | null;
   gastoSemanalSeries: GastoSemanalSeries | null;
   liquidadoSemanalSeries: LiquidadoSemanalSeries | null;

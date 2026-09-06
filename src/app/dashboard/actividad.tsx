@@ -33,10 +33,17 @@ export function Actividad({
    *  falló; se dice, en vez de dibujar una gráfica en ceros que se lee como
    *  una flota parada. */
   porDia: DiaViajes[] | null;
-  porMes: Array<{ dia: string; valor: number }>;
+  /** Un bucket por mes, del más viejo al más reciente. `null` = la lectura
+   *  de `getViajesPorMes` falló — MISMA regla que `porDia`: antes del 6-sep,
+   *  `BloqueEstadisticas` (inicio-contenido.tsx) colapsaba el `null` con
+   *  `?? []` antes de que llegara aquí, y `sinDatos` sobre `[]` es
+   *  vacuamente `true`, así que una lectura caída pintaba "Aún no hay
+   *  viajes registrados." — la misma mentira que este archivo ya sabía
+   *  evitar para `porDia`. */
+  porMes: Array<{ dia: string; valor: number }> | null;
   modo: ModoPeriodo;
 }) {
-  if (modo !== 'historico' && porDia === null) {
+  if ((modo !== 'historico' && porDia === null) || (modo === 'historico' && porMes === null)) {
     return (
       <div className="flex-1 min-h-[110px] w-full flex items-center justify-center">
         <p className="text-sm text-center max-w-[26ch]" style={{ color: 'var(--muted)' }}>
@@ -50,7 +57,7 @@ export function Actividad({
   const ventana = modo === 'semanal' ? 7 : 30;
   const datosBarras = (ventana >= serie.length ? serie : serie.slice(serie.length - ventana))
     .map((d) => ({ dia: d.dia, valor: d.viajes }));
-  const sinDatos = modo === 'historico' ? porMes.every((d) => d.valor === 0) : datosBarras.every((d) => d.valor === 0);
+  const sinDatos = modo === 'historico' ? (porMes ?? []).every((d) => d.valor === 0) : datosBarras.every((d) => d.valor === 0);
 
   if (sinDatos) {
     return (
@@ -62,6 +69,6 @@ export function Actividad({
     );
   }
   return modo === 'historico'
-    ? <AreaChartSimple datos={porMes} etiquetaValor={(v) => `${v} viaje${v === 1 ? '' : 's'}`} />
+    ? <AreaChartSimple datos={porMes ?? []} etiquetaValor={(v) => `${v} viaje${v === 1 ? '' : 's'}`} />
     : <BarChartSimple datos={datosBarras} etiquetaValor={(v) => `${v} viaje${v === 1 ? '' : 's'}`} alto={192} />;
 }

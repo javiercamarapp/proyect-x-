@@ -111,7 +111,7 @@ export function VistaRentabilidad({
               {/* ── Cobranza a clientes ──────────────────────────────── */}
               {cobranza === null ? (
                 <EstadoError mensaje="No pude leer las facturas emitidas para armar la cartera." />
-              ) : cobranza.facturas.length === 0 ? (
+              ) : cobranza.total === 0 ? (
                 <EstadoVacio>
                   Aún no hay facturas emitidas registradas — al registrar la primera, aquí
                   aparece la cartera: cuánto te deben, qué ya venció y qué factura no tiene
@@ -136,38 +136,48 @@ export function VistaRentabilidad({
                         : `${cobranza.sinCondiciones} facturas no tienen fecha de vencimiento porque su cliente no tiene crédito pactado — no entran al conteo de vencidas.`}
                     </p>
                   )}
-                  <div className="card overflow-x-auto">
-                    <table className="w-full text-[12.5px]">
-                      <thead>
-                        <tr className="text-left" style={{ color: 'var(--muted)' }}>
-                          <th className="px-3 py-2 font-medium">Folio</th>
-                          <th className="px-3 py-2 font-medium">Cliente</th>
-                          <th className="px-3 py-2 font-medium">Fecha</th>
-                          <th className="px-3 py-2 font-medium text-right">Total</th>
-                          <th className="px-3 py-2 font-medium text-right">Pagado</th>
-                          <th className="px-3 py-2 font-medium text-right">Saldo</th>
-                          <th className="px-3 py-2 font-medium">Vence</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {cobranza.facturas.map((f) => (
-                          <tr key={f.id} className="border-t" style={{ borderColor: 'var(--line2)' }}>
-                            <td className="px-3 py-2">{f.folio ?? '—'}</td>
-                            <td className="px-3 py-2">{f.cliente}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{fechaCorta(f.fecha)}</td>
-                            <td className="px-3 py-2 text-right tabular">{mxn(f.total)}</td>
-                            <td className="px-3 py-2 text-right tabular">{mxn(f.pagado)}</td>
-                            <td className="px-3 py-2 text-right tabular font-medium">{mxn(f.saldo)}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">
-                              {f.vencida
-                                ? <span style={{ color: 'var(--bad)' }}>venció {fechaCorta(f.venceEn)}</span>
-                                : (f.venceEn ? fechaCorta(f.venceEn) : 'sin condiciones')}
-                            </td>
+                  {cobranza.facturas.length === 0 ? (
+                    // `total > 0` pero esta página no trajo filas: es un `?p=`
+                    // fuera de rango, NO una cartera vacía — las tarjetas de
+                    // arriba (de la cartera completa) siguen siendo ciertas.
+                    // El renglón de paginación de abajo ya trae "Anteriores".
+                    <p className="text-[13px] py-4 text-center" style={{ color: 'var(--muted)' }}>
+                      Esta página no tiene facturas — hay {numero(cobranza.total)} en la cartera completa.
+                    </p>
+                  ) : (
+                    <div className="card overflow-x-auto">
+                      <table className="w-full text-[12.5px]">
+                        <thead>
+                          <tr className="text-left" style={{ color: 'var(--muted)' }}>
+                            <th className="px-3 py-2 font-medium">Folio</th>
+                            <th className="px-3 py-2 font-medium">Cliente</th>
+                            <th className="px-3 py-2 font-medium">Fecha</th>
+                            <th className="px-3 py-2 font-medium text-right">Total</th>
+                            <th className="px-3 py-2 font-medium text-right">Pagado</th>
+                            <th className="px-3 py-2 font-medium text-right">Saldo</th>
+                            <th className="px-3 py-2 font-medium">Vence</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {cobranza.facturas.map((f) => (
+                            <tr key={f.id} className="border-t" style={{ borderColor: 'var(--line2)' }}>
+                              <td className="px-3 py-2">{f.folio ?? '—'}</td>
+                              <td className="px-3 py-2">{f.cliente}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{fechaCorta(f.fecha)}</td>
+                              <td className="px-3 py-2 text-right tabular">{mxn(f.total)}</td>
+                              <td className="px-3 py-2 text-right tabular">{mxn(f.pagado)}</td>
+                              <td className="px-3 py-2 text-right tabular font-medium">{mxn(f.saldo)}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {f.vencida
+                                  ? <span style={{ color: 'var(--bad)' }}>venció {fechaCorta(f.venceEn)}</span>
+                                  : (f.venceEn ? fechaCorta(f.venceEn) : 'sin condiciones')}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
                   {/* ── La cartera viene PAGINADA (mig. 0152) ──────────────
                       Se dice el rango Y el total: recortar la lista está
