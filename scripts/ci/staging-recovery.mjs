@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Recuperación excepcional de la rama staging vacía; nunca producción.
-// Contratos: /docs/reference/api/v1-get-a-branch y v1-run-a-query.
+// Contratos: /docs/reference/api/v1-list-all-branches y v1-run-a-query.
 import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -29,9 +29,21 @@ const PLAN = [
   activo: true, moneda: 'MXN', precio_mensual: null, stripe_price_id: null, precio_iva_incluido: null }));
 
 export function validateBranch(branch) {
-  if (branch?.id !== BRANCH || branch.project_ref !== STAGING || branch.parent_project_ref !== PARENT
-    || branch.name !== 'staging' || branch.is_default !== false || branch.persistent !== false
-    || branch.with_data !== false || branch.preview_project_status !== 'ACTIVE_HEALTHY') fail('RECOVERY_BRANCH_IDENTITY');
+  // Sólo comparaciones booleanas: nunca valores o configuración recibidos.
+  const checks = {
+    id: branch?.id === BRANCH, ref: branch?.project_ref === STAGING,
+    parent: branch?.parent_project_ref === PARENT, name: branch?.name === 'staging',
+    default: branch?.is_default === false, persistent: branch?.persistent === false,
+    with_data: branch?.with_data === false,
+    // Campo opcional de BranchResponse_Output. La salud obligatoria se
+    // consulta después en GET projects/{ref}; un valor conflictivo sí bloquea.
+    status: branch?.preview_project_status === undefined || branch.preview_project_status === 'ACTIVE_HEALTHY',
+  };
+  const failed = Object.entries(checks).find(([, passed]) => !passed);
+  if (failed) {
+    console.error(JSON.stringify({ branch_identity_checks: checks }));
+    fail(`RECOVERY_BRANCH_IDENTITY_${failed[0].toUpperCase()}`);
+  }
 }
 
 export async function inspectEmpty(env, deps = {}) {
@@ -46,8 +58,22 @@ export async function inspectEmpty(env, deps = {}) {
     return response.json();
   };
   const query = (sql) => request(`/v1/projects/${STAGING}/database/query`, sql);
-  const branch = await request(`/v1/projects/${PARENT}/branches/staging`);
+  const branches = await request(`/v1/projects/${PARENT}/branches`);
+  if (!Array.isArray(branches)) fail('RECOVERY_BRANCH_LIST_FORMAT');
+  // Una colisión parcial también es ambigua: no elegir silenciosamente un
+  // registro correcto si otro comparte su id o project_ref.
+  const matches = branches.filter((entry) => entry?.id === BRANCH || entry?.project_ref === STAGING);
+  if (!matches.length) fail('RECOVERY_BRANCH_MISSING');
+  if (matches.length !== 1) fail('RECOVERY_BRANCH_AMBIGUOUS');
+  const branch = matches[0];
   validateBranch(branch);
+  const project = await request(`/v1/projects/${STAGING}`);
+  const projectChecks = { id: project?.id === STAGING, ref: project?.ref === STAGING, status: project?.status === 'ACTIVE_HEALTHY' };
+  const projectFailure = Object.entries(projectChecks).find(([, passed]) => !passed);
+  if (projectFailure) {
+    console.error(JSON.stringify({ project_identity_checks: projectChecks }));
+    fail(`RECOVERY_PROJECT_IDENTITY_${projectFailure[0].toUpperCase()}`);
+  }
   const schemas = await query("select nspname as name, nspowner::regrole::text as owner from pg_namespace where nspname !~ '^pg_' and nspname <> 'information_schema' order by nspname");
   if (!Array.isArray(schemas) || canonical(schemas.filter((s) => s.name !== 'pgbouncer').map((s) => s.name)) !== canonical(SCHEMAS)
     || schemas.filter((s) => s.name === 'pgbouncer').length > 1) fail('RECOVERY_UNKNOWN_SCHEMA');
@@ -74,7 +100,7 @@ export async function inspectEmpty(env, deps = {}) {
   if (!Array.isArray(policies) || canonical(policies.map(policyIdentity)) !== canonical(STORAGE_POLICIES.map(policyIdentity))) fail('RECOVERY_UNEXPECTED_POLICIES');
   const plans = await query('select * from public.plan order by clave');
   if (canonical(plans) !== canonical(PLAN)) fail('RECOVERY_PLAN_DRIFT');
-  return { branch: { id: BRANCH, project_ref: STAGING, parent_project_ref: PARENT }, schemas, tables,
+  return { branch: { id: BRANCH, project_ref: STAGING, parent_project_ref: PARENT }, project: { id: STAGING, ref: STAGING, status: 'ACTIVE_HEALTHY' }, schemas, tables,
     counts: counts.sort((a, b) => a.name.localeCompare(b.name)), privateCounts, plans, policies,
     truncated, truncatedCounts: truncatedCounts.sort((a, b) => a.truncated_table.localeCompare(b.truncated_table)) };
 }
