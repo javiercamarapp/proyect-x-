@@ -722,7 +722,7 @@ async function BloqueEstadisticas({
   return (
     <PanelPeriodo
       porDia={viajesPorDia}
-      porMes={viajesPorMes ?? []}
+      porMes={viajesPorMes}
       seriesKpis={seriesKpis}
       gastoSemanalSeries={gastoSemanalSeries}
       liquidadoSemanalSeries={liquidadoSemanalSeries}
