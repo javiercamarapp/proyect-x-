@@ -4,6 +4,8 @@ import { recover, STAGING } from './staging-recovery.mjs';
 
 function fixture() {
   const branch = { id: 'f4996abd-1c9b-46e3-89d9-91a2d2053f03', project_ref: STAGING, parent_project_ref: 'gngoqsvrxdguxvsizpbw', name: 'staging', is_default: false, persistent: false, with_data: false, preview_project_status: 'ACTIVE_HEALTHY' };
+  const branches = [branch];
+  const project = { ref: STAGING, status: 'ACTIVE_HEALTHY', db_pass: 'synthetic-private-config' };
   const schemas = ['auth', 'extensions', 'graphql', 'graphql_public', 'net', 'public', 'realtime', 'storage', 'supabase_functions', 'supabase_migrations', 'vault'].map(name => ({ name,
     owner: name === 'public' ? 'pg_database_owner' : ['extensions', 'supabase_migrations'].includes(name) ? 'postgres' : 'supabase_admin' }));
   const tables = [{ name: 'plan', kind: 'r' }, ...Array.from({ length: 58 }, (_, i) => ({ name: `table_${i}`, kind: 'r' }))];
@@ -22,9 +24,10 @@ function fixture() {
   const env = { NODE_ENV: 'test' as const, SUPABASE_ACCESS_TOKEN: 'synthetic-token', SUPABASE_DB_PASSWORD: 'synthetic-password', SUPABASE_PROJECT_REF: STAGING, RECOVERY_SOURCE_SHA: 'a'.repeat(40), RECOVERY_CONFIRM: 'RESET_EMPTY_STAGING', STAGING_WRITES_PAUSED: 'true', REVIEWED_BACKUP_RUN_ID: '123' };
   const fetch = vi.fn(async (url: string, options: { body?: string; method: string }) => {
     if (!options.body) {
-      expect(url).toBe('https://api.supabase.com/v1/projects/gngoqsvrxdguxvsizpbw/branches/staging');
       expect(options.method).toBe('GET');
-      return { ok: true, json: async () => branch };
+      if (url === `https://api.supabase.com/v1/branches/${STAGING}`) return { ok: true, json: async () => project };
+      expect(url).toBe('https://api.supabase.com/v1/projects/gngoqsvrxdguxvsizpbw/branches');
+      return { ok: true, json: async () => branches };
     }
     expect(url).toBe(`https://api.supabase.com/v1/projects/${STAGING}/database/query`);
     const body = JSON.parse(options.body);
@@ -46,10 +49,54 @@ function fixture() {
   const deps = { directory: '/owned-backup', fetch, spawn, mkdir: vi.fn(), read: (path: string) => {
     const value = files.get(path); if (value === undefined) throw new Error('fixture missing'); return value;
   }, write: (path: string, content: string) => { files.set(path, content); }, readdir: () => migrations };
-  return { branch, schemas, tables, counts, privateCounts, truncated, truncatedCounts, policies, policiesAfter, plans, physical, history, files, env, deps, spawn, fetch, migrations };
+  return { branch, branches, project, schemas, tables, counts, privateCounts, truncated, truncatedCounts, policies, policiesAfter, plans, physical, history, files, env, deps, spawn, fetch, migrations };
 }
 
 describe('recuperación excepcional de staging vacío', () => {
+  it('listado selecciona la identidad exacta entre otras ramas sin consultar detalle/config', async () => {
+    const f = fixture(); f.branches.unshift({ ...f.branch, id: 'other', project_ref: 'another', name: 'production', is_default: true });
+    await expect(recover('capture', f.env, f.deps)).resolves.toBeUndefined();
+    expect(f.fetch.mock.calls.filter(([, opts]) => opts.method === 'GET')).toHaveLength(2);
+  });
+  it.each(['absent', 'duplicate', 'ref-collision'])('listado rechaza selección %s antes de SQL o CLI', async mode => {
+    const f = fixture();
+    if (mode === 'absent') f.branches.splice(0);
+    else f.branches.push({ ...f.branch, id: mode === 'ref-collision' ? 'wrong-id' : f.branch.id });
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow(mode === 'absent' ? 'RECOVERY_BRANCH_MISSING' : 'RECOVERY_BRANCH_AMBIGUOUS');
+    expect(f.fetch).toHaveBeenCalledTimes(1);
+    expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it('listado no toma una respuesta de detalle como lista ni publica su configuración', async () => {
+    const f = fixture();
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ...f.branch, private_config: 'synthetic-secret' }) }));
+    await expect(recover('capture', f.env, { ...f.deps, fetch })).rejects.toThrow('RECOVERY_BRANCH_LIST_FORMAT');
+    expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it('identidad fallida informa todas las comparaciones sin valores del proveedor', async () => {
+    const f = fixture(); f.branch.name = 'synthetic-secret'; f.branch.preview_project_status = 'private-config';
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(recover('capture', f.env, f.deps)).rejects.toThrow('RECOVERY_BRANCH_IDENTITY_NAME');
+      expect(JSON.parse(log.mock.calls[0][0])).toEqual({ branch_identity_checks: { id: true, ref: true, parent: true, name: false, default: true, persistent: true, with_data: true, status: false } });
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-secret|private-config/);
+    } finally { log.mockRestore(); }
+  });
+  it('no persiste configuración privada de la respuesta de salud de rama', async () => {
+    const f = fixture();
+    await recover('capture', f.env, f.deps);
+    expect([...f.files.values()].join('')).not.toContain('synthetic-private-config');
+  });
+  it('campo preview opcional ausente requiere salud activa del proyecto exacto', async () => {
+    const f = fixture(); Reflect.deleteProperty(f.branch, 'preview_project_status');
+    await expect(recover('capture', f.env, f.deps)).resolves.toBeUndefined();
+    expect(f.fetch).toHaveBeenCalledWith(`https://api.supabase.com/v1/branches/${STAGING}`, expect.objectContaining({ method: 'GET', redirect: 'error' }));
+  });
+  it.each(['ref', 'status'] as const)('proyecto con %s conflictivo bloquea aunque branch diga healthy', async key => {
+    const f = fixture(); f.project[key] = 'wrong';
+    await expect(recover('capture', f.env, f.deps)).rejects.toThrow(`RECOVERY_PROJECT_IDENTITY_${key.toUpperCase()}`);
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+  });
   it('preparar nunca alcanza reset y conserva esquema, planes y metadata con hashes', async () => {
     const f = fixture();
     await recover('capture', f.env, f.deps);
