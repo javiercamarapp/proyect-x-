@@ -1,37 +1,71 @@
-fecha_corrida: 2026-09-03 (jueves, corrida programada)
-ultimo_dia_barrido: 2026-09-02 (sin cambio — esta corrida no pudo barrer nada
-  nuevo)
-rango_barrido: vacío — el día siguiente al último barrido (03-sep) es hoy
-  mismo; el barrido diario opera sobre "ayer" (02-sep), que la corrida
-  anterior (2026-09-02 21:30) ya cubrió. No había rango pendiente que
-  cerrar aun si el egress hubiera funcionado.
-notas_revisadas: 0
-estado: "INFRA — egress bloqueado a nivel de proxy de organización en esta
-  sesión de nube. No es un fallo específico de sidofqa: CONNECT rechazado
-  con 403 también contra www.sat.gob.mx, diputados.gob.mx y hasta
-  www.google.com (ver recentRelayFailures en /__agentproxy/status). No se
-  pudo hacer ni una sola petición de verificación esta corrida."
-fichas_disparadas: 0
-etag_sat: no_recheck — hoy es jueves, no lunes; ventana siguiente:
-  07-sep-2026 (y ese día también dependerá de que el egress esté abierto)
-deriva_ley_check: no_aplica — no es día 1 de trimestre
-sin_verificar_esta_corrida: >
-  Todo. Ninguna petición de red se completó (SIDOF, SAT, diputados,
-  incluso un host de control como google.com). No hay forma de distinguir
-  "sin novedades" de "no pude ver" en esta corrida — se reporta como INFRA,
-  no como SIN CAMBIOS.
-accion_requerida: >
-  Esta es la TERCERA vez que una corrida programada en la nube de esta
-  rutina cae por egress bloqueado (31-ago, 02-sep temprano, y ahora
-  03-sep) — las dos previas se cerraron manualmente desde una sesión local
-  con egress abierto. El bloqueo no es específico de sidofqa.segob.gob.mx:
-  esta corrida confirmó que NINGÚN host externo es alcanzable desde esta
-  sesión de nube programada (ni siquiera google.com), así que no es cosa
-  de agregar un dominio a una allowlist fina — es que las sesiones
-  programadas de esta rutina corren bajo una política de red sin egress
-  saliente en absoluto. Sigue pendiente decidir: (a) mover la cadencia
-  diaria de esta rutina a un entorno/sesión con egress general habilitado,
-  o (b) que un admin habilite egress saliente (al menos a los hosts de
-  fuentes.md) para las sesiones de nube donde corre este cron. Sin
-  resolver esto, cada corrida programada seguirá siendo un no-op de
-  infraestructura que alguien tiene que notar y cerrar a mano.
+fecha_corrida: 2026-09-05 (sábado, 21:30, sesión local con egress abierto)
+ultimo_dia_barrido: 2026-09-05
+rango_barrido: 2026-09-03..2026-09-05 — barrido INDEPENDIENTE hecho desde esta
+  sesión (peticiones reales a sidofqa, no copiado de otra rama), que resulta
+  cubrir el mismo hueco que ya había cerrado la corrida del 04-sep en la rama
+  mejora/dof-diario-20260904 (PR #329, aún sin mergear). Ver
+  "hallazgo_del_dominio" abajo: coincide exacto.
+notas_revisadas: 231 — 03-sep: 124 matutina + 0 vespertina + 0 extraordinaria
+  (diarios/porFecha confirma que el 03-sep solo tuvo Matutina, Vespertina:
+  null → 0 notas en vespertina es correcto, no silencio); 04-sep: 99 matutina
+  + 8 vespertina + 0 extraordinaria (diarios confirma ambas ediciones, ambas
+  no vacías); 05-sep: 0 — diarios/porFecha devuelve 404 (sin edición del DOF
+  ese día, sábado) y notas/{fecha} devuelve las cuatro listas vacías,
+  CONSISTENTE con "no hubo DOF", no con una caída.
+anti_silencio: OK en los tres días — cruce contra diarios/porFecha sin
+  discrepancia en ninguno.
+hallazgo_del_dominio: >
+  Acuerdo 134/2026 (SHCP), DOF 04-sep-2026 vespertina, codNota 5798037:
+  cuotas semanales de IEPS a combustibles automotrices, vigencia 05 al
+  11-sep-2026. Diésel: estímulo 90.78%, reducción SHCP $6.6847/litro, cuota
+  disminuida $0.6787/litro. Aritmética verificada de forma independiente en
+  esta corrida: 6.6847 + 0.6787 = 7.3634 (cuota completa LIF 2026), exacta.
+  Es la publicación semanal de rutina que alimenta
+  normas/datos/cuota-ieps-diesel.yaml (ficha lif-2026-20-A).
+
+  ESTE HALLAZGO YA ESTÁ CAPTURADO en la rama mejora/dof-diario-20260904 (PR
+  #329, abierto, sin mergear) con los mismos números exactos. Para no
+  duplicar la entrada en normas/datos/cuota-ieps-diesel.yaml (y no generar un
+  conflicto o una fila repetida cuando esa PR se integre), esta corrida NO
+  vuelve a escribir el dato — solo lo verifica de forma independiente y dos
+  veces por dos sesiones distintas es la mejor confirmación posible de que es
+  correcto.
+otros_titulos_revisados_sin_accion:
+  - "4x Nota Aclaratoria a convenios STPS (centros de conciliación /
+    tribunales laborales) en 03 y 04-sep — coincidencia de la palabra suelta
+    'Nota Aclaratoria', fuera del dominio de Likida (no toca IEPS/ISR/IVA/
+    CFF/LIF/RMF/carta porte/CFDI/RFA/SCT/UMA/LFPDPPP)."
+  - "2x Acuerdo de estímulos a gasolinas en franja/región fronteriza
+    (codNota 5798038, 5798039, 04-sep vespertina) — combustible pero fuera
+    del radio de las fichas (diésel autotransporte, no gasolina fronteriza)."
+  - "PROY-NOM-008-SICT2-2026 (amortiguadores de impacto en carreteras) y
+    PROY-NOM-005-SICT2-2026 (información de emergencia para transporte de
+    sustancias peligrosas), 04-sep matutina — avisos de CONSULTA PÚBLICA,
+    sin vigencia todavía, y no corresponden al número de NOM ya fichada
+    (nom-087-sct-2-2017, que es de tiempos de conducción, no de hazmat).
+    Sin acción; vigilar si alguna llega a publicarse como NOM definitiva."
+pr_abiertos_redundantes_para_triage: >
+  Esta rutina tiene AHORA MISMO cinco PRs abiertos que se pisan entre sí,
+  producto de corridas repetidas cayendo por egress bloqueado en sesiones de
+  nube y siendo cerradas manualmente desde sesiones locales distintas:
+  #324 (dof-diario 03-sep), #327 (normativa 04-sep, egress bloqueado),
+  #328 (cuota-diesel 05-sep, egress bloqueado), #329 (dof-diario 04-sep — el
+  que SÍ tiene el dato real y verificado, dos veces ya), #330 (normativa
+  05-sep, egress bloqueado). Recomendación para quien revise: mergear #329
+  y cerrar #324/#327/#328/#330 como obsoletas — no aportan dato nuevo sobre
+  lo que #329 ya cerró. No se tocan esas PRs desde aquí: cerrar PRs es una
+  acción visible que le toca decidir a Javier.
+etag_sat: no_recheck — hoy es sábado, no lunes; próxima ventana: lunes
+  07-sep-2026
+deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
+fichas_disparadas: 0 — ninguna de las 18 fichas de normas/*.yaml quedó
+  `contradicho` en este barrido (lif-2026-20-A sigue verificado; su dato
+  semanal vive aparte, en normas/datos/, y ya se cerró en PR #329).
+estado: "OK — egress abierto en esta sesión local. Barrido 03..05-sep
+  verificado de forma independiente, sin discrepancias contra la corrida
+  previa del 04-sep. Único hallazgo del dominio ya capturado en PR #329
+  (no duplicado aquí). Persiste sin resolver el problema de fondo: las
+  corridas PROGRAMADAS de esta rutina en la nube siguen cayendo por egress
+  bloqueado a nivel de proxy de organización (31-ago, 02-sep, 03-sep,
+  04-sep normativa, 05-sep normativa y cuota-diesel) y generando PRs
+  huérfanos que alguien tiene que notar y triar a mano, como esta corrida."
