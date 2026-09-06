@@ -7,6 +7,10 @@ import { api, PROJECT, STAGING_REF, PRODUCTION_REF, validateSupabaseEnv } from '
 
 export const KEYS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
 const asEnv = (values) => KEYS.map((key) => `${key}=${JSON.stringify(values[key])}`).join('\n');
+const sameTargets = (left, right) => Array.isArray(left) && Array.isArray(right)
+  && JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+const sameRecord = (row, expected, targets) => row?.id === expected.id && row?.key === expected.key
+  && row?.type === expected.type && sameTargets(row?.target, targets);
 
 const CAUSES = new Map([
   ['Falta intención explícita de aislar Preview', 'INTENT'], ['Faltan credenciales administrativas', 'CREDENTIALS'],
@@ -69,22 +73,32 @@ async function configurePreviewWork(env, deps, at) {
     }
     return rows;
   };
+  const selectTarget = (rows, target, key) => {
+    const matches = rows.filter((item) => item.key === key && item.target.includes(target));
+    if (matches.length !== 1 || typeof matches[0].id !== 'string' || !matches[0].id) throw new Error('Configuración ausente o ambigua');
+    return matches[0];
+  };
   const readTarget = async (rows, target, stage) => {
     at(stage);
     const result = {};
     for (const key of KEYS) {
-      const matches = rows.filter((item) => item.key === key && item.target.includes(target));
-      if (matches.length !== 1) throw new Error('Configuración ausente o ambigua');
-      const row = await request(`/v1/projects/${PROJECT}/env/${encodeURIComponent(matches[0].id)}`);
+      const selected = selectTarget(rows, target, key);
+      // Sensitive es deliberadamente irrecuperable por la API de lectura.
+      // No rebajar su tipo ni intentar revelarlo mediante otro endpoint.
+      if (selected.type === 'sensitive') continue;
+      const row = await request(`/v1/projects/${PROJECT}/env/${encodeURIComponent(selected.id)}`);
       if (row.key !== key || typeof row.value !== 'string') throw new Error('No se pudo comprobar el valor Vercel');
       result[key] = row.value;
     }
     return result;
   };
   const rows = await list('VERCEL_LIST_BEFORE');
+  const productionRecords = Object.fromEntries(KEYS.map(key => [key, selectTarget(rows, 'production', key)]));
   const productionBefore = await readTarget(rows, 'production', 'VERCEL_PRODUCTION_READ_BEFORE');
   at('VERCEL_PRODUCTION_VALIDATE');
-  validateSupabaseEnv(asEnv(productionBefore), PRODUCTION_REF);
+  const productionReadable = KEYS.every(key => typeof productionBefore[key] === 'string');
+  if (productionReadable) validateSupabaseEnv(asEnv(productionBefore), PRODUCTION_REF);
+  const written = {};
   for (const key of KEYS) {
     at('VERCEL_PREVIEW_SELECT');
     const matches = rows.filter((item) => item.key === key && item.target.includes('preview'));
@@ -93,28 +107,47 @@ async function configurePreviewWork(env, deps, at) {
     if (current && current.target.length > 1) {
       // Sólo separar targets: JAMÁS cambiar el valor del registro compartido.
       at('VERCEL_PREVIEW_DETACH');
-      await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, {
+      const detached = await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, {
         method: 'PATCH', body: JSON.stringify({ target: current.target.filter((target) => target !== 'preview') }),
       });
+      if (!sameRecord(detached, current, current.target.filter(target => target !== 'preview'))) throw new Error('Vercel rechazó la variable Preview');
     }
-    const body = { key, value: values[key], type: 'encrypted', target: ['preview'] };
+    const type = current?.type === 'sensitive' || productionRecords[key].type === 'sensitive' ? 'sensitive' : 'encrypted';
+    const body = { key, value: values[key], type, target: ['preview'] };
+    let acknowledged;
     if (current?.target.length === 1) {
       at('VERCEL_PREVIEW_PATCH');
-      await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      acknowledged = await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: JSON.stringify(body) });
     } else {
       at('VERCEL_PREVIEW_CREATE');
       const result = await request(`/v10/projects/${PROJECT}/env`, { method: 'POST', body: JSON.stringify(body) });
-      if (result.failed?.length) throw new Error('Vercel rechazó la variable Preview');
+      // POST de un objeto devuelve created singular y failed obligatorio.
+      // https://vercel.com/docs/rest-api/projects/create-one-or-more-environment-variables
+      if (!Array.isArray(result.failed) || result.failed.length) throw new Error('Vercel rechazó la variable Preview');
+      acknowledged = result.created;
     }
+    if (typeof acknowledged?.id !== 'string' || !acknowledged.id
+      || !sameRecord(acknowledged, { id: current?.target.length === 1 ? current.id : acknowledged.id, key, type }, ['preview'])) {
+      throw new Error('Vercel rechazó la variable Preview');
+    }
+    written[key] = acknowledged;
   }
   const after = await list('VERCEL_LIST_AFTER');
   const productionAfter = await readTarget(after, 'production', 'VERCEL_PRODUCTION_READ_AFTER');
   at('VERCEL_PRODUCTION_COMPARE');
+  if (KEYS.some(key => !sameRecord(selectTarget(after, 'production', key), productionRecords[key], productionRecords[key].target.filter(target => target !== 'preview')))) {
+    throw new Error('Production cambió durante la configuración; detener release');
+  }
   if (KEYS.some((key) => productionBefore[key] !== productionAfter[key])) throw new Error('Production cambió durante la configuración; detener release');
   const previewAfter = await readTarget(after, 'preview', 'VERCEL_PREVIEW_READ_AFTER');
   at('VERCEL_PREVIEW_COMPARE');
-  if (KEYS.some((key) => previewAfter[key] !== values[key])) throw new Error('Preview no conservó los valores esperados');
-  return { preview_ref: STAGING_REF, production_preserved: true, variables: KEYS.length };
+  if (KEYS.some((key) => !sameRecord(selectTarget(after, 'preview', key), written[key], ['preview'])
+    || (written[key].type !== 'sensitive' && previewAfter[key] !== values[key]))) throw new Error('Preview no conservó los valores esperados');
+  // Metadatos y ACK no demuestran igualdad de un secreto oculto ni detectan
+  // una escritura concurrente de su valor. El pull/guard antes del build sigue
+  // comprobando ref/roles; este resultado jamás certifica esos valores.
+  return { preview_ref: STAGING_REF, production_verification: productionReadable ? 'values_and_metadata' : 'metadata_only',
+    preview_verification: KEYS.some(key => written[key].type === 'sensitive') ? 'write_ack_and_metadata' : 'values_and_metadata', variables: KEYS.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

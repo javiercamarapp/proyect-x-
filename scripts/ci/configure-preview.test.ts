@@ -7,22 +7,23 @@ import { PRODUCTION_REF, STAGING_REF } from './production-candidate.mjs';
 
 const jwt = (ref: string, role: string) => `header.${Buffer.from(JSON.stringify({ ref, role })).toString('base64url')}.signature`;
 const env: NodeJS.ProcessEnv = { NODE_ENV: 'test', CONFIGURE_PREVIEW: 'ISOLATE_EXISTING_STAGING', VERCEL_TOKEN: 'synthetic-v', SUPABASE_ACCESS_TOKEN: 'synthetic-s' };
-function fixture() {
+function fixture(sensitive = false) {
   const oldValues = [`https://${PRODUCTION_REF}.supabase.co`, jwt(PRODUCTION_REF, 'anon'), jwt(PRODUCTION_REF, 'service_role')];
-  const rows = KEYS.map((key: string, index: number) => ({ id: `id${index}`, key, target: ['preview', 'production'], value: oldValues[index] }));
+  const rows = KEYS.map((key: string, index: number) => ({ id: `id${index}`, key, type: sensitive ? 'sensitive' : 'encrypted', target: ['preview', 'production'], value: oldValues[index] }));
+  const visible = (row: typeof rows[number]) => sensitive ? { ...row, value: undefined } : structuredClone(row);
   let loseCreate = false;
   const vercel = vi.fn(async (path: string, options?: { method: string; body: string }) => {
-    if (!options) return path.endsWith('/env') ? { envs: structuredClone(rows) } : { ...rows.find((item) => path.endsWith(`/${item.id}`)) };
+    if (!options) return path.endsWith('/env') ? { envs: rows.map(visible) } : visible(rows.find((item) => path.endsWith(`/${item.id}`))!);
     const body = JSON.parse(options.body);
     if (options.method === 'PATCH') {
       const row = rows.find((item) => path.endsWith(`/${item.id}`))!;
       Object.assign(row, body);
-      return structuredClone(row);
+      return visible(row);
     }
     expect(body.target).toEqual(['preview']);
     rows.push({ ...body, id: `new${rows.length}` });
     if (loseCreate) { loseCreate = false; throw new Error('transport lost after mutation'); }
-    return { failed: [], created: body };
+    return { failed: [], created: visible(rows[rows.length - 1]) };
   });
   const fetch = vi.fn(async () => ({ ok: true, json: async () => [
     { name: 'anon', api_key: jwt(STAGING_REF, 'anon') },
@@ -32,6 +33,50 @@ function fixture() {
 }
 
 describe('aislar la Preview existente conservando Production', () => {
+  it('separa sensitive sin leer valores y conserva tipo, identidad y Production', async () => {
+    const f = fixture(true);
+    const result = await configurePreview(env, f);
+    expect(result).toMatchObject({ production_verification: 'metadata_only', preview_verification: 'write_ack_and_metadata' });
+    expect(result).not.toHaveProperty('production_preserved');
+    expect(f.vercel.mock.calls.filter(([path, options]) => !options && !path.endsWith('/env'))).toHaveLength(0);
+    expect(f.rows.filter(row => row.target.includes('production')).map(row => row.value)).toEqual(f.oldValues);
+    for (const [path, options] of f.vercel.mock.calls.filter(([, options]) => options)) {
+      const body = JSON.parse(options!.body);
+      if (path.includes('/env/id')) expect(body).toEqual({ target: ['production'] });
+      else expect(body).toMatchObject({ type: 'sensitive', target: ['preview'] });
+    }
+  });
+  it('reintenta sensitive tras POST confirmado por servidor pero respuesta perdida sin duplicar', async () => {
+    const f = fixture(true); f.lose();
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_PREVIEW_CREATE' } });
+    await expect(configurePreview(env, f)).resolves.toMatchObject({ production_verification: 'metadata_only' });
+    expect(f.rows).toHaveLength(6);
+    expect(f.rows.filter(row => row.target.includes('production')).map(row => row.value)).toEqual(f.oldValues);
+    expect(f.rows.every(row => row.type === 'sensitive')).toBe(true);
+  });
+  it.each(['missing_id', 'wrong_type', 'wrong_target', 'missing_failed'])('rechaza ACK POST sensitive inválido: %s', async fault => {
+    const f = fixture(true); const original = f.vercel.getMockImplementation()!;
+    f.vercel.mockImplementation(async (path, options) => {
+      const result = await original(path, options);
+      if (options?.method !== 'POST') return result;
+      const invalid = structuredClone(result) as { failed?: unknown[]; created: { id?: string; type: string; target: string[] } };
+      if (fault === 'missing_id') delete invalid.created.id;
+      if (fault === 'wrong_type') invalid.created.type = 'encrypted';
+      if (fault === 'wrong_target') invalid.created.target = ['production'];
+      if (fault === 'missing_failed') delete invalid.failed;
+      return invalid as typeof result;
+    });
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_PREVIEW_CREATE', reason: 'WRITE_REJECTED' } });
+  });
+  it('rechaza sustitución posterior del ID productivo aunque se oculten los valores', async () => {
+    const f = fixture(true); const original = f.vercel.getMockImplementation()!;
+    let reads = 0;
+    f.vercel.mockImplementation(async (path, options) => {
+      if (!options && path.endsWith('/env') && ++reads === 2) f.rows[0].id = 'replacement';
+      return original(path, options);
+    });
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_PRODUCTION_COMPARE', reason: 'PRODUCTION_CHANGED' } });
+  });
   it.each([401, 403, 429, 500])('diagnostica HTTP Supabase %s sin consumir/publicar su cuerpo', async status => {
     const f = fixture(); const json = vi.fn(async () => ({ secret: 'synthetic-private-response' }));
     const fetch = vi.fn(async () => ({ ok: false, status, json }));
@@ -62,7 +107,7 @@ describe('aislar la Preview existente conservando Production', () => {
   });
   it('separa registros compartidos sin escribir valores productivos y verifica ambos destinos', async () => {
     const f = fixture();
-    expect(await configurePreview(env, f)).toEqual({ preview_ref: STAGING_REF, production_preserved: true, variables: 3 });
+    expect(await configurePreview(env, f)).toEqual({ preview_ref: STAGING_REF, production_verification: 'values_and_metadata', preview_verification: 'values_and_metadata', variables: 3 });
     expect(f.rows.filter((row) => row.target.includes('production')).map((row) => row.value)).toEqual(f.oldValues);
     const oldPatches = f.vercel.mock.calls.filter(([path, options]) => path.includes('/env/id') && options);
     expect(oldPatches).toHaveLength(3);
