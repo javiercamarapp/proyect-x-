@@ -24,11 +24,11 @@ describe('promoción del artefacto Production probado', () => {
     const candidate = job('production_candidate');
     expect(candidate).toContain('inputs.promote == true');
     expect(candidate).toContain('--environment=production');
-    expect(candidate).toContain('build --prod');
+    expect(candidate).toContain('prepare-build-env.mjs production');
     expect(candidate).toContain('deploy --prebuilt --prod --skip-domain');
     expect(candidate).toContain('needs.preflight.outputs.sha');
-    expect(candidate.indexOf('production-candidate.mjs production-env')).toBeGreaterThan(candidate.indexOf('pull --yes --environment=production'));
-    expect(candidate.indexOf('production-candidate.mjs production-env')).toBeLessThan(candidate.indexOf('build --prod'));
+    expect(candidate.indexOf('prepare-build-env.mjs production')).toBeGreaterThan(candidate.indexOf('pull --yes --environment=production'));
+    expect(candidate.indexOf('prepare-build-env.mjs production')).toBeLessThan(candidate.indexOf('deploy --prebuilt --prod'));
   });
   it('migra antes del candidato y prueba ese ID antes de promoverlo', () => {
     expect(job('production_candidate')).toContain('production_migrations');
@@ -49,8 +49,8 @@ describe('promoción del artefacto Production probado', () => {
     expect(job('supabase-dry-run')).toMatch(/db push --dry-run\n\s+npx[^\n]+ db push\n/);
     expect(migrations).toContain(PRODUCTION_REF);
     const preview = job('preview');
-    expect(preview.indexOf('production-candidate.mjs preview-env')).toBeGreaterThan(preview.indexOf('pull --yes --environment=preview'));
-    expect(preview.indexOf('production-candidate.mjs preview-env')).toBeLessThan(preview.indexOf(' build\n'));
+    expect(preview.indexOf('prepare-build-env.mjs preview')).toBeGreaterThan(preview.indexOf('pull --yes --environment=preview'));
+    expect(preview.indexOf('prepare-build-env.mjs preview')).toBeLessThan(preview.indexOf('deploy --prebuilt'));
   });
   it('serializa releases completos y no pasa credenciales por argv', () => {
     expect(workflow).toContain('group: vercel-release-likida');
