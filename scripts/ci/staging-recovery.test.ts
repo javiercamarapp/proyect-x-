@@ -5,7 +5,7 @@ import { recover, STAGING } from './staging-recovery.mjs';
 function fixture() {
   const branch = { id: 'f4996abd-1c9b-46e3-89d9-91a2d2053f03', project_ref: STAGING, parent_project_ref: 'gngoqsvrxdguxvsizpbw', name: 'staging', is_default: false, persistent: false, with_data: false, preview_project_status: 'ACTIVE_HEALTHY' };
   const branches = [branch];
-  const project = { id: STAGING, ref: STAGING, status: 'ACTIVE_HEALTHY' };
+  const project = { ref: STAGING, status: 'ACTIVE_HEALTHY', db_pass: 'synthetic-private-config' };
   const schemas = ['auth', 'extensions', 'graphql', 'graphql_public', 'net', 'public', 'realtime', 'storage', 'supabase_functions', 'supabase_migrations', 'vault'].map(name => ({ name,
     owner: name === 'public' ? 'pg_database_owner' : ['extensions', 'supabase_migrations'].includes(name) ? 'postgres' : 'supabase_admin' }));
   const tables = [{ name: 'plan', kind: 'r' }, ...Array.from({ length: 58 }, (_, i) => ({ name: `table_${i}`, kind: 'r' }))];
@@ -25,7 +25,7 @@ function fixture() {
   const fetch = vi.fn(async (url: string, options: { body?: string; method: string }) => {
     if (!options.body) {
       expect(options.method).toBe('GET');
-      if (url === `https://api.supabase.com/v1/projects/${STAGING}`) return { ok: true, json: async () => project };
+      if (url === `https://api.supabase.com/v1/branches/${STAGING}`) return { ok: true, json: async () => project };
       expect(url).toBe('https://api.supabase.com/v1/projects/gngoqsvrxdguxvsizpbw/branches');
       return { ok: true, json: async () => branches };
     }
@@ -81,12 +81,17 @@ describe('recuperación excepcional de staging vacío', () => {
       expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-secret|private-config/);
     } finally { log.mockRestore(); }
   });
+  it('no persiste configuración privada de la respuesta de salud de rama', async () => {
+    const f = fixture();
+    await recover('capture', f.env, f.deps);
+    expect([...f.files.values()].join('')).not.toContain('synthetic-private-config');
+  });
   it('campo preview opcional ausente requiere salud activa del proyecto exacto', async () => {
     const f = fixture(); Reflect.deleteProperty(f.branch, 'preview_project_status');
     await expect(recover('capture', f.env, f.deps)).resolves.toBeUndefined();
-    expect(f.fetch).toHaveBeenCalledWith(`https://api.supabase.com/v1/projects/${STAGING}`, expect.objectContaining({ method: 'GET', redirect: 'error' }));
+    expect(f.fetch).toHaveBeenCalledWith(`https://api.supabase.com/v1/branches/${STAGING}`, expect.objectContaining({ method: 'GET', redirect: 'error' }));
   });
-  it.each(['id', 'ref', 'status'] as const)('proyecto con %s conflictivo bloquea aunque branch diga healthy', async key => {
+  it.each(['ref', 'status'] as const)('proyecto con %s conflictivo bloquea aunque branch diga healthy', async key => {
     const f = fixture(); f.project[key] = 'wrong';
     await expect(recover('capture', f.env, f.deps)).rejects.toThrow(`RECOVERY_PROJECT_IDENTITY_${key.toUpperCase()}`);
     expect(f.spawn).not.toHaveBeenCalled();

@@ -55,7 +55,7 @@ export async function inspectEmpty(env, deps = {}) {
       ...(query ? { body: JSON.stringify({ query, read_only: true }) } : {}),
     });
     if (!response.ok) {
-      console.error(JSON.stringify({ metadata_http: response.status, operation: query ? 'query' : path.endsWith('/branches') ? 'branch_list' : 'project' }));
+      console.error(JSON.stringify({ metadata_http: response.status, operation: query ? 'query' : path.endsWith('/branches') ? 'branch_list' : 'branch_health' }));
       fail('RECOVERY_METADATA_HTTP');
     }
     return response.json();
@@ -70,8 +70,10 @@ export async function inspectEmpty(env, deps = {}) {
   if (matches.length !== 1) fail('RECOVERY_BRANCH_AMBIGUOUS');
   const branch = matches[0];
   validateBranch(branch);
-  const project = await request(`/v1/projects/${STAGING}`);
-  const projectChecks = { id: project?.id === STAGING, ref: project?.ref === STAGING, status: project?.status === 'ACTIVE_HEALTHY' };
+  // Las ramas preview no están disponibles en GET projects/{ref} (404).
+  // La configuración se mantiene sólo en memoria; conservar únicamente ref/status.
+  const project = await request(`/v1/branches/${STAGING}`);
+  const projectChecks = { ref: project?.ref === STAGING, status: project?.status === 'ACTIVE_HEALTHY' };
   const projectFailure = Object.entries(projectChecks).find(([, passed]) => !passed);
   if (projectFailure) {
     console.error(JSON.stringify({ project_identity_checks: projectChecks }));
@@ -103,7 +105,7 @@ export async function inspectEmpty(env, deps = {}) {
   if (!Array.isArray(policies) || canonical(policies.map(policyIdentity)) !== canonical(STORAGE_POLICIES.map(policyIdentity))) fail('RECOVERY_UNEXPECTED_POLICIES');
   const plans = await query('select * from public.plan order by clave');
   if (canonical(plans) !== canonical(PLAN)) fail('RECOVERY_PLAN_DRIFT');
-  return { branch: { id: BRANCH, project_ref: STAGING, parent_project_ref: PARENT }, project: { id: STAGING, ref: STAGING, status: 'ACTIVE_HEALTHY' }, schemas, tables,
+  return { branch: { id: BRANCH, project_ref: STAGING, parent_project_ref: PARENT }, project: { ref: STAGING, status: 'ACTIVE_HEALTHY' }, schemas, tables,
     counts: counts.sort((a, b) => a.name.localeCompare(b.name)), privateCounts, plans, policies,
     truncated, truncatedCounts: truncatedCounts.sort((a, b) => a.truncated_table.localeCompare(b.truncated_table)) };
 }
