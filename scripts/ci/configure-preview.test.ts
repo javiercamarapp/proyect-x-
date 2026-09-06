@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { configurePreview, KEYS } from './configure-preview.mjs';
 import { PRODUCTION_REF, STAGING_REF } from './production-candidate.mjs';
 
@@ -29,6 +32,34 @@ function fixture() {
 }
 
 describe('aislar la Preview existente conservando Production', () => {
+  it.each([401, 403, 429, 500])('diagnostica HTTP Supabase %s sin consumir/publicar su cuerpo', async status => {
+    const f = fixture(); const json = vi.fn(async () => ({ secret: 'synthetic-private-response' }));
+    const fetch = vi.fn(async () => ({ ok: false, status, json }));
+    await expect(configurePreview(env, { ...f, fetch })).rejects.toMatchObject({ diagnostic: { stage: 'SUPABASE_KEYS_HTTP', reason: 'HTTP', http_status: status } });
+    expect(json).not.toHaveBeenCalled();
+    expect(f.vercel).not.toHaveBeenCalled();
+  });
+  it('pide valores revelados por contrato y detecta api_key ausente antes de Vercel', async () => {
+    const f = fixture();
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => [{ name: 'anon', api_key: null }, { name: 'service_role' }] }));
+    await expect(configurePreview(env, { ...f, fetch })).rejects.toMatchObject({ diagnostic: { stage: 'SUPABASE_KEYS_SELECT', reason: 'KEY_VALUE_MISSING' } });
+    expect(fetch).toHaveBeenCalledWith(`https://api.supabase.com/v1/projects/${STAGING_REF}/api-keys?reveal=true`, expect.objectContaining({ method: 'GET', redirect: 'error' }));
+    expect(f.vercel).not.toHaveBeenCalled();
+  });
+  it('distingue etapa HTTP Vercel y nunca interpola un error arbitrario', async () => {
+    const f = fixture(); f.vercel.mockRejectedValueOnce(new Error('Vercel API HTTP 403'));
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_LIST_BEFORE', reason: 'HTTP', http_status: 403 } });
+    f.vercel.mockRejectedValueOnce(new Error('synthetic-private-token https://user:password@private.invalid'));
+    const failed = configurePreview(env, f);
+    await expect(failed).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_LIST_BEFORE', reason: 'TRANSPORT_OR_UNEXPECTED' } });
+    await expect(failed).rejects.not.toThrow(/synthetic-private|password|https:/);
+  });
+  it('CLI real imprime sólo enums/status ante un HTTP403 simulado sin red', () => {
+    const result = spawnSync(process.execPath, ['--import', 'data:text/javascript,globalThis.fetch=async()=>({ok:false,status:403})', resolve('scripts/ci/configure-preview.mjs')], { env, encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({ stage: 'SUPABASE_KEYS_HTTP', reason: 'HTTP', http_status: 403 });
+    expect(result.stdout).toBe('');
+  });
   it('separa registros compartidos sin escribir valores productivos y verifica ambos destinos', async () => {
     const f = fixture();
     expect(await configurePreview(env, f)).toEqual({ preview_ref: STAGING_REF, production_preserved: true, variables: 3 });
@@ -59,5 +90,49 @@ describe('aislar la Preview existente conservando Production', () => {
     const f = fixture();
     await expect(configurePreview({ ...env, CONFIGURE_PREVIEW: '' }, f)).rejects.toThrow('intención');
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('preparación manual sin migraciones ni despliegue', () => {
+  const workflow = readFileSync(resolve('.github/workflows/deploy-preview-promote.yml'), 'utf8');
+  const job = (name: string) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z_-]+:\n/)[0] ?? '';
+  const intent = job('preflight').split('- name: Validar intención de producción')[1]
+    .split('        run: |\n')[1].trimEnd().split('\n').map(line => line.slice(10)).join('\n');
+  const mode = { PREPARE_ONLY: 'true', CONFIGURE: 'true', PROMOTE: 'false', CONFIRM: '', DIAGNOSE: 'none', REPAIR: 'none' };
+  const executeGuard = (changes: Partial<typeof mode> = {}) => spawnSync('/bin/bash', ['-c', intent], {
+    env: { NODE_ENV: 'test', ...mode, ...changes }, encoding: 'utf8',
+  });
+
+  it('ejecuta el guard real y permite sólo la combinación de preparación aislada', () => {
+    expect(executeGuard().status).toBe(0);
+    for (const changes of [{ CONFIGURE: 'false' }, { PROMOTE: 'true' }, { DIAGNOSE: 'staging' }, { REPAIR: 'production' }]) {
+      const result = executeGuard(changes);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('prepare_preview_only exige');
+    }
+    expect(executeGuard({ PREPARE_ONLY: 'false', PROMOTE: 'true' }).status).toBe(1);
+    expect(executeGuard({ PREPARE_ONLY: 'false', PROMOTE: 'true', CONFIRM: 'APPLY_MIGRATIONS_AND_PROMOTE' }).status).toBe(0);
+  });
+  it('configura sobre el SHA resuelto sin acceder a pasos SQL, build o deploy', () => {
+    const prepare = job('prepare_preview');
+    expect(prepare).toContain('needs: preflight');
+    expect(prepare).toContain('if: inputs.prepare_preview_only == true');
+    expect(prepare).toContain('ref: ${{ needs.preflight.outputs.sha }}');
+    expect(prepare).toContain('CONFIGURE_PREVIEW: ISOLATE_EXISTING_STAGING');
+    expect(prepare.match(/\brun:/g)).toHaveLength(1);
+    expect(prepare).toContain('run: node scripts/ci/configure-preview.mjs');
+    expect(prepare).not.toMatch(/db push|db reset|deploy|npm ci|npm run build|SUPABASE_DB_PASSWORD/);
+    expect(job('quality')).toContain('if: inputs.prepare_preview_only != true');
+    for (const name of ['diagnose_migrations', 'repair_migrations']) {
+      expect(job(name)).toContain('&& inputs.prepare_preview_only != true');
+    }
+    expect(job('supabase-dry-run')).toContain('needs: [preflight, quality]');
+    expect(job('preview')).toContain('needs: [preflight, quality, supabase-dry-run, preview_configuration]');
+    for (const name of ['production_migrations', 'production_candidate', 'production_smoke', 'promote']) {
+      expect(job(name)).toContain('inputs.promote == true');
+    }
+    expect(workflow).not.toContain('always()');
+    expect(workflow).toContain('group: vercel-release-likida\n  cancel-in-progress: false');
+    expect(workflow).toMatch(/prepare_preview_only:\n(?:[^\n]*\n){2}        default: false/);
   });
 });

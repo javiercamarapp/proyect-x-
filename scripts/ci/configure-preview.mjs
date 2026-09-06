@@ -8,25 +8,59 @@ import { api, PROJECT, STAGING_REF, PRODUCTION_REF, validateSupabaseEnv } from '
 export const KEYS = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
 const asEnv = (values) => KEYS.map((key) => `${key}=${JSON.stringify(values[key])}`).join('\n');
 
+const CAUSES = new Map([
+  ['Falta intención explícita de aislar Preview', 'INTENT'], ['Faltan credenciales administrativas', 'CREDENTIALS'],
+  ['Claves staging ausentes o ambiguas', 'KEY_SELECTION'], ['Clave staging sin valor revelado', 'KEY_VALUE_MISSING'],
+  ['No se pudo comprobar ref de la credencial Supabase', 'KEY_FORMAT'], ['Credencial Supabase de otro proyecto/rol', 'KEY_IDENTITY'],
+  ['El entorno Vercel no apunta al proyecto Supabase autorizado', 'PROJECT_MISMATCH'],
+  ['Inventario Vercel inválido', 'INVENTORY_FORMAT'], ['Hay overrides Supabase que requieren revisión', 'OVERRIDES'],
+  ['Configuración ausente o ambigua', 'ENV_SELECTION'], ['No se pudo comprobar el valor Vercel', 'ENV_VALUE'],
+  ['Preview ambiguo', 'PREVIEW_SELECTION'], ['Vercel rechazó la variable Preview', 'WRITE_REJECTED'],
+  ['Production cambió durante la configuración; detener release', 'PRODUCTION_CHANGED'], ['Preview no conservó los valores esperados', 'PREVIEW_MISMATCH'],
+]);
+class ConfigurationError extends Error {
+  constructor(stage, error) {
+    const http = /^(?:Vercel|Supabase) API HTTP ([1-5][0-9]{2})$/.exec(error?.message ?? '');
+    const reason = http ? 'HTTP' : CAUSES.get(error?.message) ?? (error instanceof SyntaxError ? 'INVALID_JSON'
+      : ['TimeoutError', 'AbortError'].includes(error?.name) ? 'TIMEOUT' : 'TRANSPORT_OR_UNEXPECTED');
+    const detail = CAUSES.has(error?.message) ? error.message : 'Fallo de transporte o respuesta; detener configuración y revisar la etapa indicada.';
+    super(`PREVIEW_CONFIG ${stage}/${reason}${http ? ` HTTP ${http[1]}` : ''}: ${detail}`);
+    this.diagnostic = { stage, reason, ...(http ? { http_status: Number(http[1]) } : {}) };
+  }
+}
+
 export async function configurePreview(env = process.env, deps = {}) {
+  let stage = 'INTENT';
+  try { return await configurePreviewWork(env, deps, (next) => { stage = next; }); }
+  catch (error) { throw new ConfigurationError(stage, error); }
+}
+
+async function configurePreviewWork(env, deps, at) {
   if (env.CONFIGURE_PREVIEW !== 'ISOLATE_EXISTING_STAGING') throw new Error('Falta intención explícita de aislar Preview');
+  at('CREDENTIALS');
   if (!env.SUPABASE_ACCESS_TOKEN || !env.VERCEL_TOKEN) throw new Error('Faltan credenciales administrativas');
   const request = deps.vercel ?? ((path, options) => api(path, env, options));
-  const response = await (deps.fetch ?? fetch)(`https://api.supabase.com/v1/projects/${STAGING_REF}/api-keys`, {
+  at('SUPABASE_KEYS_HTTP');
+  const response = await (deps.fetch ?? fetch)(`https://api.supabase.com/v1/projects/${STAGING_REF}/api-keys?reveal=true`, {
     headers: { Authorization: `Bearer ${env.SUPABASE_ACCESS_TOKEN}` }, method: 'GET',
     redirect: 'error', signal: AbortSignal.timeout(30_000),
   });
-  if (!response.ok) throw new Error('No se pudieron consultar las claves del staging');
+  if (!response.ok) throw new Error(`Supabase API HTTP ${response.status}`);
+  at('SUPABASE_KEYS_PARSE');
   const keys = await response.json();
+  at('SUPABASE_KEYS_SELECT');
   const values = { NEXT_PUBLIC_SUPABASE_URL: `https://${STAGING_REF}.supabase.co` };
   for (const [key, role] of [[KEYS[1], 'anon'], [KEYS[2], 'service_role']]) {
     const candidates = Array.isArray(keys) ? keys.filter((item) => item.name === role && !item.disabled) : [];
     if (candidates.length !== 1) throw new Error('Claves staging ausentes o ambiguas');
+    if (typeof candidates[0].api_key !== 'string' || !candidates[0].api_key) throw new Error('Clave staging sin valor revelado');
     values[key] = candidates[0].api_key;
   }
+  at('SUPABASE_KEYS_VALIDATE');
   validateSupabaseEnv(asEnv(values), STAGING_REF);
 
-  const list = async () => {
+  const list = async (stage) => {
+    at(stage);
     const result = await request(`/v9/projects/${PROJECT}/env`);
     if (!Array.isArray(result.envs)) throw new Error('Inventario Vercel inválido');
     const rows = result.envs.filter((item) => KEYS.includes(item.key));
@@ -35,7 +69,8 @@ export async function configurePreview(env = process.env, deps = {}) {
     }
     return rows;
   };
-  const readTarget = async (rows, target) => {
+  const readTarget = async (rows, target, stage) => {
+    at(stage);
     const result = {};
     for (const key of KEYS) {
       const matches = rows.filter((item) => item.key === key && item.target.includes(target));
@@ -46,38 +81,45 @@ export async function configurePreview(env = process.env, deps = {}) {
     }
     return result;
   };
-  const rows = await list();
-  const productionBefore = await readTarget(rows, 'production');
+  const rows = await list('VERCEL_LIST_BEFORE');
+  const productionBefore = await readTarget(rows, 'production', 'VERCEL_PRODUCTION_READ_BEFORE');
+  at('VERCEL_PRODUCTION_VALIDATE');
   validateSupabaseEnv(asEnv(productionBefore), PRODUCTION_REF);
   for (const key of KEYS) {
+    at('VERCEL_PREVIEW_SELECT');
     const matches = rows.filter((item) => item.key === key && item.target.includes('preview'));
     if (matches.length > 1) throw new Error('Preview ambiguo');
     const current = matches[0];
     if (current && current.target.length > 1) {
       // Sólo separar targets: JAMÁS cambiar el valor del registro compartido.
+      at('VERCEL_PREVIEW_DETACH');
       await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, {
         method: 'PATCH', body: JSON.stringify({ target: current.target.filter((target) => target !== 'preview') }),
       });
     }
     const body = { key, value: values[key], type: 'encrypted', target: ['preview'] };
     if (current?.target.length === 1) {
+      at('VERCEL_PREVIEW_PATCH');
       await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: JSON.stringify(body) });
     } else {
+      at('VERCEL_PREVIEW_CREATE');
       const result = await request(`/v10/projects/${PROJECT}/env`, { method: 'POST', body: JSON.stringify(body) });
       if (result.failed?.length) throw new Error('Vercel rechazó la variable Preview');
     }
   }
-  const after = await list();
-  const productionAfter = await readTarget(after, 'production');
+  const after = await list('VERCEL_LIST_AFTER');
+  const productionAfter = await readTarget(after, 'production', 'VERCEL_PRODUCTION_READ_AFTER');
+  at('VERCEL_PRODUCTION_COMPARE');
   if (KEYS.some((key) => productionBefore[key] !== productionAfter[key])) throw new Error('Production cambió durante la configuración; detener release');
-  const previewAfter = await readTarget(after, 'preview');
+  const previewAfter = await readTarget(after, 'preview', 'VERCEL_PREVIEW_READ_AFTER');
+  at('VERCEL_PREVIEW_COMPARE');
   if (KEYS.some((key) => previewAfter[key] !== values[key])) throw new Error('Preview no conservó los valores esperados');
   return { preview_ref: STAGING_REF, production_preserved: true, variables: KEYS.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  configurePreview().then((result) => console.log(JSON.stringify(result))).catch(() => {
-    console.error('No se completó el aislamiento de Preview. No desplegar; revisar configuración administrativa y reintentar.');
+  configurePreview().then((result) => console.log(JSON.stringify(result))).catch((error) => {
+    console.error(JSON.stringify(error instanceof ConfigurationError ? error.diagnostic : { stage: 'UNKNOWN', reason: 'UNEXPECTED' }));
     process.exitCode = 1;
   });
 }
