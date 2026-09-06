@@ -109,31 +109,31 @@
 
   <div class="hero">
     <div class="card glob">
-      <div class="n">5.4</div>
-      <div class="d">▼ 0.4 &nbsp;<span style="color:var(--ink3);font-weight:400">antes 5.8</span></div>
-      <div class="l">Media de los 12 · 65/12 = 5.42</div>
+      <div class="n">5.3</div>
+      <div class="d">▼ 0.5 &nbsp;<span style="color:var(--ink3);font-weight:400">antes 5.8</span></div>
+      <div class="l">Media de los 12 · 63/12 = 5.25</div>
     </div>
     <div class="card spark">
       <div style="font-size:12px;color:var(--ink3);margin-bottom:6px">Global por ronda</div>
       <svg viewBox="0 0 520 132" width="100%" height="132" role="img"
-           aria-label="Serie de la nota global: 6.2 en la ronda 24, 5.3 en la 25, 6.0 en la 26, 5.8 en la continuación de la 26 y 5.4 en la 27.">
+           aria-label="Serie de la nota global: 6.2 en la ronda 24, 5.3 en la 25, 6.0 en la 26, 5.8 en la continuación de la 26 y 5.3 en la 27.">
         <line x1="40" y1="106" x2="508" y2="106" stroke="var(--line2)" stroke-width="1"/>
         <line x1="40" y1="20" x2="508" y2="20" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>
         <text x="8" y="24" font-size="10" fill="var(--ink3)">7.0</text>
         <text x="8" y="110" font-size="10" fill="var(--ink3)">5.0</text>
         <!-- y = 106 - (v-5)*43 ; 24:6.2→54.4  25:5.3→93.1  26:6.0→63  26c:5.8→71.6  27:5.4→88.8 -->
-        <polyline points="70,54.4 179,93.1 288,63 397,71.6 490,88.8"
+        <polyline points="70,54.4 179,93.1 288,63 397,71.6 490,93.1"
                   fill="none" stroke="var(--accent)" stroke-width="2"
                   stroke-linejoin="round" stroke-linecap="round"/>
         <g fill="var(--accent)">
           <circle cx="70" cy="54.4" r="4.5"/><circle cx="179" cy="93.1" r="4.5"/>
           <circle cx="288" cy="63" r="4.5"/><circle cx="397" cy="71.6" r="4.5"/>
-          <circle cx="490" cy="88.8" r="6" stroke="var(--surface)" stroke-width="2"/>
+          <circle cx="490" cy="93.1" r="6" stroke="var(--surface)" stroke-width="2"/>
         </g>
         <g font-size="11" fill="var(--ink)" text-anchor="middle" font-weight="600">
           <text x="70" y="44">6.2</text><text x="179" y="83">5.3</text>
           <text x="288" y="53">6.0</text><text x="397" y="61.6">5.8</text>
-          <text x="490" y="78">5.4</text>
+          <text x="490" y="83">5.3</text>
         </g>
         <g font-size="10.5" fill="var(--ink3)" text-anchor="middle">
           <text x="70" y="124">24</text><text x="179" y="124">25</text>
@@ -157,10 +157,10 @@
       <div class="rr">Sin un solo escenario «entra X → sale Y mal» con dinero: dominios, unicidades y FK compuestas puestos. 7 auto-refutaciones documentadas.</div>
       <div class="sev"><span class="b">2 medios</span><span class="b">3 bajos</span></div></div>
 
-    <div class="r g7"><div class="rh"><span class="rn">Pruebas</span>
-      <span class="rg">8<small>/10</small><span class="delta de">=</span></span></div>
-      <div class="rr"><b>No auditado esta ronda</b> — el auditor no entregó su archivo. La nota no se mueve: mover la de un rubro que nadie miró es el ruido que la serie no debe tener.</div>
-      <div class="sev"><span class="b">sin cubrir</span></div></div>
+    <div class="r g5"><div class="rh"><span class="rn">Pruebas</span>
+      <span class="rg">6<small>/10</small><span class="delta dn">▼2</span></span></div>
+      <div class="rr">Tres capas de pruebas verdes sobre una entrada que producción no puede producir desde el 24-ago. Midió <b>21 mutaciones</b> para llegar ahí.</div>
+      <div class="sev"><span class="b c">1 crítico</span><span class="b">3 altos</span></div></div>
 
     <div class="r g5"><div class="rh"><span class="rn">Tool calling</span>
       <span class="rg">6<small>/10</small><span class="delta de">=</span></span></div>
@@ -270,6 +270,16 @@
       <tr><td>Operabilidad</td>
         <td>Toda la operación depende de GitHub Actions <b>sin monitor externo</b>. Reincidente.</td>
         <td>Exige contratar o cablear un servicio de fuera: no cabe en un commit del repo.</td></tr>
+      <tr><td>Pruebas</td>
+        <td><b>La canasta mixta</b>: <code>b349b724</code> (24-ago) retiró <code>renglones</code> del esquema del OCR
+            porque tumbaba producción; <code>engine.ts:974</code> lo sigue leyendo y <b>ningún escritor lo produce</b>
+            (comprobados los seis sitios que escriben <code>ocr_extra</code>). <code>renglones_ajenos</code> es
+            insatisfacible por construcción — el patrón de <code>ticket_mensaje</code> — y <b>tres capas de pruebas
+            afirman que la protección está viva</b>. El PDF declara deducible una manguera de jardinería.</td>
+        <td>Reintroducir el campo está <b>explícitamente prohibido</b> sin probarlo antes contra el proveedor
+            (tumbó el OCR en producción), y aquí no hay credenciales para hacerlo. El comentario de
+            <code>ocr.ts:62-78</code> sí declara la degradación: lo que falta es que las pruebas dejen de afirmar
+            lo contrario. Llegó 46 min tarde, con la fase de arreglo cerrada.</td></tr>
     </tbody>
   </table></div>
 
@@ -288,8 +298,7 @@
   </table></div>
 
   <footer>
-    Doce rubros; once auditados esta ronda y uno (<b>Pruebas</b>) sin cubrir — su nota no se mueve y se marca como tal.
-    El color codifica la nota (rojo ≤4 · ámbar 5–6 · verde ≥7), nunca el delta.
+    Doce rubros, los doce auditados. El color codifica la nota (rojo ≤4 · ámbar 5–6 · verde ≥7), nunca el delta.
     Compuerta en la nube: <code>npm test</code> + <code>tsc</code> + <code>lint</code>, sin <code>build</code>.
   </footer>
 </div>

@@ -1,6 +1,6 @@
 # Auditoría 27 — síntesis y recalificación
 
-**Global: 5.4** (anterior: **5.8**) · **▼ 0.4**
+**Global: 5.3** (anterior: **5.8**) · **▼ 0.5**
 
 Ronda **COMPLETA**, desatendida, en la nube. Rama `claude/auditoria-27` sobre
 `origin/master` = `06b2eca4`. Árbol limpio al arrancar → **autofix habilitado**.
@@ -59,13 +59,13 @@ push a `master`**. Por eso nadie se enteró. Ese fue el arreglo de la ronda.
 
 ## Las notas
 
-Global = media aritmética de los 12, con un decimal: **65 / 12 = 5.42 → 5.4**.
+Global = media aritmética de los 12, con un decimal: **63 / 12 = 5.25 → 5.3**.
 
 | Rubro | Antes | Hoy | Δ | Porqué del movimiento |
 |---|---|---|---|---|
 | **Seguridad** | 7 | **8** | ▲1 | **Se atacó y subió.** Único rubro que sube por trabajo hecho: los cierres que la 26 acreditó aguantaron al reabrirlos, y los commits nuevos (redacción de datos sensibles en logs, destino de conectores en TLS, host exacto de Meta, filtros sin setters de prototipo) resisten el caso adversarial. 0 críticos, 1 alto. |
 | **Modelo de datos** | 6 | **7** | ▲1 | **Se atacó y subió.** El auditor **no pudo escribir un solo escenario «entra X → sale Y mal» con dinero**: dominios, unicidades, `liquidacion_diferencia_cuadra` y FK compuestas con tenant están puestos, y la 0339 cerró y **validó** las dos que la 0319 omitió. Reportó además **7 auto-refutaciones** documentadas — el tipo de honestidad que sostiene una nota alta. |
-| **Pruebas** | 8 | **8** | = | ***No auditado esta ronda*** — el auditor no entregó su archivo. Su nota **no se mueve**: mover la de un rubro que nadie miró es exactamente el ruido que la serie no debe tener. Queda como el hueco de cobertura de esta ronda. |
+| **Pruebas** | 8 | **6** | ▼2 | **Mirada más profunda** — el código no cambió; la nota anterior estaba inflada, y era la más alta del tablero. El auditor **midió 21 mutaciones** en vez de opinar, y encontró tres capas de pruebas verdes sobre una entrada que **producción no puede producir desde el 24-ago-2026**. Entregó 46 minutos tarde, ya cerrada la fase de arreglo. |
 | **Tool calling** | 6 | **6** | = | **Ninguna de las tres razones aplica, y se dice así.** Ningún commit de los 181 tocó el rubro (verificado archivo por archivo), la suite del rubro mide idéntico a la 26 (53 archivos / 321 pruebas), los 5 cierres de la 26 aguantan y los 5 abiertos siguen vivos. Sin razón escrita, la nota se queda. |
 | **Backend y API** | 7→6 | **5** | ▼1 | **Deuda que cobró factura.** Al patrón `soltarClaim(true)` de la 24 se le colgaron tres condiciones de cierre **que no son transitorias**: hoy una foto que agotó sus 5 intentos bloquea para siempre todos los cierres de ese chofer, en silencio y sin salida. Y BE-3 sigue vivo: la 0344 cubrió las 4 consultas que el hallazgo enumeraba, no la clase. |
 | **Sistema agéntico** | 6 | **5** | ▼1 | **Deuda que cobró factura.** Cero commits del rubro en 181; **7 de sus 9 hallazgos son reincidentes**, cinco intactos línea por línea, y los dos ciclos que nadie había recorrido produjeron dos ALTO nuevos (el aviso de emergencia que salta tres niveles y despierta al dueño; los relojes legales que sellan «avisado» con un solo canal). |
@@ -147,6 +147,18 @@ diagnóstico del enclavamiento), quedan **pendientes con razón escrita**:
   hacerlo y el Redeploy del panel no basta.
 - **[CRÍTICO · operabilidad] Sin monitor externo de GitHub Actions.** Exige
   cablear un servicio de fuera; no cabe en un commit del repo.
+- **[CRÍTICO · pruebas] La canasta mixta: tres capas de pruebas verdes sobre
+  una entrada imposible.** Verificado: `b349b724` (24-ago) retiró `renglones`
+  del esquema del OCR porque tumbaba producción, `engine.ts:974` lo sigue
+  leyendo y **ningún escritor lo produce** — comprobados los seis sitios que
+  escriben `ocr_extra`. `renglones_ajenos` es insatisfacible por construcción,
+  el mismo patrón que `CLAUDE.md` documenta para `ticket_mensaje`. **Matiz que
+  el propio auditor citó y que hay que conservar:** el comentario en
+  `ocr.ts:62-78` declara la degradación («Degrada, no rompe»), así que no es un
+  descuido oculto. Lo que sí es defecto es que **tres capas de pruebas afirman
+  que la protección está viva**. No se arregló porque reintroducir el campo
+  está explícitamente prohibido sin probarlo antes contra el proveedor, y aquí
+  no hay credenciales para hacerlo.
 - **[ALTO · backend] La carta muerta que bloquea el cierre para siempre.**
   Cerrarlo exige voltear una aserción deliberada de la auditoría 24
   (`conv_foto_anterior_aud24.test.ts:71-75`) o darle salida a la carta muerta:
@@ -165,16 +177,21 @@ diagnóstico del enclavamiento), quedan **pendientes con razón escrita**:
 ## Tablero
 
 `tablero.html` + `tablero.png`, capturado con Chromium headless y **mirado**: se
-cuentan los **12** rubros, las notas de la rejilla suman **65** y 65/12 = 5.42 →
-**5.4**, la cifra que encabeza esta síntesis. Al mirarlo se corrigieron dos
-defectos: la tarjeta de Pruebas salía ámbar con nota 8 (el color codifica la
-nota, nunca otra cosa) y el pie salía cortado.
+cuentan los **12** rubros, las notas de la rejilla suman **63** y 63/12 = 5.25 →
+**5.3**, la cifra que encabeza esta síntesis. Se capturó y se miró **dos veces**:
+en la primera pasada se corrigieron dos defectos (la tarjeta de Pruebas salía
+ámbar con nota 8 —el color codifica la nota, nunca otra cosa— y el pie salía
+cortado), y en la segunda se rehízo con la nota de Pruebas ya entregada, que
+movió la global de 5.4 a 5.3.
 
 ## Nota de método, para la ronda 28
 
-1. **`pruebas` quedó sin cubrir.** Es el primer rubro que hay que relanzar, y su
-   8 es hoy la nota menos sostenida del tablero: nadie la ha mirado en dos
-   rondas y es la más alta.
+1. **`pruebas` entregó 46 minutos tarde, con la fase de arreglo ya cerrada.** Su
+   CRÍTICO no llegó a tiempo para pelear por una vuelta, y es de los que más
+   merecían una: el arnés del contrato de structured output no existe. Si un
+   auditor vuelve a tardar así, su hallazgo pierde el turno — vale la pena
+   reservarle una vuelta al que llegue tarde en vez de gastarlas por orden de
+   llegada.
 2. **OP-C4 bloquea cualquier arreglo que necesite una migración**, y varios
    pendientes la necesitan (BE-3 entre ellos). Subir ese pin —con alguien
    mirando— desatasca la 28 entera.
