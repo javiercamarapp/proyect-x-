@@ -1,0 +1,95 @@
+name: Recuperar exclusivamente staging vacío
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: SHA revisado que contiene exactamente migraciones hasta 0347
+        required: true
+        type: string
+      execute_reset:
+        description: Ejecutar reset después del respaldo y las comprobaciones
+        required: true
+        default: false
+        type: boolean
+      confirmation:
+        description: Para reset, escribir RESET_EMPTY_STAGING
+        required: false
+        type: string
+      writes_paused:
+        description: Staging permanece sin escrituras durante toda la recuperación
+        required: true
+        default: false
+        type: boolean
+      reviewed_backup_run_id:
+        description: Run de preparación cuyo respaldo fue descargado y revisado (para execute_reset)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: vercel-release-likida
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 45
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL_STAGING }}
+      RECOVERY_SOURCE_SHA: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Comprobar SHA revisado
+        env:
+          REVIEWED_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ] || { echo "::error::SHA revisado inválido."; exit 1; }
+      - name: Guardas y respaldo antes de cualquier reset
+        if: inputs.execute_reset == false
+        run: node scripts/ci/staging-recovery.mjs capture
+      - name: Conservar esquema, planes e inventario para revisión
+        id: backup
+        if: inputs.execute_reset == false
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-before-reset-${{ github.run_id }}
+          path: staging-recovery-backup/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Descargar exactamente el respaldo revisado
+        if: inputs.execute_reset == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_RUN_ID: ${{ inputs.reviewed_backup_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$BACKUP_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::Falta run de respaldo revisado."; exit 1; }
+          gh run download "$BACKUP_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "staging-before-reset-$BACKUP_RUN_ID" --dir staging-recovery-backup
+      - name: Revalidar y reconstruir 0331 → índices → 0347
+        if: inputs.execute_reset == true
+        env:
+          RECOVERY_CONFIRM: ${{ inputs.confirmation }}
+          STAGING_WRITES_PAUSED: ${{ inputs.writes_paused }}
+          REVIEWED_BACKUP_RUN_ID: ${{ inputs.reviewed_backup_run_id }}
+        run: node scripts/ci/staging-recovery.mjs execute
+      - name: Conservar resultado de reconstrucción
+        if: always() && inputs.execute_reset == true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-recovery-result-${{ github.run_id }}
+          path: staging-recovery-backup/
+          if-no-files-found: error
+          retention-days: 7
