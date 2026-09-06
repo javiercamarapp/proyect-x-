@@ -54,7 +54,10 @@ export async function inspectEmpty(env, deps = {}) {
       headers: { Authorization: `Bearer ${env.SUPABASE_ACCESS_TOKEN}`, ...(query ? { 'Content-Type': 'application/json' } : {}) },
       ...(query ? { body: JSON.stringify({ query, read_only: true }) } : {}),
     });
-    if (!response.ok) fail('RECOVERY_METADATA_HTTP');
+    if (!response.ok) {
+      console.error(JSON.stringify({ metadata_http: response.status, operation: query ? 'query' : path.endsWith('/branches') ? 'branch_list' : 'project' }));
+      fail('RECOVERY_METADATA_HTTP');
+    }
     return response.json();
   };
   const query = (sql) => request(`/v1/projects/${STAGING}/database/query`, sql);
