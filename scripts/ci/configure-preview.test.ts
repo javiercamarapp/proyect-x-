@@ -17,6 +17,9 @@ function fixture(sensitive = false) {
     const body = JSON.parse(options.body);
     if (options.method === 'PATCH') {
       const row = rows.find((item) => path.endsWith(`/${item.id}`))!;
+      // Contrato Secret: el nombre guardado no se edita. El doble anterior
+      // aceptaba indistintamente el cuerpo de CREATE también para PATCH.
+      if (row.type === 'sensitive' && Object.hasOwn(body, 'key')) throw new Error('Vercel API HTTP 400');
       Object.assign(row, body);
       return visible(row);
     }
@@ -33,6 +36,42 @@ function fixture(sensitive = false) {
 }
 
 describe('aislar la Preview existente conservando Production', () => {
+  it('segunda configuración de sensitive ya separado sólo actualiza value sin recrear ni editar key/type/targets', async () => {
+    const f = fixture(true);
+    await configurePreview(env, f);
+    const production = structuredClone(f.rows.filter(row => row.target.includes('production')));
+    const ids = f.rows.map(row => row.id);
+    f.vercel.mockClear();
+    await expect(configurePreview(env, f)).resolves.toMatchObject({ preview_verification: 'write_ack_and_metadata' });
+    const writes = f.vercel.mock.calls.filter(([, options]) => options);
+    expect(writes).toHaveLength(3);
+    for (const [path, options] of writes) {
+      expect(options!.method).toBe('PATCH');
+      expect(Object.keys(JSON.parse(options!.body))).toEqual(['value']);
+      expect(path).toContain('/env/new');
+    }
+    expect(f.rows.map(row => row.id)).toEqual(ids);
+    expect(f.rows.filter(row => row.target.includes('production'))).toEqual(production);
+  });
+  it('rechaza Preview encrypted incompatible con Production sensitive antes de cualquier escritura', async () => {
+    const f = fixture(true);
+    for (const row of [...f.rows]) {
+      row.target = ['production'];
+      f.rows.push({ ...row, id: `preview-${row.id}`, type: 'encrypted', target: ['preview'] });
+    }
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { reason: 'PREVIEW_TYPE_MISMATCH' } });
+    expect(f.vercel.mock.calls.every(([, options]) => !options)).toBe(true);
+  });
+  it('rechaza un ACK de actualización que cambie el tipo sensible', async () => {
+    const f = fixture(true);
+    await configurePreview(env, f);
+    const original = f.vercel.getMockImplementation()!;
+    f.vercel.mockImplementation(async (path, options) => {
+      const result = await original(path, options);
+      return options?.method === 'PATCH' ? { ...result, type: 'encrypted' } : result;
+    });
+    await expect(configurePreview(env, f)).rejects.toMatchObject({ diagnostic: { stage: 'VERCEL_PREVIEW_PATCH', reason: 'WRITE_REJECTED' } });
+  });
   it('separa sensitive sin leer valores y conserva tipo, identidad y Production', async () => {
     const f = fixture(true);
     const result = await configurePreview(env, f);

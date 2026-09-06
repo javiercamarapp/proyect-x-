@@ -20,6 +20,7 @@ const CAUSES = new Map([
   ['Inventario Vercel inválido', 'INVENTORY_FORMAT'], ['Hay overrides Supabase que requieren revisión', 'OVERRIDES'],
   ['Configuración ausente o ambigua', 'ENV_SELECTION'], ['No se pudo comprobar el valor Vercel', 'ENV_VALUE'],
   ['Preview ambiguo', 'PREVIEW_SELECTION'], ['Vercel rechazó la variable Preview', 'WRITE_REJECTED'],
+  ['El tipo de Preview requiere una conversión explícita fuera de esta operación', 'PREVIEW_TYPE_MISMATCH'],
   ['Production cambió durante la configuración; detener release', 'PRODUCTION_CHANGED'], ['Preview no conservó los valores esperados', 'PREVIEW_MISMATCH'],
 ]);
 class ConfigurationError extends Error {
@@ -94,6 +95,16 @@ async function configurePreviewWork(env, deps, at) {
   };
   const rows = await list('VERCEL_LIST_BEFORE');
   const productionRecords = Object.fromEntries(KEYS.map(key => [key, selectTarget(rows, 'production', key)]));
+  at('VERCEL_PREVIEW_SELECT');
+  // Revisar todas antes de mutar la primera: actualizar value no convierte el
+  // tipo. Una Preview ya separada conserva su clasificación y sus targets.
+  for (const key of KEYS) {
+    const current = rows.find(row => row.key === key && sameTargets(row.target, ['preview']));
+    if (current && (!['sensitive', 'encrypted', 'plain'].includes(current.type)
+      || (productionRecords[key].type === 'sensitive' && current.type !== 'sensitive'))) {
+      throw new Error('El tipo de Preview requiere una conversión explícita fuera de esta operación');
+    }
+  }
   const productionBefore = await readTarget(rows, 'production', 'VERCEL_PRODUCTION_READ_BEFORE');
   at('VERCEL_PRODUCTION_VALIDATE');
   const productionReadable = KEYS.every(key => typeof productionBefore[key] === 'string');
@@ -112,12 +123,17 @@ async function configurePreviewWork(env, deps, at) {
       });
       if (!sameRecord(detached, current, current.target.filter(target => target !== 'preview'))) throw new Error('Vercel rechazó la variable Preview');
     }
-    const type = current?.type === 'sensitive' || productionRecords[key].type === 'sensitive' ? 'sensitive' : 'encrypted';
+    const type = current?.target.length === 1 ? current.type
+      : current?.type === 'sensitive' || productionRecords[key].type === 'sensitive' ? 'sensitive' : 'encrypted';
     const body = { key, value: values[key], type, target: ['preview'] };
     let acknowledged;
     if (current?.target.length === 1) {
       at('VERCEL_PREVIEW_PATCH');
-      acknowledged = await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+      // PATCH no es CREATE: un Secret guardado no admite editar su key.
+      // No reenviar type/targets inalterados ni depender de conversiones.
+      acknowledged = await request(`/v9/projects/${PROJECT}/env/${encodeURIComponent(current.id)}`, {
+        method: 'PATCH', body: JSON.stringify({ value: values[key] }),
+      });
     } else {
       at('VERCEL_PREVIEW_CREATE');
       const result = await request(`/v10/projects/${PROJECT}/env`, { method: 'POST', body: JSON.stringify(body) });
