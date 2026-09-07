@@ -17,14 +17,32 @@ type Op = {
    *  trunca depende de esto: sin `order` la rebanada es el orden FÍSICO de la
    *  tabla y qué flota se queda sin aviso es azar del heap. */
   order: string[];
+  /** El `.range(desde, hasta)` que pidió esta vuelta de `traerTodo`. */
+  range?: [number, number];
 };
 const ops: Op[] = [];
 const respuestas = new Map<string, Array<{ data?: unknown; error?: { message: string; code?: string } | null }>>();
+
+// ── El doble PAGINADO de `gasto` ────────────────────────────────────────────
+//
+// AUDITORÍA 28, MEDIO (REN-A4): `peaje_cierre.ts` leía `gasto` con
+// `traerTodo`, que pide páginas reales por `.range(desde, hasta)`. El doble de
+// arriba (`respuestas`) entrega TODO en una sola respuesta y deja que la
+// SEGUNDA llamada — que cae al default `{ data: [], error: null }` — pruebe el
+// final: eso basta para los fixtures chicos de este archivo, pero NUNCA
+// ejercita que `traerTodo` de verdad ensambla páginas ni que el cursor avanza
+// por filas leídas. `gastoFuente` simula el recorte real de PostgREST: cada
+// `.range()` recibe SOLO su rebanada del dataset sembrado.
+let gastoFuente: ((desde: number, hasta: number) => { data: unknown[]; count?: number }) | null = null;
 
 function builder(tabla: string) {
   const o: Op = { tabla, op: 'select', eq: [], order: [] };
   const responder = () => {
     ops.push(o);
+    if (tabla === 'gasto' && gastoFuente) {
+      const [desde, hasta] = o.range ?? [0, Number.MAX_SAFE_INTEGER];
+      return gastoFuente(desde, hasta);
+    }
     const cola = respuestas.get(`${tabla}:${o.op}`) ?? respuestas.get(tabla);
     return cola && cola.length > 0 ? cola.shift()! : { data: [], error: null };
   };
@@ -33,6 +51,7 @@ function builder(tabla: string) {
     select: () => b, eq: (c: string, v: unknown) => { o.eq.push([c, v]); return b; },
     is: () => b, in: () => b, gte: () => b, lte: () => b, limit: () => b,
     order: (c: string) => { o.order.push(c); return b; },
+    range: (desde: number, hasta: number) => { o.range = [desde, hasta]; return b; },
     insert: (p: unknown) => { o.op = 'insert'; o.payload = p; return b; },
     delete: () => { o.op = 'delete'; return b; },
     maybeSingle: async () => responder(),
@@ -58,7 +77,6 @@ vi.mock('../contactos', () => ({ telefonoParaDineroDe: (t: string) => telefonoPa
 const {
   ultimoDiaDelMes, primerDiaDelMes, diasHastaCierre, umbralDeHoy,
   mensajeCierrePeaje, avisarCierrePeaje, DIAS_AVISO_DEFECTO, MAX_LINEAS,
-  TOPE_GASTOS_PEAJE,
 } = await import('./peaje_cierre');
 
 describe('el calendario del cierre de mes', () => {
@@ -178,6 +196,7 @@ const deletesDeSello = () => ops.filter((o) => o.tabla === 'peaje_cierre_aviso' 
 beforeEach(() => {
   ops.length = 0;
   respuestas.clear();
+  gastoFuente = null;
   sendText.mockClear();
   sendText.mockResolvedValue('wamid-1');
   telefonoParaDineroDe.mockClear();
@@ -403,37 +422,80 @@ describe('el reloj de la vuelta, adentro del motor (patrón #152)', () => {
   });
 });
 
-describe('la lectura de casetas que se trunca: 5,000 no es «el universo»', () => {
-  it('una lectura AL TOPE se declara truncada, grita, y el resumen no la disfraza', async () => {
-    // A 200 flotas con casetas diarias los 5,000 cruces del mes se agotan y las
-    // flotas que caen fuera del corte no reciben NINGÚN aviso. Antes eso salía
-    // como `gastos: 5000` —un número con cara de universo— y nada más: el
-    // síntoma sería «a mi flota nunca le avisan» y ni el latido ni el log
-    // apuntarían aquí. Hoy es latente; el día que no lo sea, se ve.
-    const muchos = Array.from({ length: TOPE_GASTOS_PEAJE }, (_, i) => ({
-      id: `g${i}`, tenant_id: `t-${i % 3}`, monto: 10, fecha: '2026-09-03',
+describe('la lectura de casetas: `traerTodo` pagina de verdad, ya no hay «5,000 y ya»', () => {
+  it('más de una página de casetas se ENSAMBLA completa: ninguna flota se pierde entre páginas', async () => {
+    // AUDITORÍA 28, MEDIO (REN-A4). Antes esto era UNA página con
+    // `.limit(5_000)`: a 200 flotas con casetas diarias los 5,000 cruces del
+    // mes se agotaban y las flotas fuera del corte no recibían NINGÚN aviso,
+    // declarado solo como `truncado: true` mientras el barrido seguía con el
+    // subconjunto. El mock de un solo tiro nunca ejercitaba el ensamblado real
+    // de páginas —devolvía las 5,000 de golpe—, así que un `range()` mal
+    // pasado no se habría notado. Aquí van 2,500 filas (más de dos páginas de
+    // `PAGINA = 1_000`) REPARTIDAS entre tres flotas straddling el corte de
+    // página, y `gastoFuente` sólo entrega la rebanada que `.range()` pidió.
+    const TOTAL = 2_500;
+    const dataset = Array.from({ length: TOTAL }, (_, i) => ({
+      // tenant_id ordena PRIMERO: t-0 cae en la página 1, t-1 straddling la
+      // 1/2, t-2 en la 2/3 — las tres deben sobrevivir el ensamblado.
+      id: String(i).padStart(6, '0'),
+      tenant_id: `t-${i % 3}`,
+      monto: 10,
+      fecha: '2026-09-03',
     }));
-    sembrar({ gastos: muchos });
+    gastoFuente = (desde, hasta) => ({
+      data: dataset.slice(desde, hasta + 1),
+      count: TOTAL,
+    });
+    respuestas.set('sat_descarga_config', [{ data: [], error: null }]);
+
     const r = await avisarCierrePeaje(DIA_UMBRAL_7);
 
-    expect(r.truncado, 'la lectura llegó al tope: hay flotas que este barrido no vio').toBe(true);
-    expect(logger.error).toHaveBeenCalledWith('peaje_cierre.lectura_truncada', expect.objectContaining({
-      tope: TOPE_GASTOS_PEAJE,
-    }));
+    // Se pidieron varias páginas de verdad — no una respuesta de un solo tiro.
+    const lecturas = ops.filter((o) => o.tabla === 'gasto');
+    expect(lecturas.length, 'TOTAL/PAGINA = 2.5 páginas → 3 vueltas de traerTodo').toBe(3);
+    expect(lecturas.map((o) => o.range)).toEqual([[0, 999], [1000, 1999], [2000, 2999]]);
+    // Las TRES flotas —incluida la que cae partida entre dos páginas— avisan.
+    expect(r.flotas).toBe(3);
+    expect(r.avisadas).toBe(3);
+    expect(r.gastos).toBe(TOTAL);
+    expect(r.truncado).toBe(false);
   });
 
-  it('una lectura que NO llega al tope no se declara truncada', async () => {
-    sembrar({ gastos: GASTOS_TRES_FLOTAS });
-    expect((await avisarCierrePeaje(DIA_UMBRAL_7)).truncado).toBe(false);
-  });
-
-  it('la lectura va ORDENADA: si se corta, que se corte igual las dos veces', async () => {
-    // Sin `order` la rebanada de 5,000 es el orden FÍSICO de `gasto` —azar del
-    // heap— y qué flota se queda sin aviso cambia entre corridas sin que nada
-    // haya cambiado. Ordenado, el corte es al menos reproducible y depurable.
+  it('la lectura va ORDENADA con desempate por `id`: el corte de página es determinista', async () => {
+    // Sin un desempate único, dos filas con el mismo `(tenant_id, fecha)`
+    // pueden empatar el orden y el corte de página deja de ser reproducible.
     sembrar({ gastos: GASTOS_TRES_FLOTAS });
     await avisarCierrePeaje(DIA_UMBRAL_7);
     const lectura = ops.find((o) => o.tabla === 'gasto');
-    expect(lectura?.order).toEqual(['tenant_id', 'fecha']);
+    expect(lectura?.order).toEqual(['tenant_id', 'fecha', 'id']);
+  });
+
+  it('una lectura que nunca puede demostrar que trajo todo LANZA en vez de seguir con un subconjunto', async () => {
+    // El reemplazo honesto del viejo `truncado: true`: si la fuente nunca
+    // entrega una página vacía ni un `count`, `traerTodo` no puede demostrar
+    // que terminó y se niega a devolver una cifra parcial — agota sus 100
+    // páginas (100,000 filas) y LANZA `LecturaIncompleta`, fail-closed, igual
+    // que `configIlegible` en este mismo archivo. Antes esto habría sido
+    // `truncado: true` con el barrido avisando de todos modos sobre un
+    // subconjunto arbitrario de flotas.
+    gastoFuente = (desde, hasta) => ({
+      data: Array.from({ length: hasta - desde + 1 }, (_, i) => ({
+        id: String(desde + i), tenant_id: 't-interminable', monto: 1, fecha: '2026-09-03',
+      })),
+      // Sin `count`: nunca se demuestra el total.
+    });
+    respuestas.set('sat_descarga_config', [{ data: [], error: null }]);
+
+    await expect(avisarCierrePeaje(DIA_UMBRAL_7)).rejects.toThrow(/avisarCierrePeaje/);
+    expect(sendText, 'no se avisa sobre una lectura que no se pudo demostrar completa').not.toHaveBeenCalled();
+    expect(insertsDeSello()).toHaveLength(0);
+    expect(logger.error).toHaveBeenCalledWith('pg.lectura_incompleta', expect.objectContaining({
+      consulta: 'peaje_cierre.gastos',
+    }));
+  });
+
+  it('una lectura chica (una sola página) sigue funcionando y no se declara truncada', async () => {
+    sembrar({ gastos: GASTOS_TRES_FLOTAS });
+    expect((await avisarCierrePeaje(DIA_UMBRAL_7)).truncado).toBe(false);
   });
 });
