@@ -11,7 +11,7 @@ import {
 import { reasignarOperador, buscarCatalogo, contarCatalogo, type OpcionCatalogo, type TipoCatalogo } from '@/lib/likida/repo';
 import { crearOperador } from '@/lib/likida/administracion';
 import { DatoInvalido } from '@/lib/likida/errores';
-import { viajesEnCursoPaginados } from '@/lib/likida/repo_paginado';
+import { viajesEnCursoPaginados, PAGINA_MAX_VIAJES_EN_CURSO } from '@/lib/likida/repo_paginado';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { VistaDespacho } from './vista';
@@ -80,7 +80,16 @@ export default async function PaginaDespacho({
   const puedeCapturarDinero = puedeVerArea(rol, 'dinero');
   const sufijo = sufijoTenant(sp);
   const destino = `/dashboard/despacho${sufijo}`;
-  const paginaPedida = Math.max(1, Number.parseInt(sp.p ?? '1', 10) || 1);
+  // `leerPagina` (repo_paginado.ts) ya clampa a `PAGINA_MAX_VIAJES_EN_CURSO`
+  // internamente, pero pedir `?p=999999999` de todos modos manda esa cifra
+  // absurda al log de cada lectura fallida y a la URL que arma la
+  // paginación — clamparla aquí es una sola línea y evita pedir páginas que
+  // NUNCA van a existir. El comportamiento honesto de FE-M1 (declarar
+  // "esta página no tiene viajes" con el total real) sigue siendo necesario
+  // de todos modos: el total solo se conoce DESPUÉS de la consulta, así que
+  // hasta un `?p=` dentro del rango puede caer en una página vacía si la
+  // cola avanzó desde que se guardó el link.
+  const paginaPedida = Math.min(Math.max(1, Number.parseInt(sp.p ?? '1', 10) || 1), PAGINA_MAX_VIAJES_EN_CURSO);
   const folioPedido = (sp.q ?? '').trim();
 
   // ── FE-2: LOS CATÁLOGOS YA NO SE CARGAN ─────────────────────────────────

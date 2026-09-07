@@ -124,7 +124,7 @@ export default async function PaginaAgenteConductores({
           id: v.id, folio: v.folio, operadorNombre: v.operadorNombre,
           horasDesdeAviso: v.horasDesdeAviso, avisos: v.avisosEnviados,
         }));
-        return { esperan, totalEsperan: pagina.total, sinAvisar, error: pagina.error };
+        return { esperan, totalEsperan: pagina.total, sinAvisar, error: pagina.error, truncada: pagina.truncada };
       }));
 
   async function guardarEstrategia(_previo: ResultadoEstrategia, fd: FormData): Promise<ResultadoEstrategia> {

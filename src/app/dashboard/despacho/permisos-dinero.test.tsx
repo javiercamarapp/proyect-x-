@@ -19,7 +19,10 @@ vi.mock('@/lib/likida/repo', () => ({
   reasignarOperador: vi.fn(), buscarCatalogo: (...args: unknown[]) => m.buscar(...args), contarCatalogo: (...args: unknown[]) => m.contar(...args),
 }));
 vi.mock('@/lib/likida/administracion', () => ({ crearOperador: vi.fn() }));
-vi.mock('@/lib/likida/repo_paginado', () => ({ viajesEnCursoPaginados: async () => ({ filas: [], total: 0, error: null }) }));
+vi.mock('@/lib/likida/repo_paginado', () => ({
+  viajesEnCursoPaginados: async () => ({ filas: [], total: 0, error: null }),
+  PAGINA_MAX_VIAJES_EN_CURSO: 200,
+}));
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => { throw new Error('DB inesperada'); } }));
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 const { default: PaginaDespacho } = await import('./page');

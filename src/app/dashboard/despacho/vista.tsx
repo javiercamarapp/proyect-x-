@@ -61,6 +61,38 @@ export function VistaDespacho({
   reenviarAviso: AccionDespacho;
   altaOperador: AccionDespacho;
 }) {
+  // ── FE-M1 (auditoría 28): vacío de CONSULTA vs vacío de NEGOCIO ─────────
+  // `activos.filas.length === 0` puede significar tres cosas MUY distintas,
+  // y solo `activos.total` (el `count: 'exact'` de la propia consulta, no
+  // `filas.length`) distingue cuál es: no hay ni un viaje en curso en la
+  // flota (`total === 0`), esta página en particular no trajo nada aunque sí
+  // hay viajes en otras (`total > 0` — típicamente un `?p=` guardado o un
+  // "atrás" del navegador sobre una cola que ya avanzó), o no se pudo contar
+  // (`total === null`, la base no confirmó nada y "ningún viaje" sería una
+  // afirmación que no se puede sostener). Antes de esto, los tres casos
+  // pintaban la MISMA leyenda ("Ningún viaje en curso ahora mismo"), que solo
+  // es cierta en el primero.
+  const activosSinFilas = activos.error === null && activos.filas.length === 0;
+  const activosVacioDeNegocio = activosSinFilas && activos.total === 0;
+  const activosSinContar = activosSinFilas && activos.total === null;
+  const activosVacioDeConsulta = activosSinFilas && activos.total !== null && activos.total > 0;
+  // La última página que de verdad tiene datos — para el link "ir ahí" desde
+  // una página vacía de consulta. Nunca rebasa `paginaMax`: más allá de ahí
+  // la paginación no alcanza (FE-B1, abajo).
+  const ultimaPaginaConDatos = activos.total !== null && activos.total > 0
+    ? Math.min(Math.ceil(activos.total / activos.porPagina), activos.paginaMax)
+    : null;
+
+  // ── FE-B1: declarar el recorte de la paginación, no ofrecer un botón que
+  // nunca avanza ── `truncada` (repo_paginado.ts) es `true` cuando el total
+  // real rebasa `paginaMax * porPagina`: en la última página alcanzable
+  // (`pagina === paginaMax`) "Siguiente →" apuntaba a `paginaMax + 1`, que
+  // `leerPagina` clampa de vuelta al mismo `paginaMax` — un botón que se
+  // puede pulsar para siempre sin que la lista cambie.
+  const activosPuedeAvanzar = activos.pagina < activos.paginaMax
+    && activos.filas.length === activos.porPagina
+    && (activos.total === null || activos.pagina * activos.porPagina < activos.total);
+
   return (
     <main className="h-full">
       <div className="rounded-2xl min-h-full hairline flex flex-col" style={{ background: 'var(--g1)' }}>
@@ -171,10 +203,47 @@ export function VistaDespacho({
                 <Leyenda icono={<Truck width={17} height={17} strokeWidth={1.75} style={{ color: 'var(--bad)' }} />}>
                   No se pudo leer &quot;En curso&quot; ahora mismo — vuelve a intentar en un momento.
                 </Leyenda>
-              ) : activos.filas.length === 0 ? (
+              ) : activosSinContar ? (
+                // `total === null`: la base no confirmó nada — "ningún viaje"
+                // sería una afirmación que la lectura no sostiene.
+                <Leyenda icono={<Truck width={17} height={17} strokeWidth={1.75} style={{ color: 'var(--warn)' }} />}>
+                  No se pudo contar cuántos viajes en curso hay ahora mismo — vuelve a intentar en un momento.
+                </Leyenda>
+              ) : activosVacioDeNegocio ? (
+                // `total === 0`: aquí sí es cierto que no hay ni un viaje en
+                // curso (el folio buscado tampoco tiene coincidencias, si lo hay).
                 <Leyenda icono={<Truck width={17} height={17} strokeWidth={1.75} style={{ color: 'var(--marca)' }} />}>
                   {folioPedido ? `Ningún viaje en curso con folio "${folioPedido}".` : 'Ningún viaje en curso ahora mismo.'}
                 </Leyenda>
+              ) : activosVacioDeConsulta ? (
+                // `total > 0` pero ESTA página no trajo filas (FE-M1): un
+                // `?p=` guardado o "atrás" sobre una cola que ya avanzó. Los
+                // viajes existen — lo que está vacío es la página pedida, no
+                // la flota — y por eso el rango impreso es "0–0", nunca un
+                // cálculo sobre `pagina` que inventaría un rango que no existe.
+                <div className="flex-1 min-h-[110px] flex flex-col items-center justify-center gap-3 text-center">
+                  <Truck width={17} height={17} strokeWidth={1.75} style={{ color: 'var(--marca)' }} />
+                  <p className="text-[12.5px] max-w-[36ch]" style={{ color: 'var(--muted)' }}>
+                    {folioPedido
+                      ? `Esta página no tiene viajes con folio "${folioPedido}" — hay ${numero(activos.total ?? 0)} coincidencias.`
+                      : `Esta página no tiene viajes — hay ${numero(activos.total ?? 0)} en curso.`}
+                  </p>
+                  <div className="flex items-center gap-3 flex-wrap justify-center text-[12px]" style={{ color: 'var(--faint)' }}>
+                    <span>0–0 de {numero(activos.total ?? 0)} en curso</span>
+                    <div className="flex gap-1.5">
+                      {activos.pagina > 1 && (
+                        <Link href={hrefPaginaActivos(sufijo, folioPedido, activos.pagina - 1)} className={BTN_PAGINA} style={{ background: 'var(--surface)' }}>
+                          ← Anterior
+                        </Link>
+                      )}
+                      {ultimaPaginaConDatos !== null && ultimaPaginaConDatos !== activos.pagina && (
+                        <Link href={hrefPaginaActivos(sufijo, folioPedido, ultimaPaginaConDatos)} className={BTN_PAGINA} style={{ background: 'var(--surface)' }}>
+                          Ir a la última página ({numero(ultimaPaginaConDatos)})
+                        </Link>
+                      )}
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[13px]">
@@ -233,15 +302,14 @@ export function VistaDespacho({
                         ? `${numero((activos.pagina - 1) * activos.porPagina + 1)}–${numero((activos.pagina - 1) * activos.porPagina + activos.filas.length)} de ${numero(activos.total)} en curso`
                         : `Página ${numero(activos.pagina)} — no se pudo contar el total.`}
                     </p>
-                    {(activos.pagina > 1 || activos.filas.length === activos.porPagina) && (
+                    {(activos.pagina > 1 || activosPuedeAvanzar) && (
                       <div className="flex gap-1.5">
                         {activos.pagina > 1 && (
                           <Link href={hrefPaginaActivos(sufijo, folioPedido, activos.pagina - 1)} className={BTN_PAGINA} style={{ background: 'var(--surface)' }}>
                             ← Anterior
                           </Link>
                         )}
-                        {activos.filas.length === activos.porPagina
-                          && (activos.total === null || activos.pagina * activos.porPagina < activos.total) && (
+                        {activosPuedeAvanzar && (
                           <Link href={hrefPaginaActivos(sufijo, folioPedido, activos.pagina + 1)} className={BTN_PAGINA} style={{ background: 'var(--surface)' }}>
                             Siguiente →
                           </Link>
@@ -249,6 +317,19 @@ export function VistaDespacho({
                       </div>
                     )}
                   </div>
+                  {/* FE-B1: `truncada` se declara, no se esconde — al tope de
+                      `paginaMax` ya no queda "Siguiente" que pulsar (arriba),
+                      pero sin este párrafo el jefe de tráfico no tenía forma
+                      de saber que hay MÁS viajes en curso de los que esta
+                      paginación puede alcanzar. Mismo patrón que
+                      `descarga-sat/bandeja/vista.tsx` y `jornada/vista.tsx`. */}
+                  {activos.truncada && (
+                    <p className="text-[12px] mt-2" style={{ color: 'var(--warn)' }}>
+                      Se pueden recorrer hasta {numero(activos.paginaMax * activos.porPagina)} de{' '}
+                      {numero(activos.total ?? 0)} en curso — el resto está en el{' '}
+                      <Link href={`/dashboard/viajes${sufijo}`} className="underline">registro</Link>.
+                    </p>
+                  )}
                 </div>
               )}
             </section>
