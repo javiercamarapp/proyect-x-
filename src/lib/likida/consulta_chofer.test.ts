@@ -665,10 +665,14 @@ describe('armarRespuesta NUNCA opina', () => {
 describe('estadoDelViaje', () => {
   it('suma lo comprobado, cuenta los comprobantes y toma el más reciente', async () => {
     respuesta.viaje = { data: { anticipo: '10600.00' }, error: null };
+    // AUDITORÍA 28, TC-A2: la consulta real ahora pide `created_at` ASCENDENTE
+    // (lo exige `copiasDeComprobante`, que marca la PRIMERA aparición como
+    // original) — el fixture va en ese mismo orden, y "el más reciente" es el
+    // ÚLTIMO elemento de la lista, no el primero.
     respuesta.gasto = {
       data: [
-        { concepto: 'diesel', monto: '1200.00', ocr_confianza: '0.950', created_at: '2026-08-04T18:00:00Z' },
-        { concepto: 'caseta', monto: '300.50', ocr_confianza: '0.400', created_at: '2026-08-03T10:00:00Z' },
+        { id: 'g-1', concepto: 'caseta', monto: '300.50', ocr_confianza: '0.400', created_at: '2026-08-03T10:00:00Z' },
+        { id: 'g-2', concepto: 'diesel', monto: '1200.00', ocr_confianza: '0.950', created_at: '2026-08-04T18:00:00Z' },
       ],
       error: null,
     };
@@ -748,6 +752,37 @@ describe('estadoDelViaje', () => {
     respuesta.viaje = { data: null, error: { message: 'x' } };
     respuesta.gasto = { data: null, error: { message: 'y' } };
     await expect(estadoDelViaje('t-1', 'v-1')).rejects.toThrow(/\/viaje:/);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 28, TC-A2 (ALTO): copias del mismo ticket sumaban dos veces.
+  //
+  // El protocolo normal manda DOS fotos por comprobante (ticket + acercamiento
+  // del voucher), así que una foto duplicada no es el caso raro: es el flujo
+  // de todos los días. Antes esto sumaba las 6 filas de 3 tickets reales y
+  // podía decirle al chofer "no te falta nada" con comprobantes de verdad sin
+  // mandar. Misma regla que ya corrige `tools.ts` (TC-1, auditoría 24):
+  // `copiasDeComprobante`, exportada del motor, no una copia de la regla.
+  // ═══════════════════════════════════════════════════════════════════════
+  it('3 tickets con 2 fotos cada uno cuentan UNA vez — no "no te falta nada"', async () => {
+    respuesta.viaje = { data: { anticipo: 12000 }, error: null };
+    respuesta.gasto = {
+      data: [
+        // Ticket A: mismo folio, mismo monto → la segunda foto es copia de la primera.
+        { id: 'g-a1', concepto: 'caseta', monto: 2000, folio: '00123', folio_norm: '123', ocr_confianza: 0.9, created_at: '2026-08-03T08:00:00Z' },
+        { id: 'g-a2', concepto: 'caseta', monto: 2000, folio: '00123', folio_norm: '123', ocr_confianza: 0.9, created_at: '2026-08-03T08:01:00Z' },
+        // Ticket B: mismo CFDI uuid (orden 1 por default en ambas) → copia.
+        { id: 'g-b1', concepto: 'diesel', monto: 2100, cfdi_uuid: 'AAAA-1111', ocr_confianza: 0.9, created_at: '2026-08-03T09:00:00Z' },
+        { id: 'g-b2', concepto: 'diesel', monto: 2100, cfdi_uuid: 'aaaa-1111', ocr_confianza: 0.9, created_at: '2026-08-03T09:01:00Z' },
+        // Ticket C: mismo folio, mismo monto → copia.
+        { id: 'g-c1', concepto: 'caseta', monto: 2000, folio: '00456', folio_norm: '456', ocr_confianza: 0.9, created_at: '2026-08-03T10:00:00Z' },
+        { id: 'g-c2', concepto: 'caseta', monto: 2000, folio: '00456', folio_norm: '456', ocr_confianza: 0.9, created_at: '2026-08-03T10:01:00Z' },
+      ],
+      error: null,
+    };
+    const estado = await estadoDelViaje('t-1', 'v-1');
+    expect(estado).toMatchObject({ anticipo: 12000, comprobado: 6100, comprobantes: 3 });
+    expect(armarRespuesta('faltantes', estado)).toBe('Te faltan $5,900.00 por comprobar.');
   });
 });
 

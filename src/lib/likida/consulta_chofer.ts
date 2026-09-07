@@ -1,6 +1,8 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { mxn } from '@/lib/formato';
 import { acotada } from './presupuesto';
+import { copiasDeComprobante } from './cuadre/engine';
+import type { ConceptoGasto } from '@/types/likida';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LO QUE EL CHOFER PREGUNTA A MEDIO VIAJE.
@@ -158,8 +160,15 @@ export async function estadoDelViaje(tenantId: string, viajeId: string): Promise
   const [rViaje, rGastos] = await Promise.all([
     acotada(admin.from('viaje').select('anticipo').eq('id', viajeId).eq('tenant_id', tenantId).maybeSingle(),
       'estadoDelViaje.viaje'),
-    acotada(admin.from('gasto').select('concepto, monto, ocr_confianza, created_at')
-      .eq('viaje_id', viajeId).eq('tenant_id', tenantId).order('created_at', { ascending: false }),
+    // AUDITORÍA 28, TC-A2 (ALTO, mismo patrón que TC-1 en tools.ts): trae los
+    // campos que `copiasDeComprobante` necesita (folio/folioNorm/cfdiUuid/
+    // cfdiOrden) y en orden ASCENDENTE — la función marca la PRIMERA aparición
+    // como el original, así que el orden decide cuál copia se cuenta. Antes
+    // esta consulta sumaba CADA fila (foto ticket + foto acercamiento son el
+    // flujo normal, no el caso raro) y podía decirle al chofer "no te falta
+    // nada" con comprobantes de verdad sin mandar.
+    acotada(admin.from('gasto').select('id, concepto, monto, ocr_confianza, folio, folio_norm, cfdi_uuid, cfdi_orden, created_at')
+      .eq('viaje_id', viajeId).eq('tenant_id', tenantId).order('created_at', { ascending: true }),
     'estadoDelViaje.gastos'),
   ]);
 
@@ -173,22 +182,40 @@ export async function estadoDelViaje(tenantId: string, viajeId: string): Promise
   if (rGastos.error) throw new Error(`estadoDelViaje/gastos: ${rGastos.error.message}`);
 
   const viaje = rViaje.data;
-  const gastos = rGastos.data;
   if (!viaje) return null;
 
-  const lista = gastos ?? [];
-  const comprobado = lista.reduce((s, g) => s + Number(g.monto ?? 0), 0);
-  const ultimo = lista[0];
+  // Misma forma que consume `copiasDeComprobante` en tools.ts/engine.ts.
+  const gastos = (rGastos.data ?? []).map((g) => ({
+    id: String(g.id),
+    concepto: g.concepto as ConceptoGasto,
+    monto: typeof g.monto === 'number' ? g.monto : Number(g.monto ?? 0),
+    folio: (g.folio as string | null) || undefined,
+    folioNorm: (g.folio_norm as string | null) || undefined,
+    cfdiUuid: (g.cfdi_uuid as string | null) || undefined,
+    cfdiOrden: g.cfdi_orden != null ? Number(g.cfdi_orden) : undefined,
+    ocrConfianza: (g.ocr_confianza as number | null) ?? undefined,
+    createdAt: g.created_at as string,
+  }));
+  const copias = copiasDeComprobante(gastos);
+  // Misma regla que `totalComprobado` en engine.ts: ni copias ni montos <= 0.
+  const originales = gastos.filter((g) => !copias.has(g.id) && g.monto > 0);
+  const comprobado = originales.reduce((s, g) => s + g.monto, 0);
+  // El orden de la consulta es ascendente (lo exige copiasDeComprobante), así
+  // que "el último" es el ÚLTIMO elemento de la lista completa, no el primero
+  // — y se busca sobre TODOS los gastos (no solo `originales`): una copia
+  // recién llegada sigue siendo lo último que mandó el chofer, aunque no
+  // sume al comprobado.
+  const ultimo = gastos.at(-1);
 
   return {
     anticipo: Number(viaje.anticipo ?? 0),
     comprobado,
-    comprobantes: lista.length,
-    ultimoConcepto: (ultimo?.concepto as string) ?? null,
-    ultimoMonto: ultimo ? Number(ultimo.monto) : null,
+    comprobantes: originales.length,
+    ultimoConcepto: ultimo?.concepto ?? null,
+    ultimoMonto: ultimo ? ultimo.monto : null,
     // Confianza baja = el motor lo va a mandar a revisión. Decírselo ahora le
     // da la oportunidad de reenviar la foto mientras sigue en ruta.
-    enRevision: lista.filter((g) => g.ocr_confianza !== null && Number(g.ocr_confianza) < 0.7).length,
+    enRevision: gastos.filter((g) => g.ocrConfianza !== undefined && Number(g.ocrConfianza) < 0.7).length,
   };
 }
 
