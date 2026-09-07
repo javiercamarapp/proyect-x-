@@ -5,6 +5,8 @@ node_modules
 *.log
 /tmp/
 .tickets_calibracion/
+__pycache__/
+*.pyc
 
 # Artefactos de build de TS
 tsconfig.tsbuildinfo
