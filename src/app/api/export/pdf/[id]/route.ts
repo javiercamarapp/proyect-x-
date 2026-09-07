@@ -87,7 +87,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // de un env var.
   const { data, error } = await admin
     .from('liquidacion')
-    .select('pdf_url')
+    .select('pdf_url, revision')
     .eq('id', id)
     .eq('tenant_id', tenantId)
     .maybeSingle();
@@ -99,6 +99,26 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // Sin fila y con fila sin PDF son 404 los dos: quien pregunta no debe poder
   // distinguir "no existe" de "existe y aún no tiene papel".
   if (!data?.pdf_url) return new NextResponse('No hay PDF para esta liquidación', { status: 404 });
+
+  // ── UNA LIQUIDACIÓN RECHAZADA NO TIENE UN PDF VIGENTE (BE-A1) ────────────
+  //
+  // Este `select` no traía `revision`: la ruta no tenía forma de saber que la
+  // liquidación fue rechazada, así que servía el PDF viejo como si nada.
+  //
+  // La 0346 (`pdf_publicacion_atomica`) anula `pdf_url` cuando `revision`
+  // pasa a 'ajustada' (el PDF viejo se archiva y el nuevo se genera aparte),
+  // pero NO cuando pasa a 'rechazada' — un rechazo no reemplaza el PDF, así
+  // que una liquidación rechazada con un `pdf_url` de ANTES del rechazo lo
+  // conserva en la base, apuntando a un ejemplar que ya no es el vigente.
+  // El corte tiene que ir aquí, a la lectura, no confiar en que la columna
+  // esté vacía.
+  if (data.revision === 'rechazada') {
+    logger.warn('export.pdf.rechazada', { tenant: tenantId, liquidacion: id });
+    return new NextResponse(
+      'Esta liquidación fue rechazada: no tiene un PDF vigente para descargar. Revisa el motivo del rechazo en el panel.',
+      { status: 409 },
+    );
+  }
 
   const firmada = await admin.storage
     .from('liquidaciones')
