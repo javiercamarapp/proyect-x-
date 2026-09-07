@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'crypto';
 import type OpenAI from 'openai';
-import { generateWithTools } from '@/lib/llm/openrouter';
+import { generateWithTools, PartialExecutionError } from '@/lib/llm/openrouter';
 import { toolSchemas, makeExecutor, registerTool, type ToolContext } from '@/lib/llm/tool-executor';
 import { validarBloques, cifrasRespaldadas, extraerNumeros, type Bloque } from './analista';
 import { logger } from '@/lib/logger';
@@ -26,6 +26,7 @@ import { TZ_MX, hoyMx } from '@/lib/formato';
 import { TOOLS_COPILOTO_LECTURA } from './copiloto-tools';
 import { CATALOGO_ACCIONES, accionDelCatalogo } from './copiloto-acciones';
 import { createLlmBudget } from '@/lib/llm/budget';
+import { INTERRUPTORES, estaApagado, type NombreInterruptor } from '@/lib/likida/interruptores';
 import './copiloto-tools'; // registra las tools 🟢 al importar
 
 /** La previsualización de una acción gateada — la interfaz la pinta con
@@ -73,12 +74,40 @@ registerTool('proponer_accion', {
     const a = args as { accion?: unknown; objetivo?: unknown; motivo?: unknown };
     const cat = accionDelCatalogo(String(a.accion ?? ''));
     if (!cat) return { ok: false, error: 'esa acción no está en el catálogo' };
+    // TC-M3 (auditoría 28): `ACCIONES_PROPUESTAS` guarda UNA sola tarjeta
+    // por corrida (`ctx.conversationId` es el runId de ESTE turno) — un
+    // segundo `proponer_accion` en el MISMO turno sobrescribía la primera
+    // con un `.set` silencioso, sin que el modelo ni Javier se enteraran de
+    // que la primera propuesta se perdió. Se rechaza explícito: el modelo
+    // tiene que resolver la que ya está armada (entregarla con
+    // entregar_respuesta_admin o abandonarla en texto) antes de proponer
+    // otra en el mismo turno.
+    if (ctx.conversationId && ACCIONES_PROPUESTAS.has(ctx.conversationId)) {
+      return {
+        ok: false,
+        error: 'Ya hay una propuesta de acción pendiente en este turno — confírmala o descártala primero antes de proponer otra.',
+      };
+    }
+    const objetivo = String(a.objetivo ?? '').slice(0, 80);
+    // TC-B7 (auditoría 28): antes de armar la previsualización, se valida
+    // el objetivo contra el catálogo REAL de interruptores para las
+    // acciones que apagan uno — un objetivo inventado o YA apagado no debe
+    // ofrecerse como ejecutable: Javier confirmaría sobre un no-op (o algo
+    // que ni existe) creyendo que hay un efecto real.
+    if (cat.id === 'apagar_agente') {
+      if (!(INTERRUPTORES as readonly string[]).includes(objetivo)) {
+        return { ok: false, error: `"${objetivo}" no es un interruptor del catálogo — no se puede proponer apagarlo.` };
+      }
+      if (await estaApagado(objetivo as NombreInterruptor)) {
+        return { ok: false, error: `"${objetivo}" ya está apagado — no hay nada que proponer.` };
+      }
+    }
     const bloque: BloqueAccion = {
       tipo: 'accion',
       accion: cat.id,
       gateo: cat.gateo,
       implementada: cat.implementada,
-      objetivo: String(a.objetivo ?? '').slice(0, 80),
+      objetivo,
       efecto: cat.efecto,
       revertir: cat.revertir,
       motivoSugerido: typeof a.motivo === 'string' && a.motivo.trim() ? a.motivo.trim().slice(0, 300) : null,
@@ -264,6 +293,19 @@ export async function ejecutarCopiloto(opts: {
         onTool: opts.onPaso,
         terminalTools: ['entregar_respuesta_admin'],
         readOnlyTools: TOOLS_COPILOTO_LECTURA,
+      }).catch((e: unknown) => {
+        // AG-B3 (auditoría 28), mismo patrón que analista.ts:449-451: si ESTE
+        // segundo ciclo truena (loop-guard, abort), el `PartialExecutionError`
+        // que sube solo traía lo gastado por el segundo ciclo — la primera
+        // vuelta, que ya corrió y ya se pagó, desaparecía de `copiloto.costo`
+        // justo en el modo de falla que más consume.
+        if (e instanceof PartialExecutionError) {
+          e.tokensIn += res.tokensIn;
+          e.tokensOut += res.tokensOut;
+          e.cost += res.cost;
+          e.partialToolCalls.unshift(...res.toolCalls);
+        }
+        throw e;
       });
       for (const t of res2.toolCalls) extraerNumeros(t.result, respaldo);
       res.toolCalls.push(...res2.toolCalls);
@@ -307,6 +349,37 @@ export async function ejecutarCopiloto(opts: {
       tokensIn: res.tokensIn,
       tokensOut: res.tokensOut,
       modelo: res.model,
+    };
+  } catch (e) {
+    // TC-B1 (auditoría 28): un tropiezo del modelo a media corrida
+    // (loop-guard, abort, cualquier excepción de `generateWithTools`) hacía
+    // que la función entera lanzara — y el `finally` de abajo borraba
+    // `ACCIONES_PROPUESTAS` sin que nadie leyera lo que ya había ahí. Si
+    // `proponer_accion` corrió en una ronda anterior a la que truena, la
+    // tarjeta de la previsualización YA estaba armada (viene del catálogo,
+    // no del modelo) y se perdía sin explicación para el admin, que solo
+    // veía un "no pude responder" genérico en la interfaz.
+    //
+    // Se rescata la tarjeta ANTES de que el `finally` limpie el mapa, y se
+    // entrega como una respuesta degradada pero honesta — en vez de
+    // propagar la excepción y dejar que la interfaz pinte un error mudo. El
+    // costo (si venía en un `PartialExecutionError`, ya con lo de la
+    // primera ronda acumulado por el `.catch` de arriba) viaja también: es
+    // lo que de verdad se gastó en este turno, truene o no.
+    logger.error('copiloto.excepcion_a_media_corrida', { err: e instanceof Error ? e.message : String(e) });
+    const accionRescatada = ACCIONES_PROPUESTAS.get(runId);
+    const parcial = e instanceof PartialExecutionError ? e : null;
+    const bloques: BloqueCopiloto[] = [
+      { tipo: 'texto', texto: 'El copiloto tropezó a media corrida y no alcanzó a terminar de redactar. Lo que ya había armado antes de tronar sigue aquí abajo — vuelve a preguntar si necesitas el resto.' } as Bloque,
+    ];
+    if (accionRescatada) bloques.push(accionRescatada);
+    return {
+      bloques,
+      toolsUsadas: parcial ? parcial.partialToolCalls.map((t) => t.toolName) : [],
+      costoUsd: parcial?.cost ?? 0,
+      tokensIn: parcial?.tokensIn ?? 0,
+      tokensOut: parcial?.tokensOut ?? 0,
+      modelo: parcial ? 'parcial' : 'error',
     };
   } finally {
     clearTimeout(timer);
