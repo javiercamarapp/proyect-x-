@@ -200,30 +200,55 @@ export async function avisarRelojesLegales(ahora: Date = new Date(), opts: Opcio
   // único que filtrar. Lo que sí se hace —y por eso `tenant_id` viaja en el
   // select— es casar el sello con el PAR (flota, incidencia): un sello solo
   // descuenta a la incidencia de SU flota, nunca a una homónima de otra.
-  const sellos = todas.length === 0 ? [] : await traerPorIds<{ incidencia_id: unknown; tenant_id: unknown }>(
+  //
+  // AUDITORÍA 28 (REN-M4): el sello va POR CANAL, no como un booleano único.
+  // Una incidencia con dinero+operación puede tener UN canal fallido y el
+  // otro entregado — antes, con que UNO saliera se sellaba la incidencia
+  // ENTERA (`alguienRecibio`) y el canal que falló no se volvía a intentar
+  // JAMÁS. Puede haber más de un evento `EVENTO_RELOJ` por incidencia (uno
+  // parcial, otro completando lo que faltó): se OR-mergean. Un evento SIN
+  // `detalle` legible (el formato del sello antes de este arreglo, o el
+  // `{ aviso: 'sin_relojes_aplicables' }` de cuando nada aplica) se trata
+  // como sellado por completo — no hay nada que reintentar por canal si el
+  // sello es previo a que existiera el desglose.
+  const sellos = todas.length === 0 ? [] : await traerPorIds<{ incidencia_id: unknown; tenant_id: unknown; detalle: unknown }>(
     todas.map((i) => i.id),
     (tanda) => acotada(admin
       .from('incidencia_evento')
-      .select('incidencia_id, tenant_id')
+      .select('incidencia_id, tenant_id, detalle')
       .eq('tipo', EVENTO_RELOJ)
       .in('incidencia_id', tanda), 'relojes.sellos'),
     'relojes.sellos',
   );
-  const selladas = new Set(sellos.map((s) => `${String(s.tenant_id)}:${String(s.incidencia_id)}`));
-  const filas = todas.filter((i) => !selladas.has(`${i.tenantId}:${i.id}`));
+  const selloPorClave = new Map<string, SelloCanales>();
+  for (const s of sellos) {
+    const clave = `${String(s.tenant_id)}:${String(s.incidencia_id)}`;
+    const previo = selloPorClave.get(clave) ?? { dinero: false, operacion: false };
+    const d = s.detalle as { dinero?: unknown; operacion?: unknown; aviso?: unknown } | null;
+    // Legado: sello sin desglose leíble (formato viejo, o "nada aplicaba") —
+    // se toma como sellado por completo, no como "ningún canal enviado".
+    const sinDesglose = d == null || d.aviso === 'sin_relojes_aplicables' || typeof d.dinero !== 'boolean';
+    selloPorClave.set(clave, {
+      dinero: previo.dinero || sinDesglose || d?.dinero === true,
+      operacion: previo.operacion || sinDesglose || d?.operacion === true,
+    });
+  }
+  const pendientes = todas
+    .map((inc) => ({ inc, sello: selloPorClave.get(`${inc.tenantId}:${inc.id}`) ?? { dinero: false, operacion: false } }))
+    .filter(({ sello }) => !(sello.dinero && sello.operacion));
 
-  const r: ResultadoRelojes = { revisadas: filas.length, avisadas: 0, fallos: 0, cortadasPorReloj: 0 };
-  for (const [n, inc] of filas.entries()) {
+  const r: ResultadoRelojes = { revisadas: pendientes.length, avisadas: 0, fallos: 0, cortadasPorReloj: 0 };
+  for (const [n, { inc, sello }] of pendientes.entries()) {
     // BE-7: el reloj se mira ANTES de cada incidencia, no después. Un aviso
     // que arranca sin presupuesto muere a media escritura: WhatsApp fuera y
     // sello sin poner, o sea el reenvío de la hora siguiente.
     if (opts.venceEn !== undefined && Date.now() >= opts.venceEn) {
-      r.cortadasPorReloj = filas.length - n;
+      r.cortadasPorReloj = pendientes.length - n;
       logger.warn('relojes.cortado_por_reloj', { pendientes: r.cortadasPorReloj });
       break;
     }
     try {
-      const hecho = await avisarRelojesDeIncidencia(inc);
+      const hecho = await avisarRelojesDeIncidencia(inc, sello);
       if (hecho) r.avisadas++;
     } catch (e) {
       r.fallos++;
@@ -233,8 +258,17 @@ export async function avisarRelojesLegales(ahora: Date = new Date(), opts: Opcio
   return r;
 }
 
-/** `true` si ESTA corrida mandó el aviso (la anterior ya sellada devuelve false). */
-async function avisarRelojesDeIncidencia(inc: IncidenciaConReloj): Promise<boolean> {
+/** Qué canales de aviso de una incidencia ya quedaron resueltos — enviados
+ *  con éxito, o simplemente no aplicables. `false` es lo único que pide
+ *  reintento. */
+interface SelloCanales { dinero: boolean; operacion: boolean }
+
+/** `true` si ESTA corrida mandó AL MENOS UN aviso nuevo (la que no tenía
+ *  nada pendiente, o cuyos envíos volvieron a fallar, devuelve false). */
+async function avisarRelojesDeIncidencia(
+  inc: IncidenciaConReloj,
+  yaAvisado: SelloCanales = { dinero: false, operacion: false },
+): Promise<boolean> {
   // El sello ya se descontó en `avisarRelojesLegales` (una lectura por tanda,
   // BE-31): aquí solo llegan incidencias sin aviso.
   const folio = inc.viajeId ? await folioDelViaje(inc.tenantId, inc.viajeId) : null;
@@ -266,23 +300,33 @@ async function avisarRelojesDeIncidencia(inc: IncidenciaConReloj): Promise<boole
     return false;
   }
 
-  let alguienRecibio = false;
-  if (partesDinero.length > 0) {
+  // POR CANAL (REN-M4): el que ya salió en una corrida previa NO se reintenta
+  // — reenviar un aviso ya entregado no es el problema que este barrido
+  // resuelve. El que sigue pendiente (nunca aplicó, o aplicó y falló) sí se
+  // intenta, sin que el estado del OTRO canal lo condicione en ningún sentido.
+  let dineroEnviadoAhora = false;
+  if (partesDinero.length > 0 && !yaAvisado.dinero) {
     const tel = await telefonoParaDineroDe(inc.tenantId);
-    if (tel && await sendText(tel, partesDinero.join('\n\n'))) alguienRecibio = true;
+    if (tel && await sendText(tel, partesDinero.join('\n\n'))) dineroEnviadoAhora = true;
     else logger.warn('relojes.dinero_sin_destinatario', { incidencia: inc.id, tenia_telefono: Boolean(tel) });
   }
-  if (partesOperacion.length > 0) {
+  let operacionEnviadoAhora = false;
+  if (partesOperacion.length > 0 && !yaAvisado.operacion) {
     const tel = await telefonoJefeDe(inc.tenantId);
-    if (tel && await sendText(tel, partesOperacion.join('\n\n'))) alguienRecibio = true;
+    if (tel && await sendText(tel, partesOperacion.join('\n\n'))) operacionEnviadoAhora = true;
     else logger.warn('relojes.operacion_sin_destinatario', { incidencia: inc.id, tenia_telefono: Boolean(tel) });
   }
 
-  // El sello SOLO si alguien recibió: un aviso que no salió se reintenta a la
-  // siguiente corrida, no se da por entregado.
-  if (alguienRecibio) {
+  // El sello SOLO si algo salió NUEVO esta corrida: un canal que vuelve a
+  // fallar no se sella (se reintenta a la siguiente), y uno que no tenía
+  // nada pendiente no genera una fila de bitácora vacía. El desglose que se
+  // escribe es el estado FINAL de cada canal — sellado ya sea porque no
+  // aplicaba, porque venía sellado de antes, o porque se acaba de enviar —
+  // para que el próximo anti-join sepa exactamente qué queda pendiente.
+  if (dineroEnviadoAhora || operacionEnviadoAhora) {
     await anotarEventoIncidencia(inc.tenantId, inc.id, EVENTO_RELOJ, {
-      dinero: partesDinero.length, operacion: partesOperacion.length,
+      dinero: yaAvisado.dinero || partesDinero.length === 0 || dineroEnviadoAhora,
+      operacion: yaAvisado.operacion || partesOperacion.length === 0 || operacionEnviadoAhora,
     });
     logger.info('relojes.avisado', { incidencia: inc.id, tipo: inc.tipo });
     return true;

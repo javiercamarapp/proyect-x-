@@ -413,6 +413,40 @@ describe('avisarRelojesLegales — los relojes colgados de una incidencia', () =
     expect(texto).toMatch(/art\. 76/i);
   });
 
+  // AUDITORÍA 28 (REN-M4): con dinero+operación aplicables y UN canal fallido,
+  // el sello antes era un booleano único — con que UNO saliera se sellaba la
+  // incidencia ENTERA y el canal caído no se reintentaba jamás. El sello va
+  // POR CANAL: solo el que falló se reintenta en la siguiente corrida.
+  it('REN-M4: dinero falla y operación sale — solo dinero se reintenta en la siguiente corrida', async () => {
+    tablas.respuestas.set('incidencia', [inc('siniestro')]);
+    tablas.respuestas.set('incidencia_evento', []);
+    tablas.respuestas.set('viaje', [{ folio: 'V-9' }]);
+    tablas.respuestas.set('factura_emitida', [{ folio: 'F-1', cfdi_uuid: 'uuid-1' }]);
+    tablas.respuestas.set('tenant', [{ perfil: { hazmat: { valor: true, procedencia: 'declarado' } } }]);
+    sendText.mockResolvedValueOnce(null as never); // el canal de DINERO falla
+
+    const r1 = await avisarRelojesLegales(new Date('2026-08-26T18:00:00Z'));
+    expect(r1.avisadas).toBe(1); // operación sí salió: hubo algo nuevo
+    expect(telefonoParaDineroDe).toHaveBeenCalledWith('t1');
+    expect(telefonoJefeDe).toHaveBeenCalledWith('t1');
+    expect(anotarEventoIncidencia).toHaveBeenCalledWith('t1', 'i1', 'reloj_legal_avisado', { dinero: false, operacion: true });
+
+    // La siguiente corrida: el sello parcial de la anterior ya está en la
+    // bitácora — solo dinero debe reintentarse.
+    vi.clearAllMocks();
+    sendText.mockResolvedValue('wamid.OK');
+    telefonoJefeDe.mockResolvedValue('5210000000001');
+    tablas.respuestas.set('incidencia_evento', [
+      { id: 'e1', incidencia_id: 'i1', tenant_id: 't1', detalle: { dinero: false, operacion: true } },
+    ]);
+
+    const r2 = await avisarRelojesLegales(new Date('2026-08-26T19:00:00Z'));
+    expect(r2.avisadas).toBe(1);
+    expect(telefonoParaDineroDe).toHaveBeenCalledWith('t1'); // dinero SÍ se reintenta
+    expect(telefonoJefeDe).not.toHaveBeenCalled();            // operación NO se repite: ya salió
+    expect(anotarEventoIncidencia).toHaveBeenCalledWith('t1', 'i1', 'reloj_legal_avisado', { dinero: true, operacion: true });
+  });
+
   it('una incidencia ya sellada no vuelve a avisar', async () => {
     tablas.respuestas.set('incidencia', [inc('bloqueo')]);
     tablas.respuestas.set('incidencia_evento', [{ id: 'e1', incidencia_id: 'i1', tenant_id: 't1' }]); // el sello existe
