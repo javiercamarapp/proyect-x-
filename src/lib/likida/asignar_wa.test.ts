@@ -357,4 +357,28 @@ describe('los candados', () => {
     expect(r).toContain('esperando tu confirmación');
     expect(r).toContain('C2-12');
   });
+
+  it('la base caída al buscar el folio también pide reintentar — no "no encontré"', async () => {
+    // La misma degradación que ya prueba `resolver.mockRejectedValue(ConsultaFallida)`
+    // para la ruta por operador, pero por la ruta por folio: el `error` real
+    // que devuelve el SELECT de `viaje` en `resolverViaje`.
+    errorFolio = { message: 'boom' };
+    const r = await atenderAsignacionOficina(JEFE, TEL, 'asígnale la unidad 12 al VJ-9999', AHORA);
+    expect(r).toContain('inténtalo de nuevo');
+  });
+
+  it('el UPDATE del claim revienta con error: se pide reintentar, no se ejecuta a ciegas', async () => {
+    estadoGuardado = {
+      asignacionPendiente: {
+        accion: 'unidad', viajeId: 'v1', viajeEtiqueta: 'el viaje de *Juan*',
+        unidadId: 'u-12', unidadEco: 'C2-12', en: AHORA.toISOString(),
+      },
+    };
+    // Fuerza el `error` en el SELECT que cierra el UPDATE atómico de
+    // `reclamarPendiente` — algo que el flujo natural del mock nunca produce.
+    reclamoForzado = { data: null, error: { message: 'boom' } };
+    const r = await atenderAsignacionOficina(JEFE, TEL, 'sí', new Date(AHORA.getTime() + 60_000));
+    expect(asignarUnidad).not.toHaveBeenCalled();
+    expect(r).toContain('No pude tomar tu confirmación');
+  });
 });

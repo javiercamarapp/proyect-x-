@@ -34,7 +34,7 @@ function contieneTexto(nodo: unknown, texto: string): boolean {
   if (nodo == null || typeof nodo === 'boolean') return false;
   if (typeof nodo === 'string') return nodo.includes(texto);
   if (Array.isArray(nodo)) return nodo.some((n) => contieneTexto(n, texto));
-  if (typeof nodo === 'object' && nodo !== null && 'props' in nodo) {
+  if (typeof nodo === 'object' && 'props' in nodo) {
     return contieneTexto((nodo as { props?: { children?: unknown } }).props?.children, texto);
   }
   return false;
