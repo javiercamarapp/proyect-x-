@@ -871,7 +871,7 @@ export async function procesarLoteEnCola(
           : undefined,
       })));
 
-    // ── LA COLA ATORADA DE FACTURAS (B2, auditoría 4) ──────────────────────
+    // ── LA COLA ATORADA DE FACTURAS (B2, auditoría 4; re-armada AG-A5) ──────
     //
     // `avisoColaAtorada` existía desde el 14-ago sin un solo llamador; éste es
     // su primer emisor real, y SOLO para Facturas: los tickets que ESTA
@@ -881,20 +881,44 @@ export async function procesarLoteEnCola(
     // esta corrida) y `diasSinBajar` va en `null` porque es la verdad: no hay
     // serie histórica de esta cola, y la plantilla lo maneja sin inventar días.
     //
-    // SOLO cuando algo se bloqueó en esta corrida, igual que el WhatsApp de
-    // `avisarALasPersonas`: una corrida sin bloqueos nuevos no sabe si la cola
-    // vieja ya la atendió una persona, así que tampoco cierra el incidente por
-    // ella. El anti-ruido (marcas de insistencia y piso de una hora) vive en
-    // `avisar` — aquí no se duplica nada de eso.
+    // POR CADA FLOTA QUE ESTA CORRIDA PROCESÓ —las de `corridas`, el mismo
+    // mapa que arma `avisarCorridasPorFlota` arriba—, NO solo las que
+    // bloquearon algo. AG-A5 (auditoría 28): hasta esta auditoría el bucle
+    // era `for (const [tenantId, bloqueados] of bloqueadosPorFlota)`, así que
+    // una flota SOLO podía mandar `hayProblema: true` — nunca `false` — y el
+    // filo de este aviso no se re-armaba jamás: tras la tercera marca de
+    // insistencia quedaba mudo DE POR VIDA mientras la pantalla de
+    // Notificaciones prometía que "la cuenta vuelve a cero en cuanto el
+    // problema se resuelve".
+    //
+    // LA ELECCIÓN QUE SE DOCUMENTA (el comentario que pedía este hallazgo):
+    // "bloqueados" aquí es SOLO lo que ESTA corrida bloqueó de nuevo, no la
+    // cola VIVA de tickets que siguen esperando de corridas anteriores —medir
+    // esa cola viva exigiría un COUNT por flota contra `gasto` en cada pasada
+    // del cron (cada ~15 min) y, peor, no hay manera barata de distinguir "ya
+    // lo resolvió una persona" de "sigue bloqueado": la captura manual del
+    // panel (`dashboard/agentes/facturas/page.tsx`) solo escribe `cfdi_uuid`
+    // y NUNCA limpia `autofactura_bloqueada_en`/`autofactura_bloqueo`, así que
+    // un simple `is not null` sobrecontaría tickets que una persona ya
+    // facturó a mano. Se opta por el mismo criterio que `escalado`
+    // (`escalar_viaje.ts`): una corrida sin bloqueos NUEVOS es "no hay nada
+    // que avisar ahora mismo" y re-arma el filo, igual que una corrida sin
+    // fallos re-arma `corrida_fallida`. Una cola vieja que de verdad sigue
+    // atorada sin que nadie la toque va a volver a bloquear tickets en la
+    // corrida siguiente (los que no se resolvieron manualmente sencillamente
+    // se re-intentan y re-bloquean), así que no se vuelve invisible — solo
+    // deja de sumar magnitud en los ratos en que nadie generó un bloqueo
+    // nuevo.
     //
     // `avisar` promete no lanzar, pero la corrida no cuelga de esa promesa:
     // una invariante que solo aguanta fallos por valor no es una invariante
     // (el mismo criterio del emisor de `escalado` en escalar_viaje.ts).
-    for (const [tenantId, bloqueados] of bloqueadosPorFlota) {
+    for (const tenantId of corridas.keys()) {
+      const bloqueados = bloqueadosPorFlota.get(tenantId) ?? [];
       try {
         await avisar(
           tenantId, 'facturas', 'cola_atorada',
-          { hayProblema: true, magnitud: bloqueados.length },
+          { hayProblema: bloqueados.length > 0, magnitud: bloqueados.length },
           // El nombre y la ruta salen del catálogo vía `avisar` (d.agente,
           // d.ruta) — el mismo patrón que `avisarCorridaFallida`.
           (d) => avisoColaAtorada({

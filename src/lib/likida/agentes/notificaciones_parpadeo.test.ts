@@ -23,6 +23,11 @@ interface FilaEstado {
   magnitud: number;
   avisado_en: string | null;
   magnitud_avisada: number | null;
+  /** AG-M3 (auditoría 28): SOLO la toca `cerrarIncidente` — `guardarMagnitud`
+   *  ya no la escribe. Es la señal que sobrevive a cuantas corridas hagan
+   *  falta mientras el piso bloquea el primer correo de un incidente
+   *  reabierto (ver el comentario de `guardarMagnitud` en notificaciones.ts). */
+  actualizado_en: string;
 }
 
 let fila: FilaEstado | null = null;
@@ -47,15 +52,25 @@ function tablaEstado() {
     eq: () => b,
     or: (c: string) => { condicionOr = c; return b; },
     update: (p: Record<string, unknown>) => { payload = p; return b; },
-    // El upsert de `guardarMagnitud` (y su degradación de huella, B7).
+    // El upsert de `guardarMagnitud`. Desde AG-M3 (auditoría 28) SOLO escribe
+    // `magnitud` — ni `actualizado_en` (reservada a `cerrarIncidente`) ni
+    // `magnitud_avisada` (reservada a un envío REAL). Una fila NUEVA simula el
+    // `default now()` de Postgres con un sello fijo: `incidenteCerrado` nunca
+    // lo necesita en la primera vez (`ultimo` sale `null` sin correo previo).
     upsert: (p: Record<string, unknown>) => {
       const nueva: FilaEstado = {
         magnitud: (fila?.magnitud ?? 0),
         avisado_en: fila?.avisado_en ?? null,
         magnitud_avisada: fila?.magnitud_avisada ?? null,
+        actualizado_en: fila?.actualizado_en ?? '1970-01-01T00:00:00.000Z',
       };
       if ('magnitud' in p) nueva.magnitud = p.magnitud as number;
       if ('magnitud_avisada' in p) nueva.magnitud_avisada = p.magnitud_avisada as number;
+      // Genérico a propósito (no solo lo que escribe el código de HOY): un
+      // fake fiel a Postgres aplica cualquier columna que el `upsert` traiga,
+      // para que este archivo sirva igual de rojo→verde contra una versión
+      // anterior de `guardarMagnitud` que sí tocara `actualizado_en` aquí.
+      if ('actualizado_en' in p) nueva.actualizado_en = p.actualizado_en as string;
       checksDe0097(nueva);
       fila = nueva;
       return Promise.resolve({ error: null });
@@ -77,8 +92,10 @@ function tablaEstado() {
         if (pasa) {
           const nueva: FilaEstado = { ...fila };
           if ('magnitud' in payload) nueva.magnitud = payload.magnitud as number;
-          if ('avisado_en' in payload) nueva.avisado_en = payload.avisado_en as string;
-          if ('magnitud_avisada' in payload) nueva.magnitud_avisada = payload.magnitud_avisada as number;
+          if ('avisado_en' in payload) nueva.avisado_en = payload.avisado_en as (string | null);
+          if ('magnitud_avisada' in payload) nueva.magnitud_avisada = payload.magnitud_avisada as (number | null);
+          // `cerrarIncidente` es la ÚNICA escritora de esta columna (AG-M3).
+          if ('actualizado_en' in payload) nueva.actualizado_en = payload.actualizado_en as string;
           checksDe0097(nueva);
           fila = nueva;
           if (condicionOr !== null) data = [{ tenant_id: 't-1' }];
@@ -132,7 +149,14 @@ vi.mock('@/lib/supabase/admin', () => ({
 
 // AQUÍ el canal SÍ está encendido — a diferencia de `notificaciones_corrida.
 // test.ts`—: lo que se prueba es cuántos correos SALEN.
-const enviarCorreo = vi.fn(async () => ({ ok: true as const, id: 'env-1' }));
+//
+// El tipo de retorno se declara ANCHO (éxito o fallo) a propósito: AG-A5(b)
+// necesita poder simular un rebote (`mockResolvedValueOnce({ ok: false, ... })`)
+// sin que el resto de las pruebas —que solo necesitan el éxito— tengan que
+// repetir la unión completa.
+const enviarCorreo = vi.fn(
+  async (): Promise<{ ok: true; id: string } | { ok: false; motivo: string }> => ({ ok: true, id: 'env-1' }),
+);
 vi.mock('@/lib/correo/enviar', () => ({
   correoConfigurado: () => true,
   enviarCorreo: (...a: unknown[]) => enviarCorreo(...(a as [])),
@@ -227,5 +251,72 @@ describe('el rótulo de la pestaña es verdad', () => {
     // Y la racha del correo es la cuenta real de fallos de B, no un 1.
     const corridasDeB = (envios[0].minuto - 10) / 5 + 1;
     expect(envios[0].magnitud).toBe(corridasDeB);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AG-M3 (auditoría 28) — el mismo escenario de arriba, pero con la cadencia
+// real de este bucle: 15 minutos, no 5. La prueba anterior no atrapaba el
+// hallazgo porque parpadear cada 5 min hace que la racha CRUCE la marca 5
+// dentro de la misma hora del piso, y por casualidad el resultado sale igual
+// con el código roto y con el arreglado. A 15 min, el incidente B solo lleva
+// magnitud 3 cuando el piso se cumple — muy por debajo de la marca 5 — y ahí
+// es donde el código viejo se quedaba mudo media hora de más (hasta las
+// 11:30, cuando la racha por fin llegaba a 5) en vez de avisar a las 11:00,
+// que es lo que la pantalla promete.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AG-M3: un incidente reabierto con poca magnitud avisa al pasar el piso, no al llegar a la marca 5', () => {
+  it('cadencia de 15 min: falla, correo, sana, falla de nuevo — el segundo correo sale al pasar el piso, no al llegar a 5', async () => {
+    await avisarCorridaFallida('t-1', 'facturas', new Error('incidente A'), min(0));   // 10:00 → correo
+    await avisarCorridaFallida('t-1', 'facturas', null, min(15));                       // 10:15 → sanó
+
+    const r1 = await avisarCorridaFallida('t-1', 'facturas', new Error('incidente B'), min(30)); // 10:30
+    expect(r1.avisado).toBe(false);
+    expect(r1.porque).toMatch(/sale en 30 min/);
+
+    const r2 = await avisarCorridaFallida('t-1', 'facturas', new Error('incidente B'), min(45)); // 10:45
+    expect(r2.avisado).toBe(false);
+
+    // POCO DESPUÉS de que se cumple el piso de una hora desde el correo de A
+    // (min 61, no exactamente min 60: el filo de igualdad milimétrica de
+    // `reclamarAviso` es un detalle aparte, no lo que esta prueba fija) —
+    // NO a los 90 minutos, que es cuando la racha de B habría llegado a la
+    // marca 5 con el código roto.
+    const r3 = await avisarCorridaFallida('t-1', 'facturas', new Error('incidente B'), min(61));
+    expect(r3.avisado).toBe(true);
+    expect(r3.porque).toMatch(/primera vez/);
+    // La racha REAL del incidente B: 10:30, 10:45, 10:61 → 3, no 5 ni 1.
+    expect(r3.magnitud).toBe(3);
+    expect(enviarCorreo).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AG-A5(b) (auditoría 28) — `reclamarAviso` sella la huella ANTES de mandar,
+// para que dos corridas solapadas no dupliquen el correo. Pero eso también
+// significaba que un envío que REBOTA (Resend 429) consumía el turno del
+// incidente exactamente igual que uno que sale: el aviso de que un agente no
+// pudo trabajar se perdía por un fallo del CANAL, no del agente.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AG-A5(b): un envío que rebota no consume el turno del incidente', () => {
+  it('la huella no queda sellada, y la corrida siguiente (ya sin el rebote) sí manda', async () => {
+    enviarCorreo.mockResolvedValueOnce({ ok: false as const, motivo: 'Resend devolvió 429' });
+
+    const r1 = await avisarCorridaFallida('t-1', 'facturas', new Error('primer intento'), T0);
+    expect(r1.avisado).toBe(false);
+    expect(r1.porque).toMatch(/no se pudo entregar/);
+    // AG-B3: SÍ había a quién avisarle — el reparto se calculó antes del
+    // envío—, así que el resultado no puede decir "0 destinatarios".
+    expect(r1.destinatarios).toBeGreaterThan(0);
+    // La huella queda EXACTAMENTE como antes del intento (nunca hubo correo
+    // previo en este escenario: null/null).
+    expect(fila?.avisado_en).toBeNull();
+    expect(fila?.magnitud_avisada).toBeNull();
+
+    // La corrida siguiente, un minuto después —muy por debajo del piso de una
+    // hora—, sí manda: el intento fallido nunca contó como un correo real.
+    const r2 = await avisarCorridaFallida('t-1', 'facturas', new Error('segundo intento'), min(1));
+    expect(r2.avisado).toBe(true);
+    expect(enviarCorreo).toHaveBeenCalledTimes(2);
   });
 });
