@@ -33,6 +33,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ── El reloj de la prueba ───────────────────────────────────────────────────
 // Fake sólo de `Date`: `relojAgotado` (agentes/runner.ts) pregunta `Date.now()`
@@ -46,7 +48,7 @@ type Fila = Record<string, unknown>;
 type ErrPg = { code?: string; message: string } | null;
 
 let tablas: Record<string, Fila[]>;
-let enviados: Array<{ tipo: string; waMessageId: string; from: string }>;
+let enviados: Array<{ tipo: string; waMessageId: string; from: string; timestampMs: unknown }>;
 let costoPorFotoUsd: number;
 let seq: number;
 /** Cuántas veces el motor PIDIÓ un cliente (supabaseAdmin). La afirmación del
@@ -56,6 +58,12 @@ let clientesPedidos: number;
  *  28-ago («Too many connections issued to the database»). Infinity = nunca
  *  cede. Es el doble de Storage simulando el pool lleno. */
 let saturaPorPath: Map<string, number>;
+/** AUD28 · BE-A4 (QA): cuando está en `true`, el PRIMER mensaje de texto de
+ *  la corrida NO siembra liquidación — obliga al motor a insistir con un
+ *  segundo «listo» (mismo criterio que el ejército), que es el único camino
+ *  para ejercitar los sitios `…t2` de `processInbound`. Se apaga sola tras
+ *  el primer uso: sólo el PRIMER «listo» de la corrida falla. */
+let simularReintentoCierre: boolean;
 
 /** Las restricciones que la 0185 y la 0240 declaran, respetadas por el doble. */
 const UNICO: Record<string, string[]> = {
@@ -283,8 +291,10 @@ vi.mock('@/lib/supabase/reintento', async (importOriginal) => {
 });
 
 vi.mock('@/lib/likida/processor', () => ({
-  processInbound: async (msg: { type: string; waMessageId: string; from: string }) => {
-    enviados.push({ tipo: msg.type, waMessageId: msg.waMessageId, from: msg.from });
+  processInbound: async (msg: { type: string; waMessageId: string; from: string; timestampMs?: unknown }) => {
+    enviados.push({
+      tipo: msg.type, waMessageId: msg.waMessageId, from: msg.from, timestampMs: msg.timestampMs,
+    });
     // EL TIEMPO PASA. Es lo que hace que el reloj corte de verdad en vez de
     // que la prueba lo simule con un booleano.
     vi.setSystemTime(Date.now() + MS_POR_FOTO);
@@ -295,10 +305,18 @@ vi.mock('@/lib/likida/processor', () => ({
         id: `costo-${enviados.length}`, tenant_id: tenant.id, fase: 'ocr', costo_usd: costoPorFotoUsd,
       });
       if (msg.type === 'text') {
-        (tablas.liquidacion ??= []).push({
-          id: `liq-${enviados.length}`, tenant_id: tenant.id,
-          viaje_id: (tablas.viaje ?? [])[0]?.id,
-        });
+        // AUD28 · BE-A4 (QA): el doble del PRIMER «listo» de la corrida puede
+        // fingir que no cerró — es lo único que fuerza al motor a insistir
+        // con un segundo mensaje (…t2), el otro camino que necesita
+        // `timestampMs`.
+        if (simularReintentoCierre) {
+          simularReintentoCierre = false;
+        } else {
+          (tablas.liquidacion ??= []).push({
+            id: `liq-${enviados.length}`, tenant_id: tenant.id,
+            viaje_id: (tablas.viaje ?? [])[0]?.id,
+          });
+        }
       }
     }
   },
@@ -319,7 +337,7 @@ vi.mock('./qa-oraculos', () => ({
 }));
 
 import {
-  crearCorrida, ejecutarPasada, mezclarEventos,
+  crearCorrida, ejecutarPasada, ejecutarCorridaRapida, mezclarEventos,
   patronesDeFallo, fraseFallosMismaFirma, MIN_FALLOS_MISMA_FIRMA,
   instalarInterceptorSalidaMeta, contextoQa,
 } from './qa-motor';
@@ -373,6 +391,7 @@ beforeEach(() => {
   costoPorFotoUsd = 0.0005;
   clientesPedidos = 0;
   saturaPorPath = new Map();
+  simularReintentoCierre = false;
 });
 
 afterEach(() => {
@@ -943,5 +962,113 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     const restaurar = instalarInterceptorSalidaMeta('corrida-r');
     restaurar();
     expect(globalConFetch.fetch).toBe(original);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28 · BE-A4 (parte QA) — el arnés manda hora en el «listo».
+//
+// CAUSA RAÍZ: las 8 llamadas a `processInbound` del arnés de QA no mandaban
+// `timestampMs`. Sin él, `procesarTurno` (processor.ts, ~L3689-3703) no puede
+// distinguir «no hay hora de Meta» de «no hace falta hora de Meta»: aplaza el
+// cierre SIN techo cuando `timestampCierreMs` es `null`, así que el arnés
+// nunca ejercitaba el camino real —el que SÍ trae hora del mensaje— y podía
+// reportar "listo" (verde) en un escenario que en producción real fallaría
+// por falta de reloj (DAT-38).
+//
+// Esta prueba no repite lo que ya prueban las demás (que el arnés cierra,
+// mide, etc.) — verifica UNA cosa: que CADA UNO de los 8 sitios de
+// `processInbound` en qa-motor.ts manda un `timestampMs` numérico.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AUD28 · BE-A4 (QA): cada processInbound del arnés manda timestampMs numérico', () => {
+  const esNumeroFinito = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+  test('carril completo — foto normal, foto repetida (dedup) y cierre (foto_duplicada)', async () => {
+    const ids = sembrarBanco(2);
+    const corrida = crearCorrida('foto_duplicada', parametros(ids), 'completo');
+    await guardarCorrida(dbFalsa(), corrida);
+    let r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+    while (!r.terminada) r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+
+    expect(enviados.length).toBeGreaterThan(0);
+    for (const e of enviados) expect(esNumeroFinito(e.timestampMs)).toBe(true);
+    // Se tocaron los dos tipos de mensaje de este guion: foto (normal Y
+    // repetida) y cierre.
+    expect(enviados.filter((e) => e.tipo === 'image').length).toBeGreaterThanOrEqual(2);
+    expect(enviados.some((e) => e.tipo === 'text')).toBe(true);
+  });
+
+  test('carril completo — el ticket TARDÍO tras el cierre manda timestampMs (ticket_tarde)', async () => {
+    const ids = sembrarBanco(2);
+    // La foto reservada para el ataque del invariante #4 (la última) exige
+    // monto en su verdad-de-terreno — si no, la corrida ni la manda.
+    const reservada = tablas.qa_foto!.find((f) => f.id === ids[ids.length - 1])!;
+    // El resto de las claves de la verdad-de-terreno tiene que ir CLASIFICADA
+    // (validarVerdadTerreno lo exige campo por campo): "noAplica" para todo lo
+    // que este ticket sintético no trae, monto aparte.
+    reservada.ocr_esperado = {
+      clase: 'ticket', monto: 350.5, ilegibles: [],
+      noAplica: ['emisor', 'rfcEmisor', 'folio', 'fecha', 'sucursal', 'dominioFacturacion'],
+    };
+    const corrida = crearCorrida('ticket_tarde', parametros(ids), 'completo');
+    await guardarCorrida(dbFalsa(), corrida);
+    let r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+    while (!r.terminada) r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+
+    expect(enviados.length).toBeGreaterThan(0);
+    for (const e of enviados) expect(esNumeroFinito(e.timestampMs)).toBe(true);
+    // El escenario manda dos fotos (la normal y la tardía) y un cierre.
+    expect(enviados.filter((e) => e.tipo === 'image').length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('carril completo — el «listo» que no cierra a la primera insiste, y AMBOS mandan timestampMs', async () => {
+    const ids = sembrarBanco(1);
+    const corrida = crearCorrida('demo_guion', parametros(ids), 'completo');
+    await guardarCorrida(dbFalsa(), corrida);
+    simularReintentoCierre = true;
+    let r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+    while (!r.terminada) r = await ejecutarPasada(corrida.id, Date.now() + 600_000);
+
+    const textos = enviados.filter((e) => e.tipo === 'text');
+    expect(textos.length).toBe(2);   // t1 (no cerró) + t2 (insistencia)
+    for (const e of textos) expect(esNumeroFinito(e.timestampMs)).toBe(true);
+  });
+
+  test('carril rápido (ejecutarCorridaRapida) — foto y cierre mandan timestampMs', async () => {
+    const ids = sembrarBanco(1);
+    const corrida = crearCorrida('demo_guion', parametros(ids), 'rapido');
+    await ejecutarCorridaRapida(corrida);
+
+    expect(enviados.length).toBeGreaterThan(0);
+    for (const e of enviados) expect(esNumeroFinito(e.timestampMs)).toBe(true);
+    expect(enviados.some((e) => e.tipo === 'image')).toBe(true);
+    expect(enviados.some((e) => e.tipo === 'text')).toBe(true);
+  });
+
+  test('carril rápido — el «listo» que no cierra a la primera insiste, y AMBOS mandan timestampMs', async () => {
+    const ids = sembrarBanco(1);
+    const corrida = crearCorrida('demo_guion', parametros(ids), 'rapido');
+    simularReintentoCierre = true;
+    await ejecutarCorridaRapida(corrida);
+
+    const textos = enviados.filter((e) => e.tipo === 'text');
+    expect(textos.length).toBe(2);   // t1 (no cerró) + t2 (insistencia)
+    for (const e of textos) expect(esNumeroFinito(e.timestampMs)).toBe(true);
+  });
+
+  test('los 8 sitios de processInbound en qa-motor.ts están, literalmente, atados a timestampMs', () => {
+    // Complemento estático a las pruebas de arriba: dos de los 8 sitios
+    // (`…t2`, la segunda insistencia del cierre) sólo se alcanzan cuando el
+    // primer «listo» NO cerró — un camino que las pruebas de arriba SÍ
+    // ejercitan, pero que depende del doble de `hayLiquidacion`. Este grep
+    // sobre el archivo fuente es la red de segundo piso: si alguien agrega un
+    // noveno `processInbound` sin `timestampMs`, esto truena sin depender de
+    // qué guion decida ejercitar.
+    const fuente = readFileSync(join(process.cwd(), 'src/lib/admin/qa-motor.ts'), 'utf8');
+    const llamadas = fuente.match(/processInbound\(\{[\s\S]*?\}\);/g) ?? [];
+    expect(llamadas.length).toBe(8);
+    for (const llamada of llamadas) {
+      expect(llamada).toContain('timestampMs');
+    }
   });
 });
