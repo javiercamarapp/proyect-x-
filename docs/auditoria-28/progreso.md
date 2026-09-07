@@ -54,3 +54,20 @@ defecto del repo y **no cuenta contra el rubro de pruebas**.
 **Contra esta línea base se mide todo arreglo de la ronda: 5 fallos infra, ni
 uno más.** Creció respecto a la 27 (12,174 → 12,193 pruebas, +19) por las
 pruebas nuevas de `4de95a0` y `18c7ebd`.
+
+## Sigue el diario (vuelta 2 y cierre)
+
+| # | Acción | Resultado / sha |
+|---|---|---|
+| 15 | **OP-C1 (CRÍTICO)**: prueba nueva `src/app/api/health/migracion.test.ts` → **ROJO medido** (`cotejar('0347','0303')` indistinguible de `cotejar('0303','0303')`) | rojo |
+| 16 | Arreglo: `adelante` como magnitud propia con su motivo; `route.ts` degrada con ella; `atras` sin tocar (lo leen `compuerta-deploy.mjs` y `production-candidate.mjs`) | verde (25/25) |
+| 17 | `route.test.ts:400` afirmaba la forma exacta con `toEqual` y ganó el campo: se **agregó** `adelante: 0` al caso sano, sin quitar aserciones | verde |
+| 18 | Suite completa: **12,191 / 5 / 1 (12,197)**, mismos 5 INFRA · `tsc` exit 0 · `lint` 0 errores/156 avisos | **RETENIDO** |
+| 19 | Commit atómico | **`ddf0131`** |
+| 20 | Verificación a mano de 7 hallazgos (no de los 130) — ver la tabla en `00-SINTESIS.md` | 7 confirmados, 0 falsos |
+| 21 | **FIS-C1 NO se arregló**: exige decidir qué fuente gana (declarada vs. derivada de la clave del SAT) y plomear `regimenFiscal` hasta `desde_db.ts`; la precedencia actual está documentada como deliberada. Queda **propuesto** | propuesto |
+| 22 | `tablero.html` + captura headless → `tablero.png`, **mirado**: 12 rubros, notas suman 53, severidades suman 130 | ok |
+| 23 | `00-SINTESIS.md` y `RESULTADO.md` escritos, con la reserva sobre la uniformidad del −1 | ok |
+
+**Vueltas de arreglo: 2 de 3.** La tercera no se gastó porque ninguno de los 9
+CRÍTICOS restantes era quirúrgico — no por falta de presupuesto.
