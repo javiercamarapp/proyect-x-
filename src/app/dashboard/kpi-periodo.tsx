@@ -2,12 +2,10 @@
 
 import { useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { StatCard } from '../admin/ui/kit';
+import { StatCard, BOTON_PERIODO } from '../admin/ui/kit';
 import type { ComparativoPeriodo, SeriesKpiCards } from '@/lib/likida/analytics';
 import { pctCambio } from '@/lib/formato';
 import type { FormatoPreset } from '../admin/ui/formato-preset';
-
-const BOTON = 'w-4 h-4 rounded flex items-center justify-center transition-colors disabled:opacity-30 hover:bg-[color-mix(in_srgb,var(--muted)_14%,transparent)] disabled:hover:bg-transparent';
 
 type Modo = 'semanal' | 'mensual' | 'historico';
 const MODOS: Modo[] = ['semanal', 'mensual', 'historico'];
@@ -74,13 +72,13 @@ export function KpiPeriodo({
       flechas={
         // Derecha = hacia histórico, izquierda = hacia semanal (pedido
         // explícito del 8-ago-2026 — antes estaba al revés).
-        <div className="flex items-center gap-0.5 shrink-0" style={{ color: 'var(--muted)' }}>
+        <div className="flex items-center gap-3 shrink-0" style={{ color: 'var(--muted)' }}>
           <button type="button" aria-label="Periodo más corto" disabled={modoIdx <= 0}
-            onClick={() => setModoIdx((i) => Math.max(i - 1, 0))} className={BOTON}>
+            onClick={() => setModoIdx((i) => Math.max(i - 1, 0))} className={BOTON_PERIODO}>
             <ChevronLeft width={13} height={13} strokeWidth={2} />
           </button>
           <button type="button" aria-label="Periodo más largo" disabled={modoIdx >= MODOS.length - 1}
-            onClick={() => setModoIdx((i) => Math.min(i + 1, MODOS.length - 1))} className={BOTON}>
+            onClick={() => setModoIdx((i) => Math.min(i + 1, MODOS.length - 1))} className={BOTON_PERIODO}>
             <ChevronRight width={13} height={13} strokeWidth={2} />
           </button>
         </div>

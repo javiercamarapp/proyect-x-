@@ -3,8 +3,7 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight, TriangleAlert, ReceiptText } from 'lucide-react';
 import { mxn } from '@/lib/formato';
-
-const BOTON = 'w-4 h-4 rounded flex items-center justify-center transition-opacity disabled:opacity-30 hover:bg-[color-mix(in_srgb,var(--muted)_14%,transparent)] disabled:hover:bg-transparent';
+import { BOTON_PERIODO } from '../admin/ui/kit';
 
 type Modo = 'semanal' | 'mensual' | 'historico';
 const MODOS: Modo[] = ['semanal', 'mensual', 'historico'];
@@ -42,13 +41,13 @@ export function MotorFiscalPeriodo({ series }: { series: Record<Modo, ResumenSim
   const r = series[modo];
 
   const flechas = (
-    <div className="flex items-center gap-0 shrink-0">
+    <div className="flex items-center gap-3 shrink-0">
       <button type="button" aria-label="Periodo más corto" disabled={modoIdx <= 0}
-        onClick={() => setModoIdx((i) => Math.max(i - 1, 0))} className={BOTON} style={{ color: 'var(--muted)' }}>
+        onClick={() => setModoIdx((i) => Math.max(i - 1, 0))} className={BOTON_PERIODO} style={{ color: 'var(--muted)' }}>
         <ChevronLeft width={12} height={12} strokeWidth={2} />
       </button>
       <button type="button" aria-label="Periodo más largo" disabled={modoIdx >= MODOS.length - 1}
-        onClick={() => setModoIdx((i) => Math.min(i + 1, MODOS.length - 1))} className={BOTON} style={{ color: 'var(--muted)' }}>
+        onClick={() => setModoIdx((i) => Math.min(i + 1, MODOS.length - 1))} className={BOTON_PERIODO} style={{ color: 'var(--muted)' }}>
         <ChevronRight width={12} height={12} strokeWidth={2} />
       </button>
     </div>
