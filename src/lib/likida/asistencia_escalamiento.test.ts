@@ -67,7 +67,10 @@ vi.mock('@/lib/likida/presupuesto', () => ({ acotada: (q: unknown) => q }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const filasPendientes = vi.hoisted(() => vi.fn((): Record<string, unknown>[] => []));
-vi.mock('./pg', () => ({ traerTodo: async () => filasPendientes() }));
+vi.mock('./pg', () => ({
+  traerTodo: async () => filasPendientes(),
+  conteo: (desde: number) => (desde === 0 ? { count: 'exact' } : {}),
+}));
 
 const anotarEvento = vi.hoisted(() => vi.fn(async () => 'anotado' as const));
 vi.mock('./asistencia_wa', () => ({
@@ -153,6 +156,28 @@ describe('nivelObjetivo — el reloj, puro', () => {
     expect(nivelObjetivo({ ...base, nivelEscalado: 1, abiertaEn: 'no-es-fecha' }, AHORA)).toBe(1);
     expect(nivelObjetivo({ ...base, nivelEscalado: 1, abiertaEn: new Date(T0 + 60_000).toISOString() }, AHORA)).toBe(1);
   });
+
+  // AUDITORÍA 28 (AG-A3): contar SIEMPRE desde `abiertaEn` inflaba el nivel de
+  // un caso que llevaba horas DIFERIDO (fuera de ventana) al reabrirse esta:
+  // el primer aviso real saltaba directo a nivel 4 aunque nadie hubiera
+  // dejado de responder — nunca se le había avisado. El ancla correcta es el
+  // más tardío entre `abiertaEn` y `notificarDesde`.
+  it('diferido por horas: el nivel se cuenta desde notificar_desde (el último refresh del cron), no desde que se abrió hace horas', () => {
+    const abiertaHaceMucho = abiertaHace(5 * 60 * 60_000); // se abrió hace 5 horas
+    const notificarDesde = abiertaHace(16 * 60_000); // el último ciclo diferido refrescó la marca hace 16 min
+    // Sin el ancla (solo abiertaEn): 5h / 15min = 20 peldaños → tope 4.
+    expect(nivelObjetivo({ ...base, prioridad: 'alta', abiertaEn: abiertaHaceMucho }, AHORA)).toBe(NIVEL_MAXIMO);
+    // Con el ancla: 16min / 15min = 1 peldaño → nivel 1, no inflado.
+    expect(nivelObjetivo({ ...base, prioridad: 'alta', abiertaEn: abiertaHaceMucho, notificarDesde }, AHORA)).toBe(1);
+  });
+
+  it('notificar_desde ANTERIOR a abiertaEn no reduce el nivel — se usa el más tardío de los dos', () => {
+    expect(nivelObjetivo({
+      ...base, prioridad: 'alta',
+      abiertaEn: abiertaHace(RELOJ_AMBAR_MS),
+      notificarDesde: abiertaHace(10 * RELOJ_AMBAR_MS),
+    }, AHORA)).toBe(1);
+  });
 });
 
 describe('escalarAsistenciasPendientes — claim, destinatarios y ventana', () => {
@@ -222,6 +247,42 @@ describe('escalarAsistenciasPendientes — claim, destinatarios y ventana', () =
     expect(sendButtons).not.toHaveBeenCalled();
     expect(deferUpdate).toHaveBeenCalledWith({ notificar_desde: AHORA.toISOString() });
     expect(anotarEvento).toHaveBeenCalledWith('t-1', 'inc-1', 'aviso_diferido', expect.anything());
+  });
+
+  // AUDITORÍA 28 (AG-A3): un segundo diferimiento (ya con `notificar_desde`
+  // puesto) REFRESCA la marca — si se quedara fija en la primera vez, el
+  // ancla envejecería con el caso y el bug de la inflación reaparecería más
+  // tarde, solo que retrasado. La bitácora `aviso_diferido` NO se repite: no
+  // hay nada nuevo que contar en la segunda vez.
+  it('un segundo diferimiento REFRESCA notificar_desde pero no repite la bitácora', async () => {
+    enVentana.valor = false;
+    filasPendientes.mockReturnValue([fila({
+      prioridad: 'alta', tipo: 'varado',
+      abierta_en: abiertaHace(40 * 60_000),
+      notificar_desde: abiertaHace(20 * 60_000), // ya se había diferido antes
+    })]);
+    const r = await escalarAsistenciasPendientes(AHORA);
+    expect(r.diferidas).toBe(1);
+    expect(deferUpdate).toHaveBeenCalledWith({ notificar_desde: AHORA.toISOString() });
+    expect(anotarEvento).not.toHaveBeenCalledWith('t-1', 'inc-1', 'aviso_diferido', expect.anything());
+  });
+
+  // El caso completo del hallazgo: un caso ámbar pasa horas diferido y la
+  // ventana reabre. Sin el ancla en `notificar_desde`, `nivelObjetivo` habría
+  // usado solo `abiertaEn` (horas atrás) y el primer aviso real habría
+  // saltado a nivel 4 ("911, riesgo de vida") sin que nadie hubiera dejado de
+  // responder — nunca se le avisó. Con el ancla, el nivel es el bajo (1).
+  it('el caso vuelve a la ventana tras diferirse: escala al nivel BAJO (1), no al inflado (4)', async () => {
+    enVentana.valor = true; // la ventana ya reabrió
+    filasPendientes.mockReturnValue([fila({
+      prioridad: 'alta', tipo: 'varado',
+      abierta_en: abiertaHace(5 * 60 * 60_000), // se abrió hace 5 horas
+      notificar_desde: abiertaHace(16 * 60_000), // el último refresh del cron, hace 16 min
+    })]);
+    const r = await escalarAsistenciasPendientes(AHORA);
+    expect(r.escaladas).toBe(1);
+    expect(claimUpdate).toHaveBeenCalledWith({ nivel_escalado: 1 });
+    expect(claimUpdate).not.toHaveBeenCalledWith({ nivel_escalado: NIVEL_MAXIMO });
   });
 
   it('ROJO fuera de ventana ESCALA IGUAL — la ventana es de la severidad, no del canal', async () => {

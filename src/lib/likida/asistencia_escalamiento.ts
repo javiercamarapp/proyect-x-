@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { acotada } from './presupuesto';
-import { traerTodo } from './pg';
+import { traerTodo, conteo } from './pg';
 import { anotarEventoIncidencia, TIPOS_ASISTENCIA } from './asistencia_wa';
 import { telefonoJefeDe } from './contactos';
 import { polizaVigenteDe, contactoSiLesionadosDe } from './emergencias';
@@ -66,12 +66,30 @@ export interface IncidenciaEscalable {
 
 /**
  * ¿A qué nivel debe estar esta incidencia AHORA, según su reloj? Puro, sin
- * IO. El nivel objetivo crece un peldaño por periodo transcurrido desde la
- * apertura; con lesionados el primer salto aterriza directo en el 2 (dueño).
+ * IO. El nivel objetivo crece un peldaño por periodo transcurrido desde
+ * cuándo empezó a esperar REALMENTE — el más tardío entre `abiertaEn` (se
+ * reportó) y `notificarDesde` (el cron la refrescó al diferirla la última
+ * vez que estuvo fuera de ventana). Con lesionados el primer salto aterriza
+ * directo en el 2 (dueño).
+ *
+ * AUDITORÍA 28 (AG-A3): contar SIEMPRE desde `abiertaEn` inflaba el nivel de
+ * un caso ámbar que llevaba horas DIFERIDO (fuera de ventana, sin que nadie
+ * pudiera avisar todavía): al reabrir la ventana, el primer aviso real
+ * saltaba directo a nivel 4 ("911, riesgo de vida") aunque nadie hubiera
+ * dejado de responder — nunca se le había avisado. `escalarUna` refresca
+ * `notificar_desde` en CADA corrida que sigue diferida (no solo la primera),
+ * así que al reabrir la ventana el ancla queda a lo más un ciclo de cron
+ * atrás, y el nivel vuelve a ser el que corresponde a la espera real.
  */
-export function nivelObjetivo(i: Pick<IncidenciaEscalable, 'prioridad' | 'nivelEscalado' | 'abiertaEn' | 'hayLesionados'>, ahora: Date): number {
+export function nivelObjetivo(
+  i: Pick<IncidenciaEscalable, 'prioridad' | 'nivelEscalado' | 'abiertaEn' | 'hayLesionados'> & { notificarDesde?: string | null },
+  ahora: Date,
+): number {
   const reloj = i.prioridad === 'critica' ? RELOJ_ROJO_MS : RELOJ_AMBAR_MS;
-  const transcurrido = ahora.getTime() - Date.parse(i.abiertaEn);
+  const abiertaEnMs = Date.parse(i.abiertaEn);
+  const notificarDesdeMs = i.notificarDesde ? Date.parse(i.notificarDesde) : NaN;
+  const desde = Number.isFinite(notificarDesdeMs) ? Math.max(abiertaEnMs, notificarDesdeMs) : abiertaEnMs;
+  const transcurrido = ahora.getTime() - desde;
   if (!Number.isFinite(transcurrido) || transcurrido < 0) return i.nivelEscalado;
   const porReloj = Math.min(NIVEL_MAXIMO, Math.floor(transcurrido / reloj));
   // Lesionados: el dueño se entera de inmediato — el primer periodo vencido
@@ -186,15 +204,22 @@ export async function escalarAsistenciasPendientes(
   const venceEn = opts.venceEn ?? Number.POSITIVE_INFINITY;
   const r: ResultadoEscalamiento = { revisadas: 0, escaladas: 0, diferidas: 0, fallosAviso: 0, cortadosPorReloj: 0 };
 
+  // AUDITORÍA 28 (AG-A4): el orden por `abierta_en` sin desempate permite
+  // empates (dos incidencias abiertas en el mismo milisegundo) — con eso el
+  // `range` por posición de `traerTodo` puede repetir o saltarse una fila en
+  // el borde de una página. `conteo(desde)` además le da a `traerTodo` la
+  // prueba barata (el `count` de la primera página) en vez de depender SOLO
+  // de la página vacía.
   const filas = await traerTodo<Record<string, unknown>>(
     (desde, hasta) => supabaseAdmin()
       .from('incidencia')
-      .select('id, tenant_id, tipo, prioridad, nivel_escalado, abierta_en, hay_lesionados, viaje_id, operador_id, notificar_desde, descripcion')
+      .select('id, tenant_id, tipo, prioridad, nivel_escalado, abierta_en, hay_lesionados, viaje_id, operador_id, notificar_desde, descripcion', conteo(desde))
       .in('tipo', [...TIPOS_ASISTENCIA])
       .neq('estado', 'resuelta')
       .is('reconocida_en', null)
       .lt('nivel_escalado', NIVEL_MAXIMO)
       .order('abierta_en', { ascending: true })
+      .order('id', { ascending: true })
       .range(desde, hasta),
     'asistencia.pendientes',
   );
@@ -238,19 +263,26 @@ async function escalarUna(inc: IncidenciaEscalable, ahora: Date): Promise<'sin_c
 
   // ÁMBAR respeta la ventana de la flota (la misma de cobranza — una
   // implementación). Fuera de ventana: se DIFIERE con `notificar_desde` como
-  // marca visible (y una sola fila de bitácora), nunca se tira. ROJO
-  // (crítica) ni la consulta.
+  // marca visible, nunca se tira. ROJO (crítica) ni la consulta.
+  //
+  // AUDITORÍA 28 (AG-A3): `notificar_desde` se REFRESCA en cada corrida que
+  // sigue diferida, no solo la primera vez. Si se quedara fijo en el primer
+  // diferimiento, un caso ámbar que pasa horas fuera de ventana llegaría al
+  // reabrirla con `nivelObjetivo` calculando desde esa marca vieja — el mismo
+  // salto directo a nivel 4 que el bug original, solo que un poco más tarde.
+  // Refrescarlo hace que el ancla quede a lo más un ciclo de cron atrás
+  // cuando la ventana reabre. La fila de bitácora `aviso_diferido` sí se
+  // manda UNA sola vez (la primera): no hay nada nuevo que contar en las
+  // siguientes, y diez filas idénticas no sirven al expediente.
   if (inc.prioridad !== 'critica') {
     const config = await leerConfigCobranza(inc.tenantId);
     if (!dentroDeVentana(config, ahora)) {
-      if (!inc.notificarDesde) {
-        const { error } = await acotada(supabaseAdmin()
-          .from('incidencia')
-          .update({ notificar_desde: ahora.toISOString() })
-          .eq('id', inc.id).eq('tenant_id', inc.tenantId)
-          .is('notificar_desde', null), 'asistencia.diferir');
-        if (!error) await anotarEventoIncidencia(inc.tenantId, inc.id, 'aviso_diferido', { desde: ahora.toISOString() });
-      }
+      const primeraVezDiferida = !inc.notificarDesde;
+      const { error } = await acotada(supabaseAdmin()
+        .from('incidencia')
+        .update({ notificar_desde: ahora.toISOString() })
+        .eq('id', inc.id).eq('tenant_id', inc.tenantId), 'asistencia.diferir');
+      if (!error && primeraVezDiferida) await anotarEventoIncidencia(inc.tenantId, inc.id, 'aviso_diferido', { desde: ahora.toISOString() });
       return 'diferida';
     }
   }
