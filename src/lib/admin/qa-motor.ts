@@ -27,6 +27,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { processInbound } from '@/lib/likida/processor';
@@ -120,16 +121,38 @@ export function crearCorrida(
   };
 }
 
+// ── Aislamiento de la corrida (auditoría 28, SEG-A1, ALTO) ──────────────────
+//
+// `capturarBitacora`/`instalarInterceptorSalidaMeta` reasignan `logger.*` y
+// `globalThis.fetch` process-wide mientras la corrida está viva (~110 s). En
+// Fluid Compute una instancia tibia atiende invocaciones concurrentes en el
+// mismo proceso: si el cron real `wa-outbox` cae en esa misma instancia
+// mientras el QA corre, su POST real a `graph.facebook.com` lo interceptaba
+// el parche global, recibía el `{messages:[{id:'qa_…'}]}` sintético, y el
+// cron sellaba como entregado un WhatsApp que JAMÁS salió — falso positivo
+// en producción, no solo en la corrida de QA.
+//
+// `contextoQa` acota el parche a la cadena async que arrancó ESTA corrida:
+// cada invocación entrante (QA o cron real) tiene su propia raíz de
+// ejecución async, así que `getStore()` en la invocación del cron —que nunca
+// entró a este contexto— siempre da `undefined`, sin importar qué tan
+// entrelazado corra el event loop. Fuera del contexto de SU `corridaId`, el
+// interceptor cae directo al `fetch`/`logger` original.
+// Exportado solo para la prueba de aislamiento (qa-motor.test.ts): permite
+// simular "esta llamada corre dentro/fuera del contexto de la corrida" sin
+// levantar el carril completo.
+export const contextoQa = new AsyncLocalStorage<{ corridaId: string }>();
+
 // ── Captura de bitácora (mínima; ver cabecera por qué no se importa) ────────
 
 interface EventoCapturado { nivel: 'info' | 'warn' | 'error'; msg: string; meta?: Record<string, unknown> }
 
-function capturarBitacora(): { eventos: EventoCapturado[]; restaurar: () => void } {
+function capturarBitacora(corridaId: string): { eventos: EventoCapturado[]; restaurar: () => void } {
   const eventos: EventoCapturado[] = [];
   const originales = { info: logger.info, warn: logger.warn, error: logger.error };
   (['info', 'warn', 'error'] as const).forEach((nivel) => {
     logger[nivel] = (m: string, meta?: Record<string, unknown>) => {
-      eventos.push({ nivel, msg: m, meta });
+      if (contextoQa.getStore()?.corridaId === corridaId) eventos.push({ nivel, msg: m, meta });
       return originales[nivel](m, meta);
     };
   });
@@ -167,6 +190,10 @@ const HOST_META_GRAPH = 'graph.facebook.com';
 export function instalarInterceptorSalidaMeta(corridaId: string): () => void {
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // SEG-A1: una invocación concurrente que no entró a `contextoQa.run` de
+    // ESTA corridaId (el cron real, u otra corrida) nunca debe verse
+    // interceptada, aunque el parche siga instalado en `globalThis`.
+    if (contextoQa.getStore()?.corridaId !== corridaId) return original(input, init);
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     let host: string;
     try { host = new URL(url).hostname.replace(/\.$/, ''); } catch { return original(input, init); }
@@ -555,7 +582,11 @@ export async function ejecutarCorridaRapida(corrida: CorridaQA): Promise<Corrida
   const excedeTope = () => corrida.costoUsdTotal > TOPE_CORRIDA_USD;
   const sinTiempo = () => Date.now() - t0 > TECHO_CORRIDA_MS - MARGEN_MENSAJE_MS;
 
-  const bit = capturarBitacora();
+  // Entra al contexto ANTES de instalar los parches: así, aunque el resto de
+  // esta función siga corriendo dentro del mismo proceso que atiende otras
+  // invocaciones, solo la cadena async que arrancó AQUÍ ve `getStore()`.
+  contextoQa.enterWith({ corridaId: corrida.id });
+  const bit = capturarBitacora(corrida.id);
   const restaurarFetch = instalarInterceptorSalidaMeta(corrida.id);
   let viajeId = '';
   let telefono = '';
@@ -962,7 +993,8 @@ export async function ejecutarPasada(corridaId: string, venceEn: number): Promis
   corrida.pasadas = pasada;
   corrida.pasadaEnVuelo = pasadaId;
 
-  const bit = capturarBitacora();
+  contextoQa.enterWith({ corridaId });
+  const bit = capturarBitacora(corridaId);
   const restaurarFetch = instalarInterceptorSalidaMeta(corridaId);
   let fotosProcesadas = 0;
   let corte: CorteCorrida | null = null;

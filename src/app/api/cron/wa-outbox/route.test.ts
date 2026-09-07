@@ -130,6 +130,25 @@ describe('cron wa-outbox — el kill switch global (BACK-19-1)', () => {
     expect(body).toMatchObject({ corrio: false, codigo: 'canal_no_configurado' });
     expect(registrarLatido).toHaveBeenCalledWith('wa-outbox', 'fallo', { codigo: 'canal_no_configurado' });
   });
+
+  // SEG-A1 (auditoría 28, ALTO): defensa en profundidad contra el
+  // interceptor sintético de qa-motor.ts. Meta nunca emite un id con este
+  // prefijo (sus wamid empiezan `wamid.`) — si alguna vez se cuela pese al
+  // aislamiento por AsyncLocalStorage de ese archivo, este cron NUNCA debe
+  // sellar la fila como entregada.
+  it('SEG-A1: un id de mensaje con prefijo qa_ NUNCA se trata como entrega real', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ messages: [{ id: 'qa_5c8e0f1a' }] }), { status: 200 },
+    )));
+
+    const res = await GET(new Request('https://likida.ai/api/cron/wa-outbox', CON_SECRETO));
+    const body = await res.json();
+
+    expect(finalizarSalidaWhatsApp).toHaveBeenCalledWith(expect.objectContaining({ id: 'out-1' }), undefined, 'sin_wamid:out-1');
+    expect(logger.error).toHaveBeenCalledWith('wa.outbox_id_sintetico_qa', expect.objectContaining({ wamid: 'qa_5c8e0f1a' }));
+    expect(res.status).toBe(500);
+    expect(body).toMatchObject({ corrio: true, tomadas: 1, enviadas: 0, fallidas: 1 });
+  });
 });
 
 describe('receipts del dominio no ocultan un backstop fallido', () => {

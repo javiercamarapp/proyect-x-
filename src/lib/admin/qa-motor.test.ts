@@ -321,7 +321,7 @@ vi.mock('./qa-oraculos', () => ({
 import {
   crearCorrida, ejecutarPasada, mezclarEventos,
   patronesDeFallo, fraseFallosMismaFirma, MIN_FALLOS_MISMA_FIRMA,
-  instalarInterceptorSalidaMeta,
+  instalarInterceptorSalidaMeta, contextoQa,
 } from './qa-motor';
 import { guardarCorrida, leerCorrida, leerFotosDeCorrida } from './qa-storage';
 import { reservaPorFotoMs, TECHO_PASADA_MS, type ParametrosCorrida } from './qa-tipos';
@@ -776,22 +776,78 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
 
     const restaurar = instalarInterceptorSalidaMeta('corrida-abc123');
     try {
-      const res = await fetch('https://graph.facebook.com/v21.0/1234567890/messages', {
-        method: 'POST',
-        body: JSON.stringify({ messaging_product: 'whatsapp', to: '5215559900001', type: 'text', text: { body: 'hola' } }),
-      });
-      expect(original).not.toHaveBeenCalled();
-      expect(res.status).toBe(200);
-      const cuerpo = await res.json();
-      expect(cuerpo.messages[0].id).toMatch(/^qa_/);
+      await contextoQa.run({ corridaId: 'corrida-abc123' }, async () => {
+        const res = await fetch('https://graph.facebook.com/v21.0/1234567890/messages', {
+          method: 'POST',
+          body: JSON.stringify({ messaging_product: 'whatsapp', to: '5215559900001', type: 'text', text: { body: 'hola' } }),
+        });
+        expect(original).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        const cuerpo = await res.json();
+        expect(cuerpo.messages[0].id).toMatch(/^qa_/);
 
-      expect(tablas.wa_outbox).toHaveLength(1);
-      const fila = tablas.wa_outbox[0];
-      expect(fila.estado).toBe('dead');
-      expect(String(fila.ultimo_error)).toContain('QA: corrida corrida-abc123');
-      expect((fila.payload as { to: string }).to).toBe('5215559900001');
+        expect(tablas.wa_outbox).toHaveLength(1);
+        const fila = tablas.wa_outbox[0];
+        expect(fila.estado).toBe('dead');
+        expect(String(fila.ultimo_error)).toContain('QA: corrida corrida-abc123');
+        expect((fila.payload as { to: string }).to).toBe('5215559900001');
+      });
     } finally {
       restaurar();
+    }
+  });
+
+  // SEG-A1 (auditoría 28, ALTO): la razón de ser de contextoQa. El interceptor
+  // queda instalado en globalThis, pero una invocación concurrente que NUNCA
+  // entró al contexto de ESTA corridaId — como el cron real wa-outbox
+  // cayendo en la misma instancia tibia de Fluid Compute mientras el QA
+  // corre — debe llegar al fetch real, no al sintético. Si esto fallara, un
+  // WhatsApp real se sellaría como entregado sin haberse mandado nunca.
+  test('SEG-A1: fuera del contexto de la corrida, el interceptor NUNCA se activa aunque siga instalado (simula al cron real corriendo concurrente)', async () => {
+    const original = vi.fn(async () => new Response(JSON.stringify({ messages: [{ id: 'wamid.REAL123' }] }), { status: 200 }));
+    const globalConFetch = globalThis as { fetch: typeof fetch };
+    globalConFetch.fetch = original as unknown as typeof fetch;
+
+    const restaurar = instalarInterceptorSalidaMeta('corrida-concurrente');
+    try {
+      // Sin contextoQa.run: exactamente lo que ve el cron real que llega a
+      // esta misma instancia mientras el interceptor de OTRA corrida sigue
+      // instalado en globalThis.
+      const res = await fetch('https://graph.facebook.com/v21.0/1234567890/messages', {
+        method: 'POST',
+        body: JSON.stringify({ messaging_product: 'whatsapp', to: '5215559900002', type: 'text', text: { body: 'mensaje real' } }),
+      });
+      expect(original).toHaveBeenCalledTimes(1);
+      const cuerpo = await res.json();
+      expect(cuerpo.messages[0].id).toBe('wamid.REAL123');
+      expect(tablas.wa_outbox ?? []).toHaveLength(0);
+    } finally {
+      restaurar();
+    }
+  });
+
+  test('SEG-A1: dos corridas con contextoQa distinto no se cruzan — cada una solo ve su propio corridaId', async () => {
+    const original = vi.fn(async () => new Response('no debería llamarse'));
+    const globalConFetch = globalThis as { fetch: typeof fetch };
+    globalConFetch.fetch = original as unknown as typeof fetch;
+
+    const restaurarA = instalarInterceptorSalidaMeta('corrida-A');
+    try {
+      // El interceptor de A sigue instalado en globalThis (encadenado sobre
+      // `original`), pero el contexto activo es el de B: A no debe activarse.
+      await contextoQa.run({ corridaId: 'corrida-B' }, async () => {
+        await fetch('https://graph.facebook.com/v21.0/messages', { method: 'POST', body: '{}' });
+      });
+      expect(original).toHaveBeenCalledTimes(1);
+      expect(tablas.wa_outbox ?? []).toHaveLength(0);
+
+      // Con el contexto correcto (A), sí intercepta.
+      await contextoQa.run({ corridaId: 'corrida-A' }, async () => {
+        await fetch('https://graph.facebook.com/v21.0/messages', { method: 'POST', body: '{}' });
+      });
+      expect(tablas.wa_outbox).toHaveLength(1);
+    } finally {
+      restaurarA();
     }
   });
 
@@ -802,8 +858,10 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
 
     const restaurar = instalarInterceptorSalidaMeta('corrida-xyz');
     try {
-      await fetch('https://otraapi.example/algo', { method: 'POST' });
-      await fetch('https://graph.facebook.com/v21.0/media/1', { method: 'GET' });
+      await contextoQa.run({ corridaId: 'corrida-xyz' }, async () => {
+        await fetch('https://otraapi.example/algo', { method: 'POST' });
+        await fetch('https://graph.facebook.com/v21.0/media/1', { method: 'GET' });
+      });
       expect(original).toHaveBeenCalledTimes(2);
       expect(tablas.wa_outbox ?? []).toHaveLength(0);
     } finally {
@@ -821,7 +879,9 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     globalThis.fetch = original as typeof fetch;
     const restaurar = instalarInterceptorSalidaMeta('corrida-host');
     try {
-      await fetch(url, { method: 'POST', body: '{}' });
+      await contextoQa.run({ corridaId: 'corrida-host' }, async () => {
+        await fetch(url, { method: 'POST', body: '{}' });
+      });
       expect(original).toHaveBeenCalledWith(url, { method: 'POST', body: '{}' });
       expect(tablas.wa_outbox ?? []).toEqual([]);
     } finally { restaurar(); }
@@ -832,7 +892,9 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     globalThis.fetch = original as typeof fetch;
     const restaurar = instalarInterceptorSalidaMeta('corrida-fqdn');
     try {
-      await fetch('https://graph.facebook.com./v21.0/messages', { method: 'POST', body: '{}' });
+      await contextoQa.run({ corridaId: 'corrida-fqdn' }, async () => {
+        await fetch('https://graph.facebook.com./v21.0/messages', { method: 'POST', body: '{}' });
+      });
       expect(original).not.toHaveBeenCalled();
       expect(tablas.wa_outbox).toHaveLength(1);
     } finally { restaurar(); }
@@ -845,12 +907,14 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     const payload = { messaging_product: 'whatsapp', to: 'destino-sintético', text: { body: 'prueba' } };
     const req = new Request('https://GRAPH.FACEBOOK.COM/v21.0/messages', { method: 'POST', body: JSON.stringify(payload) });
     try {
-      const res = await fetch(req);
-      expect(original).not.toHaveBeenCalled();
-      expect(res.status).toBe(200);
-      expect(tablas.wa_outbox[0].payload).toEqual(payload);
-      expect(req.bodyUsed).toBe(false);
-      expect(await req.json()).toEqual(payload);
+      await contextoQa.run({ corridaId: 'corrida-request' }, async () => {
+        const res = await fetch(req);
+        expect(original).not.toHaveBeenCalled();
+        expect(res.status).toBe(200);
+        expect(tablas.wa_outbox[0].payload).toEqual(payload);
+        expect(req.bodyUsed).toBe(false);
+        expect(await req.json()).toEqual(payload);
+      });
     } finally { restaurar(); }
   });
 
@@ -860,13 +924,15 @@ describe('instalarInterceptorSalidaMeta — ningún envío de QA llega a graph.f
     const restaurar = instalarInterceptorSalidaMeta('corrida-override');
     const req = new Request('https://graph.facebook.com/v21.0/messages');
     try {
-      await fetch(req, { method: 'POST', body: '{"override":true}' });
-      expect(original).not.toHaveBeenCalled();
-      expect(tablas.wa_outbox[0].payload).toEqual({ override: true });
-      const post = new Request(req.url, { method: 'POST', body: '{}' });
-      await fetch(post, { method: 'GET' });
-      expect(original).toHaveBeenCalledWith(post, { method: 'GET' });
-      expect(post.bodyUsed).toBe(false);
+      await contextoQa.run({ corridaId: 'corrida-override' }, async () => {
+        await fetch(req, { method: 'POST', body: '{"override":true}' });
+        expect(original).not.toHaveBeenCalled();
+        expect(tablas.wa_outbox[0].payload).toEqual({ override: true });
+        const post = new Request(req.url, { method: 'POST', body: '{}' });
+        await fetch(post, { method: 'GET' });
+        expect(original).toHaveBeenCalledWith(post, { method: 'GET' });
+        expect(post.bodyUsed).toBe(false);
+      });
     } finally { restaurar(); }
   });
 
