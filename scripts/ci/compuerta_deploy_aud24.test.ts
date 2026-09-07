@@ -173,6 +173,41 @@ describe('el cableado', () => {
     expect(wf).toContain('issues: write');
   });
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 27 · OP-C2 (CRÍTICO) — LA ALARMA QUE SE CIERRA SOLA.
+  //
+  // El paso que detecta la deriva («Producción corre el último [deploy] de
+  // master») está condicionado a `github.event_name != 'push'`: en un push NO
+  // se evalúa. El paso que CIERRA el issue estaba condicionado a `success()`
+  // a secas, sin mirar el evento. Resultado: una corrida por push que jamás
+  // comprobó la deriva certificaba la recuperación y cerraba el issue que una
+  // corrida por schedule había abierto por deriva.
+  //
+  // Medido contra la API de GitHub el 6-sep-2026, no inferido:
+  //   #339 abierto 04:53:03Z (schedule en rojo) → cerrado 11:01:53Z por la
+  //        corrida de push 34029045759 (11:01:45Z) sobre 06b2eca4, cuyo asunto
+  //        no lleva [deploy] y que por tanto nunca evaluó la deriva.
+  //   #334 abierto 00:06:12Z → cerrado 00:30:25Z, mismo patrón.
+  //   #325 abierto 04-sep 09:46:43Z → cerrado 05-sep 23:08:41Z, ídem.
+  // Con 20 corridas por schedule en rojo seguidas y producción 224 commits
+  // atrás, la etiqueta `salud-produccion` no tenía UN SOLO issue abierto.
+  //
+  // El invariante: **cerrar exige haber evaluado**. Solo puede declarar la
+  // recuperación una corrida que sí corrió la comprobación de deriva, y esa
+  // es exactamente la que cumple `github.event_name != 'push'`.
+  // ═════════════════════════════════════════════════════════════════════════
+  it('OP-C2: el issue solo lo cierra una corrida que SÍ evaluó la deriva, nunca un push', () => {
+    const wf = readFileSync('.github/workflows/salud-produccion.yml', 'utf8');
+    // El bloque del paso que cierra: desde su `name` hasta el siguiente `- name:`.
+    const cierre = wf.split('- name: Cerrar el issue al recuperarse')[1]?.split('\n      - name:')[0];
+    expect(cierre, 'no existe el paso «Cerrar el issue al recuperarse»').toBeTruthy();
+    const condicion = /^\s*if:\s*(.+)$/m.exec(cierre!)?.[1]?.trim();
+    expect(condicion, 'el paso que cierra el issue no declara `if:`').toBeTruthy();
+    // `success()` a secas es el defecto: certifica un job que pudo no haber
+    // mirado la deriva. La condición tiene que excluir el push explícitamente.
+    expect(condicion).toContain("github.event_name != 'push'");
+  });
+
   it('el cotejo por schedule usa ultimo-deploy-en-asunto.mjs, no git log --grep (asunto+cuerpo)', () => {
     const wf = readFileSync('.github/workflows/salud-produccion.yml', 'utf8');
     expect(wf).toContain('scripts/ci/ultimo-deploy-en-asunto.mjs');
