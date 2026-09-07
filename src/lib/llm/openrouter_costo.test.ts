@@ -17,8 +17,10 @@ vi.mock('openai', () => ({
   default: class { chat = { completions: { create: (...a: unknown[]) => create(...a) } }; },
 }));
 
+vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 process.env.OPENROUTER_API_KEY = 'test-key';
 const { generateStructured, calcCost: calcCostReal } = await import('./openrouter');
+const { modelFor } = await import('./models');
 
 const schema = z.object({ monto: z.number() });
 const R = (finish: string, content: string, tokIn = 100, tokOut = 50) => ({
@@ -152,6 +154,57 @@ describe('generateStructured — respeta el presupuesto de quien llama', () => {
 // Para un negocio que va a cobrar POR LIQUIDACIÓN, un costo unitario que se
 // subestima en silencio es peor que uno que se equivoca ruidosamente.
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, TC-B5 (etiqueta de modelo) — el TOTAL de arriba ya sumaba
+// bien (ningún intento se pierde ni se duplica, y eso ya estaba probado en
+// este archivo). Lo que faltaba: cuando el ciclo de reintentos cruza de
+// proveedor (CR-5), el total se reportaba bajo UNA sola etiqueta —la del
+// ÚLTIMO intento— y el gasto real del primario, aunque sí se pagó, quedaba
+// invisible detrás del nombre del fallback. Mismo criterio que
+// `costoPorModelo` en `generateWithTools` (B23, auditoría 10), que faltaba
+// en `generateStructured`.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('generateStructured — costoPorModelo: el costo se reparte por modelo, no se mezcla bajo la última etiqueta', () => {
+  beforeEach(() => { create.mockReset(); });
+
+  it('primario con JSON malo + reintento que se cae por transitorio + fallback: dos modelos, dos costos separados', async () => {
+    const PRIM = modelFor('ocr');
+    const FALL = 'anthropic/claude-haiku-4.5';
+    create
+      // intento 1 (primario, sin nota): respuesta REAL pero JSON malformado — se cobró.
+      .mockResolvedValueOnce({ choices: [{ finish_reason: 'stop', message: { content: 'no-json' } }], usage: { prompt_tokens: 100, completion_tokens: 40 }, model: PRIM })
+      // intento 2 (primario, con nota): el proveedor cae de verdad — nunca hubo `usage`, no se cobró.
+      .mockRejectedValueOnce(new Error('503 Service Unavailable: provider caído'))
+      // intento 3 (fallback, con nota): cruza de proveedor y cierra bien.
+      .mockResolvedValueOnce({ choices: [{ finish_reason: 'stop', message: { content: '{"monto":50}' } }], usage: { prompt_tokens: 80, completion_tokens: 30 }, model: FALL });
+
+    const r = await generateStructured({
+      role: 'ocr', system: 's', messages: [{ role: 'user', content: 'u' }], schema, schemaName: 'x',
+    });
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(r.data.monto).toBe(50);
+    // El total del turno sigue siendo el acumulado de las DOS llamadas que sí
+    // costaron algo (la del rechazo transitorio no midió nada — nunca hubo respuesta).
+    expect(r.tokensIn).toBe(180);
+    expect(r.tokensOut).toBe(70);
+    // Y ahora se puede ver DE QUIÉN es cada parte: antes el total entero caía
+    // bajo `r.model` (el del fallback), como si el intento del primario —que
+    // sí se cobró— no hubiera costado nada.
+    expect(Object.keys(r.costoPorModelo).sort()).toEqual([FALL, PRIM].sort());
+    expect(r.costoPorModelo[PRIM]).toEqual({ tokensIn: 100, tokensOut: 40, cost: expect.any(Number) });
+    expect(r.costoPorModelo[FALL]).toEqual({ tokensIn: 80, tokensOut: 30, cost: expect.any(Number) });
+    expect(r.costoPorModelo[PRIM].cost + r.costoPorModelo[FALL].cost).toBeCloseTo(r.cost, 10);
+  });
+
+  it('un solo modelo en todo el ciclo: costoPorModelo trae una sola llave con el total', async () => {
+    create.mockResolvedValue(R('stop', '{"monto":100}'));
+    const r = await llamar();
+    expect(Object.keys(r.costoPorModelo)).toEqual(['google/gemini-3.6-flash']);
+    expect(r.costoPorModelo['google/gemini-3.6-flash']).toEqual({ tokensIn: 100, tokensOut: 50, cost: r.cost });
+  });
+});
+
 describe('calcCost — modelos sin precio', () => {
   it('los modelos conocidos cuestan lo que dice la tabla', () => {
     expect(calcCostReal('google/gemini-3.6-flash', 1_000_000, 0)).toBeGreaterThan(0);

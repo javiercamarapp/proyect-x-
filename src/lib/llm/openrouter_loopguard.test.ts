@@ -63,6 +63,13 @@ describe('loop-guard — corta ANTES de ejecutar la ronda que ya sabe que excede
     expect(err.cause).toBeInstanceOf(LoopGuardError);
     expect(err.partialToolCalls).toHaveLength(2);
     expect(err.partialToolCalls.map((t: { args: { n: number } }) => t.args.n)).toEqual([1, 2]);
+    // AUDITORÍA 28, mitad de TC-M2: el propio `LoopGuardError` (no solo el
+    // envoltorio `PartialExecutionError`) tiene que traer lo que ya se
+    // ejecutó — para que un `catch` que lo capture directo, sin pasar por el
+    // envoltorio, pueda reconstruir un cierre parcial `ok:false` sin perder
+    // la evidencia.
+    expect(err.cause.executed).toHaveLength(2);
+    expect(err.cause.executed.map((t: { args: { n: number } }) => t.args.n)).toEqual([1, 2]);
   });
 
   it('si el modelo cierra justo en la última ronda permitida, no hay guard ni tools de más', async () => {
