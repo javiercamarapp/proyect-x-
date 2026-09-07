@@ -117,8 +117,18 @@ export async function recover(mode, env = process.env, deps = {}) {
   if (!/^[0-9a-f]{40}$/.test(env.RECOVERY_SOURCE_SHA ?? '')) fail('RECOVERY_SOURCE_SHA');
   const migrationFiles = (deps.readdir ?? readdirSync)('supabase/migrations').filter((name) => /\.sql$/i.test(name));
   if (migrationFiles.some((name) => !/^\d{4}_.+\.sql$/.test(name))) fail('RECOVERY_LOCAL_MIGRATIONS');
+  // OP-C4 (auditoría 28, ALTO — estructural): antes exigía EXACTAMENTE 324
+  // migraciones terminando en '0347', un candado clavado al estado del repo
+  // el día que se escribió. Cualquier migración nueva (0348+) tumbaba esta
+  // función, y con ella 35 pruebas que la ejercitan — bloqueando el
+  // desarrollo normal, no solo la recuperación destructiva que el candado
+  // decía proteger. Aquí solo queda la validación estructural atemporal: al
+  // menos una migración, sin prefijos de 4 dígitos repetidos. La protección
+  // real que el conteo fijo daba de PASO (que no aparezca una migración
+  // nueva entre `capture` y `execute`) sigue viva más abajo, pero comparando
+  // contra lo que el manifiesto capturó — no contra un número del pasado.
   const expected = migrationFiles.map((name) => name.slice(0, 4)).sort();
-  if (expected.length !== 324 || new Set(expected).size !== 324 || expected.at(-1) !== '0347') fail('RECOVERY_LOCAL_MIGRATIONS');
+  if (expected.length === 0 || new Set(expected).size !== expected.length) fail('RECOVERY_LOCAL_MIGRATIONS');
   const directory = deps.directory ?? resolve('staging-recovery-backup');
   const read = deps.read ?? readFileSync;
   const write = deps.write ?? writeFileSync;
@@ -160,6 +170,10 @@ export async function recover(mode, env = process.env, deps = {}) {
     write(join(directory, 'metadata.json'), canonical(metadata), { mode: 0o600 });
     write(join(directory, 'manifest.json'), canonical({ schema_sha256: hash(schema), snapshot_sha256: hash(canonical(snapshot)),
       plan_sha256: hash(canonical(snapshot.plans)), metadata_sha256: hash(canonical(metadata)), source_sha: env.RECOVERY_SOURCE_SHA,
+      // OP-C4: la lista de migraciones vista en `capture`, para comparar en
+      // `execute` — así una migración nueva que aparezca entre las dos
+      // corridas se detecta contra lo capturado, no contra un número fijo.
+      migrations: expected,
       captured_at: new Date().toISOString(), staging_ref: STAGING }), { mode: 0o600 });
     console.log('RECOVERY_BACKUP_READY: esquema y tres planes guardados; todavía no se ejecutó reset.');
     return;
@@ -175,6 +189,9 @@ export async function recover(mode, env = process.env, deps = {}) {
     || hash(read(join(directory, 'public.sql'))) !== manifest.schema_sha256
     || hash(read(join(directory, 'plan.json'))) !== manifest.plan_sha256
     || hash(read(join(directory, 'metadata.json'))) !== manifest.metadata_sha256) fail('RECOVERY_BACKUP_INTEGRITY');
+  // OP-C4: si apareció (o desapareció) una migración local entre `capture` y
+  // `execute`, el backup ya no describe lo que se está a punto de aplicar.
+  if (canonical(manifest.migrations ?? null) !== canonical(expected)) fail('RECOVERY_LOCAL_MIGRATIONS');
   const age = Date.now() - Date.parse(manifest.captured_at);
   if (!Number.isFinite(age) || age < 0 || age > 3_600_000) fail('RECOVERY_BACKUP_STALE');
   if (canonical(await inspectEmpty(env, deps)) !== before) fail('RECOVERY_CHANGED_AFTER_BACKUP');
