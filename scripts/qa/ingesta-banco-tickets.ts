@@ -43,7 +43,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { supabaseAdmin } from '../../src/lib/supabase/admin';
 import { subirFotos, confirmarVerdadTerreno, type ArchivoNuevo } from '../../src/lib/admin/qa-storage';
 import { validarVerdadTerreno, type VerdadTerreno } from '../../src/lib/admin/qa-tipos';
