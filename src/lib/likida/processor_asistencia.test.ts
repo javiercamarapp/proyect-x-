@@ -72,7 +72,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   releaseMessageClaim: vi.fn(),
   intakeDelta: (...a: unknown[]) => intakeDelta(...a),
   esperarIntake: vi.fn(async () => true),
-  buscarTenantPorTelefono: vi.fn(async () => null),
+  buscarOperadorPorTelefono: vi.fn(async () => null),
 }));
 vi.mock('@/lib/likida/confirmar_viaje', () => ({
   atenderConfirmacion: vi.fn(async () => ({ mensaje: null, estado: 'nada' })),

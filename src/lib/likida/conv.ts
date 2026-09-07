@@ -1176,3 +1176,29 @@ export async function buscarTenantPorTelefono(telefono: string): Promise<string 
   if (filas.length !== 1) return null;
   return (filas[0]?.tenant_id as string | undefined) ?? null;
 }
+
+/**
+ * Igual que `buscarTenantPorTelefono` (mismo criterio de ambigüedad: null ante
+ * cualquier duda), pero también trae el `id` del operador — auditoría 28,
+ * LEG-C1 (CRÍTICO): el medio ARCO de un operador DADO DE BAJA resolvía tenant
+ * pero pasaba `operadorId: null` a `atenderPrivacidad`, así que "me opongo"
+ * nunca encendía `operador.oposicion_automatizada` para nadie que llegara por
+ * esta ruta — la promesa del aviso ("desde ahora tus liquidaciones las revisa
+ * una persona") quedaba vacía justo para la población más probable de
+ * ejercerla (quien ya no trabaja ahí).
+ */
+export async function buscarOperadorPorTelefono(telefono: string): Promise<{ tenantId: string; operadorId: string } | null> {
+  // orden-no-importa: solo se cuentan las filas para detectar ambigüedad
+  // (length !== 1 → null); cuáles 2 de N lleguen no cambia el veredicto.
+  const { data, error } = await acotada(supabaseAdmin()
+    .from('operador')
+    .select('id, tenant_id')
+    .in('telefono', variantesTelefono(telefono))
+    .limit(2), 'buscarOperadorPorTelefono');
+  if (error) throw new Error(`buscarOperadorPorTelefono: ${error.message}`);
+  const filas = data ?? [];
+  if (filas.length !== 1) return null;
+  const fila = filas[0] as { id?: string; tenant_id?: string } | undefined;
+  if (!fila?.id || !fila?.tenant_id) return null;
+  return { tenantId: fila.tenant_id, operadorId: fila.id };
+}

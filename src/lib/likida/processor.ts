@@ -75,7 +75,7 @@ import {
   acquireViajeLock, intentarLockViaje, TTL_LOCK_CIERRE_MS, nuevoTokenDeLock,
   releaseViajeLock, releaseMessageClaim, completarMessageClaim,
   intakeDelta, esperarIntake, fotoAnteriorSinProcesar, ConsultaFallida, OperadorAmbiguo, type ConvTurn,
-  buscarTenantPorTelefono,
+  buscarOperadorPorTelefono,
   iniciarRenovacionMessageClaim,
 } from '@/lib/likida/conv';
 import { registrarCosto, registrarCostoWhatsApp, faseDeModelo, vincularCostosALiquidacion } from '@/lib/likida/costos';
@@ -328,17 +328,25 @@ async function atenderPrivacidad(tenantId: string, operadorId: string | null, te
       // lee para mandar toda liquidación suya a revisión humana. Solo se
       // escribe si estaba en NULL: la PRIMERA fecha de ejercicio es la que
       // demuestra desde cuándo se honra.
-      if (tipo === 'oposicion' && operadorId) {
-        const { error } = await supabaseAdmin().from('operador')
-          .update({ oposicion_automatizada: new Date().toISOString() })
-          .eq('id', operadorId).eq('tenant_id', tenantId)
-          .is('oposicion_automatizada', null);
-        if (error) {
-          // Ruidoso: la solicitud quedó registrada pero el derecho NO quedó
-          // operativo — es exactamente lo que alguien tiene que arreglar mañana.
-          logger.error('arco.oposicion_no_encendida', { tenantId, operadorId, err: error.message });
+      if (tipo === 'oposicion') {
+        if (operadorId) {
+          const { error } = await acotada(supabaseAdmin().from('operador')
+            .update({ oposicion_automatizada: new Date().toISOString() })
+            .eq('id', operadorId).eq('tenant_id', tenantId)
+            .is('oposicion_automatizada', null), 'arco.oposicion_encender');
+          if (error) {
+            // Ruidoso: la solicitud quedó registrada pero el derecho NO quedó
+            // operativo — es exactamente lo que alguien tiene que arreglar mañana.
+            logger.error('arco.oposicion_no_encendida', { tenantId, operadorId, err: error.message });
+          } else {
+            await sendText(telefono, 'Además, desde ahora tus liquidaciones las revisa una persona antes de cerrarse. Queda registrado. 👍');
+          }
         } else {
-          await sendText(telefono, 'Además, desde ahora tus liquidaciones las revisa una persona antes de cerrarse. Queda registrado. 👍');
+          // AUDITORÍA 28, LEG-C1: antes esta rama se saltaba en silencio — la
+          // solicitud quedaba registrada (arriba) pero nadie se enteraba de que
+          // el derecho no pudo encenderse por falta de operador resuelto (p.ej.
+          // una cuenta de oficina, o un teléfono que no calzó ninguno).
+          logger.warn('arco.oposicion_sin_operador', { tenantId, telefono });
         }
       }
       return;
@@ -1382,13 +1390,19 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // pantalla que la apague. Responde a cualquiera que escriba PRIVACIDAD —
     // activo o no, dado de alta o no—, y por eso su comentario no tiene por
     // qué nombrar el inventario de escritores de `operador.activo`.
-    if (msg.type === 'text' && msg.text && pideAtencionPrivacidad(msg.text)) {
-      const tenantId =
-        (await buscarTenantPorTelefono(msg.from).catch(() => null))
+    if ((msg.type === 'text' || msg.type === 'image') && msg.text && pideAtencionPrivacidad(msg.text)) {
+      // AUDITORÍA 28, LEG-C1 (CRÍTICO): antes solo resolvía `tenantId` (vía
+      // `buscarTenantPorTelefono`, que no trae el id del operador) y pasaba
+      // `operadorId: null` fijo — ver el comentario de
+      // `buscarOperadorPorTelefono`. Se resuelve el operador primero (misma
+      // consulta, con el id), y solo si no hay operador (cuenta de oficina) se
+      // cae al tenant-only.
+      const porOperador = await buscarOperadorPorTelefono(msg.from).catch(() => null);
+      const tenantId = porOperador?.tenantId
         ?? (await resolverCuentaOficina(msg.from).catch(() => null))?.tenantId
         ?? null;
       if (tenantId) {
-        await atenderPrivacidad(tenantId, null, msg.from, msg.text);
+        await atenderPrivacidad(tenantId, porOperador?.operadorId ?? null, msg.from, msg.text);
       } else {
         await sendText(msg.from, 'Claro. No te tengo identificado con una flota en Likida, así que no sé a qué empresa reclamarle. Si trabajaste con una flota que usa Likida, pídeles que te confirmen qué hicieron con tus datos. 🙏');
       }
@@ -1639,7 +1653,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // arriba —antes de la resolución de identidad— ya lo atiende, incluido al
     // operador dado de baja: este bloque queda como red redundante por si el
     // de arriba cambia de orden.)
-    if (msg.type === 'text' && msg.text && pideAtencionPrivacidad(msg.text)) {
+    if ((msg.type === 'text' || msg.type === 'image') && msg.text && pideAtencionPrivacidad(msg.text)) {
       await atenderPrivacidad(op.tenantId, op.operadorId, msg.from, msg.text);
       return;
     }

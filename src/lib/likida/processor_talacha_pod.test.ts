@@ -284,12 +284,29 @@ describe('ARCO sin datos del responsable', () => {
   it('la solicitud queda REGISTRADA aunque la flota no tenga razón social', async () => {
     const repo = await import('@/lib/likida/repo');
     const conv = await import('@/lib/likida/conv');
-    vi.spyOn(conv, 'buscarTenantPorTelefono').mockResolvedValue('t1');
+    vi.spyOn(conv, 'buscarOperadorPorTelefono').mockResolvedValue({ tenantId: 't1', operadorId: 'op1' });
     vi.mocked(repo.getDatosResponsable).mockResolvedValueOnce(null);
     vi.mocked(repo.registrarSolicitudArco).mockClear();
     await processInbound({ from: '5219993700779', type: 'text', text: 'quiero ejercer mis derechos ARCO y que borren mis datos', waMessageId: 'wa-arco' });
-    expect(repo.registrarSolicitudArco).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 't1', titularRef: '5219993700779', canal: 'whatsapp' }));
+    expect(repo.registrarSolicitudArco).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 't1', operadorId: 'op1', titularRef: '5219993700779', canal: 'whatsapp' }));
     // Y se le dice que quedó registrada, no solo "déjame checarlo".
     expect(sendText.mock.calls.some((c) => String(c[1]).includes('quedó registrada'))).toBe(true);
+  });
+
+  it('AUDITORÍA 28, LEG-C1: la oposición por esta ruta ya lleva el operadorId real, no null fijo', async () => {
+    // Antes: esta ruta (operador resuelto solo por `buscarTenantPorTelefono`,
+    // sin id) pasaba `operadorId: null` fijo a `atenderPrivacidad`, así que
+    // "me opongo" nunca podía actualizar `operador.oposicion_automatizada`
+    // para quien llegara por aquí — justo la población más probable de
+    // ejercerla (operador dado de baja). El escritor real de
+    // `oposicion_automatizada` ya tiene su propia cobertura de DB; aquí solo
+    // se prueba que `operadorId` deja de ser null fijo en esta ruta.
+    const repo = await import('@/lib/likida/repo');
+    const conv = await import('@/lib/likida/conv');
+    vi.spyOn(conv, 'buscarOperadorPorTelefono').mockResolvedValue({ tenantId: 't1', operadorId: 'op-baja' });
+    vi.mocked(repo.getDatosResponsable).mockResolvedValueOnce(null);
+    vi.mocked(repo.registrarSolicitudArco).mockClear();
+    await processInbound({ from: '5219993700780', type: 'text', text: 'me opongo a que sigan usando mis datos', waMessageId: 'wa-oposicion' });
+    expect(repo.registrarSolicitudArco).toHaveBeenCalledWith(expect.objectContaining({ tenantId: 't1', operadorId: 'op-baja', tipo: 'oposicion' }));
   });
 });
