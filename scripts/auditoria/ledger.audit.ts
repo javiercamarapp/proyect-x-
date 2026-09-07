@@ -6,7 +6,7 @@
 // la ronda se ABORTA con un error que dice cuánto gastó y en qué.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirRonda, topeRonda } from './config.audit';
 
 export interface LedgerRow {

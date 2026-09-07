@@ -56,6 +56,7 @@ describe('Complemento — demostración limpia de sobre_politica', () => {
       await enviarTexto(TELEFONO, 'listo', `${FOLIO}-cierre2`);
       ({ data: liq } = await db.from('liquidacion').select('id').eq('tenant_id', TENANT_ID).eq('viaje_id', viajeId).maybeSingle());
     }
+    console.log('LIQ_TRAS_SEGUNDO_CIERRE', liq ? liq.id : 'ninguna');
     drenarSalientes();
 
     const veredicto = await cuadreOraculo.oraculoCuadreBalancea(TENANT_ID, viajeId, {
