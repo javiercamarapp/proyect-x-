@@ -324,7 +324,14 @@ export async function ejecutarAnalista(opts: {
   onPaso?: (ev: { fase: 'inicio' | 'fin'; tool: string }) => void;
 }): Promise<RespuestaAnalista> {
   const runId = randomUUID();
-  const budget = createLlmBudget(opts.tenantId, runId, 'fondo');
+  // REN-M1/TC-M5 (auditoría 28): el analista responde EN VIVO al chat del
+  // dashboard ("Pregunta a tus datos", /api/dashboard/chat) — hay una
+  // persona esperando la respuesta, exactamente el caso 'interactivo' del
+  // contrato de budget.ts. Con 'fondo' compartía la reserva recortada de
+  // los agentes de back office (runner/redactor) y podía quedarse sin
+  // servicio por un lote de fondo ajeno; con 'interactivo' comparte la
+  // reserva del chofer, que es lo correcto.
+  const budget = createLlmBudget(opts.tenantId, runId, 'interactivo');
   const ctx: ToolContext = { tenantId: opts.tenantId, conversationId: runId, runId };
   const ROL_LEGIBLE: Record<string, string> = {
     flota_admin: 'dueño/administrador de la flota',
