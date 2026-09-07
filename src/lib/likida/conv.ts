@@ -1188,6 +1188,8 @@ export async function buscarTenantPorTelefono(telefono: string): Promise<string 
  * ejercerla (quien ya no trabaja ahí).
  */
 export async function buscarOperadorPorTelefono(telefono: string): Promise<{ tenantId: string; operadorId: string } | null> {
+  // orden-no-importa: solo se cuentan las filas para detectar ambigüedad
+  // (length !== 1 → null); cuáles 2 de N lleguen no cambia el veredicto.
   const { data, error } = await acotada(supabaseAdmin()
     .from('operador')
     .select('id, tenant_id')
