@@ -172,4 +172,14 @@ describe('identidad, protección y limpieza del candidato', () => {
     const cleanupFail = vi.fn().mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('revoke'));
     await expect(withProtection({}, cleanupFail, async () => {})).rejects.toThrow('Cleanup');
   });
+  it('conserva la causa real del smoke aunque la limpieza también falle (no la reemplaza el error de Cleanup)', async () => {
+    const request = vi.fn().mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('revoke'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(withProtection({}, request, async () => { throw new Error('Health de Production no está sano'); }))
+        .rejects.toThrow('Health de Production no está sano');
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(errorSpy.mock.calls.some(([msg]) => String(msg).includes('Falló la revocación'))).toBe(true);
+    } finally { errorSpy.mockRestore(); }
+  });
 });
