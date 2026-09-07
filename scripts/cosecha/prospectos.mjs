@@ -93,7 +93,7 @@ async function traer(url) {
   finally { clearTimeout(t); }
 }
 
-const limpio = (s) => s?.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+const limpio = (s) => s?.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, ' ')
   .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
   .replace(/&#\d+;/g, '').replace(/\s+/g, ' ').trim() || null;
 

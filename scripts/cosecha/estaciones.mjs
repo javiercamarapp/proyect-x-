@@ -41,7 +41,7 @@ function leerJsonSiExiste(ruta) {
 const st = leerJsonSiExiste(OUT) ?? { estaciones: {}, hechas: [], fallos: 0, sinPermiso: 0 };
 const hechas = new Set(st.hechas);
 
-const texto = (h) => h.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+const texto = (h) => h.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, ' ')
   .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
 
 function extraer(html, url) {
