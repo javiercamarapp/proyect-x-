@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { margenUnidadAtomicaMs, TECHO_PASO_CONSULTA_MS } from '@/lib/likida/presupuesto';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CRON DE GPS — el reloj que la ruta le presta a sus DOS fases.
@@ -90,14 +91,27 @@ beforeEach(() => {
 });
 
 describe('el reloj que la ruta les presta a las dos fases', () => {
-  it('les pasa un `venceEn` = ahora + maxDuration − margen, no un reloj infinito', async () => {
+  // AUDITORÍA 28, ALTO (REN-A4): el margen ya NO es el literal `20_000` — se
+  // deriva de la cadena real de un evento grave de cámara
+  // (`asistencia_camara.ts`: 11 consultas, 0 envíos — ver el comentario junto
+  // a `MARGEN_RELOJ_MS` en `route.ts`). Esta prueba comparaba `venceEn` contra
+  // 20_000 y hoy comprueba dos cosas que un literal no puede garantizar: que
+  // el margen ALCANCE para el peor caso de esa cadena, y que la ruta de verdad
+  // use el margen derivado (no un número que por coincidencia se le parezca).
+  it('les pasa un `venceEn` = ahora + maxDuration − margen derivado, no un reloj infinito ni un literal', async () => {
+    // Control: el margen tiene que cubrir, con holgura, el peor caso real de
+    // la cadena del evento grave — si algún día el margen derivado quedara
+    // por DEBAJO de eso, sería el mismo silencio de REN-A4 con otro número.
+    const PEOR_CASO_EVENTO_GRAVE_MS = 11 * TECHO_PASO_CONSULTA_MS;
+    const margen = margenUnidadAtomicaMs({ consultas: 11, envios: 0 });
+    expect(margen, 'el margen derivado tiene que cubrir el peor caso de la cadena').toBeGreaterThan(PEOR_CASO_EVENTO_GRAVE_MS);
+
     const antes = Date.now();
     await GET(peticion());
 
     const optsGps = sincronizarGpsTodas.mock.calls[0][1] as { venceEn: number };
-    // 300 s de techo menos los 20 s que la ruta se guarda para latir y responder.
-    expect(optsGps.venceEn).toBeGreaterThanOrEqual(antes + maxDuration * 1000 - 20_000);
-    expect(optsGps.venceEn).toBeLessThanOrEqual(Date.now() + maxDuration * 1000 - 20_000);
+    expect(optsGps.venceEn).toBeGreaterThanOrEqual(antes + maxDuration * 1000 - margen);
+    expect(optsGps.venceEn).toBeLessThanOrEqual(Date.now() + maxDuration * 1000 - margen);
   });
 
   it('es EL MISMO instante para posiciones y eventos: un solo presupuesto, dos fases en serie', async () => {

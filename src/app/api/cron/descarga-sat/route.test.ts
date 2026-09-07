@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { margenUnidadAtomicaMs, TECHO_PASO_CONSULTA_MS, TECHO_ENVIO_WHATSAPP_MS } from '@/lib/likida/presupuesto';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CRON DE LA DESCARGA MASIVA OBEDECE LA PALANCA DESDE SU PRIMER DÍA.
@@ -61,7 +62,7 @@ vi.mock('@/lib/observability/alerta', () => ({
 }));
 vi.mock('@/lib/observability/sentry', () => ({ codigoDeError: () => 'codigo-prueba' }));
 
-import { GET } from './route';
+import { GET, maxDuration } from './route';
 
 const CON_SECRETO = { headers: { authorization: 'Bearer secreto-de-prueba' } };
 const URL_CRON = 'https://likida.ai/api/cron/descarga-sat';
@@ -177,6 +178,29 @@ describe('cron descarga-sat — la corrida', () => {
     // QUE SEA EL MISMO instante es lo que hace que el reparto del tiempo sea
     // una regla y no una carrera entre los dos trabajos.
     expect(venceDescarga.venceEn).toBe(vencePeaje.venceEn);
+  });
+
+  // AUDITORÍA 28, ALTO REINCIDENTE (REN-A5): el margen ya NO es el literal
+  // `20_000` — se deriva de la cadena más cara entre `ingerir()` (camino
+  // "casado": 4 consultas, 0 envíos) y `avisarCierrePeaje` (reservar +
+  // telefonoParaDineroDe + sendText + soltarReserva: 3 consultas + 1 envío
+  // SÍNCRONO — ver el comentario junto a `MARGEN_MS` en `route.ts`). Esta
+  // prueba fija que el margen ALCANZA para esa cadena y que la ruta de verdad
+  // lo usa, no un literal que por coincidencia se le pareciera.
+  it('el margen derivado alcanza para la cadena más cara (avisarCierrePeaje) y la ruta lo usa', async () => {
+    const PEOR_CASO_INGERIR_CASADO_MS = 4 * TECHO_PASO_CONSULTA_MS;
+    const PEOR_CASO_PEAJE_CIERRE_MS = 3 * TECHO_PASO_CONSULTA_MS + TECHO_ENVIO_WHATSAPP_MS;
+    const margen = margenUnidadAtomicaMs({ consultas: 3, envios: 1 });
+    expect(margen, 'el margen tiene que cubrir el peor caso de ingerir/casado')
+      .toBeGreaterThan(PEOR_CASO_INGERIR_CASADO_MS);
+    expect(margen, 'el margen tiene que cubrir el peor caso de avisarCierrePeaje')
+      .toBeGreaterThan(PEOR_CASO_PEAJE_CIERRE_MS);
+
+    const antes = Date.now();
+    await GET(new Request(URL_CRON, CON_SECRETO));
+    const venceDescarga = (correrDescargaSat.mock.calls[0] as unknown[])[1] as { venceEn: number };
+    expect(venceDescarga.venceEn).toBeGreaterThanOrEqual(antes + maxDuration * 1000 - margen);
+    expect(venceDescarga.venceEn).toBeLessThanOrEqual(Date.now() + maxDuration * 1000 - margen);
   });
 
   it('un barrido del SAT cortado por reloj hace el latido PARCIAL — son CFDI que no entraron', async () => {

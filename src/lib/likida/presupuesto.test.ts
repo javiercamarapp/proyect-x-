@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   crearPresupuesto, MARGEN_CIERRE_MS, PRESUPUESTO_WEBHOOK_MS,
   PASOS_CIERRE, COSTO_CIERRE_MS, TOPE_CONSULTA_MS,
   TECHO_ENVIO_WHATSAPP_MS, TECHO_PASO_CONSULTA_MS, TECHO_CIERRE_MS,
+  margenUnidadAtomicaMs, COLCHON_LATIDO_CRON_MS,
 } from './presupuesto';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -246,6 +247,63 @@ describe('TOPE_CONSULTA_MS', () => {
     // Un tope por debajo de 3s empezaría a cortar consultas buenas en un mal
     // día, y cortar una buena es peor que esperar una mala.
     expect(TOPE_CONSULTA_MS).toBeGreaterThanOrEqual(3_000);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, ALTO + ALTO REINCIDENTE (REN-A4 + REN-A5): `MARGEN_RELOJ_MS`
+// (cron/gps) y `MARGEN_MS` (cron/descarga-sat) eran un mismo literal
+// (`20_000`) copiado de uno a otro sin derivarlo de nada. Este helper es el
+// arreglo común: el margen de un cron ITERATIVO se deriva de los TECHOS duros
+// de su unidad atómica más cara, así que subir `TOPE_CONSULTA_MS` (o su
+// override por entorno) mueve el margen de los dos crons sin tocar código.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('margenUnidadAtomicaMs', () => {
+  it('consultas × TECHO_PASO_CONSULTA_MS + envios × TECHO_ENVIO_WHATSAPP_MS + el colchón, con los valores por defecto', () => {
+    // REN-A4: la cadena de `dispararAsistenciaPorEventoCamara` (11 consultas, 0 envíos).
+    expect(margenUnidadAtomicaMs({ consultas: 11, envios: 0 }))
+      .toBe(11 * TECHO_PASO_CONSULTA_MS + COLCHON_LATIDO_CRON_MS);
+    // REN-A5: la cadena de `avisarCierrePeaje` (3 consultas + 1 envío).
+    expect(margenUnidadAtomicaMs({ consultas: 3, envios: 1 }))
+      .toBe(3 * TECHO_PASO_CONSULTA_MS + TECHO_ENVIO_WHATSAPP_MS + COLCHON_LATIDO_CRON_MS);
+  });
+
+  it('acepta un extraMs adicional para lo que no es ni consulta ni envío', () => {
+    expect(margenUnidadAtomicaMs({ consultas: 1, envios: 0, extraMs: 2_000 }))
+      .toBe(TECHO_PASO_CONSULTA_MS + 2_000 + COLCHON_LATIDO_CRON_MS);
+  });
+
+  it('el colchón por sí solo no basta para latir Y responder con margen de sobra', () => {
+    // Sin colchón el margen cubriría justo el trabajo y no la prueba de que
+    // el trabajo se hizo (registrar el latido, devolver la respuesta HTTP).
+    expect(COLCHON_LATIDO_CRON_MS).toBeGreaterThanOrEqual(1_000);
+    expect(margenUnidadAtomicaMs({ consultas: 0, envios: 0 })).toBe(COLCHON_LATIDO_CRON_MS);
+  });
+
+  // El tope de consulta es configurable por entorno (`LIKIDA_TOPE_CONSULTA_MS`)
+  // precisamente para poder aflojarlo sin desplegar si la latencia real
+  // Vercel↔Supabase resulta peor que la documentada — y el margen de estos
+  // crons tiene que MOVERSE con él, o un ajuste de emergencia del tope dejaría
+  // el margen de gps/descarga-sat mintiendo otra vez.
+  it('sigue a LIKIDA_TOPE_CONSULTA_MS: subir o bajar el tope mueve el margen sin tocar código', async () => {
+    const ENV_ORIGINAL = process.env.LIKIDA_TOPE_CONSULTA_MS;
+    try {
+      process.env.LIKIDA_TOPE_CONSULTA_MS = '1500';
+      vi.resetModules();
+      const fresco = await import('./presupuesto');
+      expect(fresco.TOPE_CONSULTA_MS).toBe(1_500);
+      // Con un tope más bajo, el techo por paso baja, y con él el margen —
+      // MENOS que el margen calculado arriba con el tope de producción.
+      expect(fresco.TECHO_PASO_CONSULTA_MS).toBeLessThan(TECHO_PASO_CONSULTA_MS);
+      expect(fresco.margenUnidadAtomicaMs({ consultas: 11, envios: 0 }))
+        .toBe(11 * fresco.TECHO_PASO_CONSULTA_MS + fresco.COLCHON_LATIDO_CRON_MS);
+      expect(fresco.margenUnidadAtomicaMs({ consultas: 11, envios: 0 }))
+        .toBeLessThan(margenUnidadAtomicaMs({ consultas: 11, envios: 0 }));
+    } finally {
+      if (ENV_ORIGINAL === undefined) delete process.env.LIKIDA_TOPE_CONSULTA_MS;
+      else process.env.LIKIDA_TOPE_CONSULTA_MS = ENV_ORIGINAL;
+      vi.resetModules();
+    }
   });
 });
 
