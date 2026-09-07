@@ -55,7 +55,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   releaseMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 1),
   esperarIntake: vi.fn(async () => true),
-  buscarTenantPorTelefono: vi.fn(async () => null),
+  buscarOperadorPorTelefono: vi.fn(async () => null),
 }));
 vi.mock('@/lib/likida/repo', () => ({
   // El único camino que estas pruebas ejercitan de `repo` es la compuerta del
