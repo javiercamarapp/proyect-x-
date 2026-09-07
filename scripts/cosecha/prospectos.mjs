@@ -28,7 +28,7 @@
 //   node scripts/cosecha/prospectos.mjs --sin-escribir   # solo cosechar al disco
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 const AQUI = dirname(new URL(import.meta.url).pathname);
@@ -56,6 +56,12 @@ if (!SB || !KEY) { console.error('Faltan credenciales Supabase en .env.local'); 
 mkdirSync(SALIDA, { recursive: true });
 const hoy = new Date().toISOString().slice(0, 10);
 const dormi = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** EAFP: evita el TOCTOU de existsSync()+readFileSync() sobre el mismo archivo. */
+function leerJsonSiExiste(ruta) {
+  try { return JSON.parse(readFileSync(ruta, 'utf8')); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
 
 async function sbFetch(path, opts = {}) {
   const r = await fetch(`${SB}/rest/v1/${path}`, {
@@ -87,7 +93,7 @@ async function traer(url) {
   finally { clearTimeout(t); }
 }
 
-const limpio = (s) => s?.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+const limpio = (s) => s?.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
   .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
   .replace(/&#\d+;/g, '').replace(/\s+/g, ' ').trim() || null;
 
@@ -161,11 +167,10 @@ let n = 0;
 for (const p of lote) {
   n++;
   const etiqueta = `${n}/${lote.length} ${p.empresa?.slice(0, 40)}`;
+  if (!/^[0-9a-f-]{36}$/i.test(p.id)) { console.log(` ${etiqueta} → id no es uuid, se salta`); continue; }
   const archivo = join(SALIDA, `${p.id}.json`);
-  let data;
-  if (existsSync(archivo)) {
-    data = JSON.parse(readFileSync(archivo, 'utf8'));           // reanudar: ya está en disco
-  } else {
+  let data = leerJsonSiExiste(archivo);                           // reanudar: ya está en disco
+  if (!data) {
     const hit = await traerSitio(p.sitio);
     if (!hit) {
       data = { id: p.id, empresa: p.empresa, sitio: p.sitio, vivo: false, cosechado: new Date().toISOString() };
