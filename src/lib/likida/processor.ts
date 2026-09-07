@@ -1442,7 +1442,10 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
             if (xml?.tipoComprobante === 'P' && xmlText) {
               const rep = parseRepXml(xmlText);
               if (rep) {
-                const resumen = await ingerirRep(cuenta.tenantId, rep, xmlText);
+                // AUDITORÍA 28 (AG-C1/REN-C1): el presupuesto de ESTA invocación
+                // como tope de `ingerirRep` — un consolidado con muchos doctos ya
+                // no se corta a la mitad sin avisar.
+                const resumen = await ingerirRep(cuenta.tenantId, rep, xmlText, Date.now() + reloj.restante());
                 logger.info('oficina.rep', { tenant: cuenta.tenantId, rep: rep.uuid, ...resumen });
                 await sendText(msg.from, mensajeRepRecibido(resumen));
                 return;
@@ -1793,7 +1796,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         if (xml?.tipoComprobante === 'P' && xmlText) {
           const rep = parseRepXml(xmlText);
           if (rep) {
-            const resumen = await ingerirRep(op.tenantId, rep, xmlText);
+            // AUDITORÍA 28 (AG-C1/REN-C1): ver comentario en el camino de oficina.
+            const resumen = await ingerirRep(op.tenantId, rep, xmlText, Date.now() + reloj.restante());
             logger.info('rep.sin_viaje', { tenant: op.tenantId, rep: rep.uuid, ...resumen });
             await sendText(msg.from, mensajeRepRecibido(resumen));
             return;
@@ -3096,7 +3100,8 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         if (xml.tipoComprobante === 'P') {
           const rep = parseRepXml(xmlText!);
           if (rep) {
-            const resumen = await ingerirRep(op.tenantId, rep, xmlText!);
+            // AUDITORÍA 28 (AG-C1/REN-C1): ver comentario en el camino de oficina.
+            const resumen = await ingerirRep(op.tenantId, rep, xmlText!, Date.now() + reloj.restante());
             logger.info('rep.con_viaje', { tenant: op.tenantId, viaje: viajeId, rep: rep.uuid, ...resumen });
             await say(mensajeRepRecibido(resumen));
             return;

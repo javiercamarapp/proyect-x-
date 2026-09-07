@@ -169,6 +169,17 @@ export interface ResumenIngestaRep {
   sellados: number;
   /** Doctos con saldo insoluto > 0: registrados pero SIN sellar (parcialidad). */
   parciales: number;
+  /**
+   * AUDITORÍA 28 (AG-C1/REN-C1, CRÍTICO): doctos que NO se alcanzaron a
+   * procesar porque se acabó `venceEn` a la mitad de un REP con muchos
+   * documentos (un consolidado real puede traer cientos). Antes el bucle no
+   * miraba el reloj: si la invocación moría a la mitad, los doctos restantes
+   * se perdían en silencio y su IVA nunca se liberaba — sin registro, sin
+   * aviso, sin reintento. El registro en `cfdi_pago` es idempotente
+   * (`ignoreDuplicates`), así que reenviar el MISMO REP más tarde retoma
+   * justo donde se cortó, sin duplicar lo ya sellado.
+   */
+  pendientes: number;
 }
 
 /**
@@ -178,18 +189,32 @@ export interface ResumenIngestaRep {
  *
  * El sello no pisa: `pagado_en is null` en el WHERE — el primer REP que
  * liquida por completo manda, un reenvío no reescribe la fecha.
+ *
+ * `venceEn` (AUDITORÍA 28, AG-C1/REN-C1): timestamp de `Date.now()` a partir
+ * del cual esta función deja de arrancar doctos nuevos y devuelve lo que
+ * falta en `resumen.pendientes`, en vez de seguir hasta que Vercel mate la
+ * invocación a la mitad de un `upsert`/`update`. Sin `venceEn` no hay corte
+ * (uso interno/pruebas).
  */
-export async function ingerirRep(tenantId: string, rep: RepXmlData, xmlCrudo: string): Promise<ResumenIngestaRep> {
+export async function ingerirRep(tenantId: string, rep: RepXmlData, xmlCrudo: string, venceEn?: number): Promise<ResumenIngestaRep> {
   // CFF 30: el REP es un CFDI y se conserva igual que los demás. gasto_id null
   // a propósito — un REP puede liquidar varios gastos.
   await saveCfdiXmlRaw(tenantId, rep.uuid, null, xmlCrudo);
 
-  const resumen: ResumenIngestaRep = { doctos: 0, ligados: 0, sellados: 0, parciales: 0 };
+  const resumen: ResumenIngestaRep = { doctos: 0, ligados: 0, sellados: 0, parciales: 0, pendientes: 0 };
   const admin = supabaseAdmin();
 
-  for (const pago of rep.pagos) {
+  agotarPagos: for (const pago of rep.pagos) {
     const fechaPago = pago.fechaPago.slice(0, 10);
     for (const d of pago.doctos) {
+      if (venceEn !== undefined && Date.now() >= venceEn) {
+        // No se arrancó ESTE docto ni ninguno después: nada a medias, nada
+        // sellado sin registro. `pendientes` cuenta lo que falta en TODOS los
+        // pagos restantes, no solo el actual.
+        resumen.pendientes += pago.doctos.length - pago.doctos.indexOf(d);
+        for (const otro of rep.pagos.slice(rep.pagos.indexOf(pago) + 1)) resumen.pendientes += otro.doctos.length;
+        break agotarPagos;
+      }
       // Registro idempotente: el mismo (tenant, REP, docto) reenviado no
       // duplica. `ignoreDuplicates` = ON CONFLICT DO NOTHING sobre la unique.
       const { error: errReg } = await acotada(admin.from('cfdi_pago').upsert({
@@ -252,8 +277,15 @@ export function mensajeRepRecibido(r: ResumenIngestaRep): string {
   if (r.parciales > 0) {
     partes.push(`${r.parciales} con saldo pendiente: el IVA se libera hasta la última parcialidad.`);
   }
-  if (r.sellados === 0 && r.parciales === 0) {
+  if (r.sellados === 0 && r.parciales === 0 && r.pendientes === 0) {
     partes.push('No encontré facturas de esta flota que ese pago liquide — si la factura llega después, el pago ya quedó registrado.');
+  }
+  if (r.pendientes > 0) {
+    // AUDITORÍA 28 (AG-C1/REN-C1): el complemento traía más documentos de los
+    // que dio tiempo de procesar en esta invocación. Registrar es idempotente
+    // (`ignoreDuplicates`), así que reenviar EL MISMO complemento retoma
+    // justo donde se cortó — no hay que fabricar uno nuevo.
+    partes.push(`${r.pendientes} documento${r.pendientes === 1 ? '' : 's'} de este complemento no me dio tiempo de procesar — reenvía el mismo complemento para que termine.`);
   }
   return partes.join(' ');
 }
