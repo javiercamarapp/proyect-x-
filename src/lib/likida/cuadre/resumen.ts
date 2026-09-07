@@ -11,6 +11,27 @@ import type { Liquidacion, TipoDiferencia } from '@/types/likida';
 export type Destinatario = 'operador' | 'contralor';
 
 /**
+ * Lo MÍNIMO que `resumenCuadre` de verdad lee de una `Liquidacion` (verificado
+ * contra el cuerpo de la función, abajo): las tres cubetas de deducibilidad
+ * (`totalDeducible/totalNoDeducible/totalPorConfirmar`), `gastos`, `estatus` y
+ * `viajeId` NUNCA se tocan aquí.
+ *
+ * AUDITORÍA 28, TC-A1: existe para que el snapshot que se archiva de un cierre
+ * recuperado (`confirmarCierreEnBase`, processor.ts) pueda construirse SOLO con
+ * columnas que la fila `liquidacion` de verdad persiste — las tres cubetas de
+ * arriba NO se guardan en la tabla (solo viven en el objeto que arma el motor
+ * al momento del cierre), así que rellenarlas ahí sería inventar una cifra que
+ * además nadie iba a leer. Un `Omit<Liquidacion,'id'|'creadaEn'>` (el objeto
+ * completo que ya arma `computeCuadre`) sigue siendo válido aquí: es un
+ * superconjunto de este tipo.
+ */
+export type CuadreParaResumen = Pick<
+  Liquidacion,
+  'totalComprobado' | 'totalAnticipo' | 'diferencia' | 'diferencias'
+  | 'litrosDieselAcreditables' | 'ivaAcreditable' | 'peajeAcreditable'
+>;
+
+/**
  * Veredictos que el OPERADOR no puede arreglar y que además lo señalan: que su
  * proveedor está en la lista negra del SAT, que el CFDI salió cancelado, que el
  * receptor no es el RFC de la empresa.
@@ -42,7 +63,7 @@ export const SOLO_CONTRALOR: TipoDiferencia[] = [
 // puede arreglar.
 
 export function resumenCuadre(
-  liq: Omit<Liquidacion, 'id' | 'creadaEn'>,
+  liq: CuadreParaResumen,
   cerrado = true,
   // Default 'contralor': el destinatario que ve TODO. Si algún llamador se
   // olvida de pasarlo, el riesgo es enseñar de más a quien ya podía verlo,

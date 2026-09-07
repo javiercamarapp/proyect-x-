@@ -18,12 +18,11 @@
 //    se responde neutral en vez de arriesgar un número inventado.
 
 import { cuadrarDesdeDB } from './desde_db';
-import { resumenCuadre } from './resumen';
+import { resumenCuadre, type CuadreParaResumen } from './resumen';
 import { tieneCifrasDeDinero, cifrasSinRespaldo, hablaDeDineroSinCifraVerificable } from './cifras';
 import { logger } from '@/lib/logger';
 import { registrarEventoSeguridad } from '@/lib/seguridad/eventos';
 import type { ToolCallRecord } from '@/lib/llm/openrouter';
-import type { Liquidacion } from '@/types/likida';
 
 export async function guardiaCifras(
   reply: string,
@@ -69,7 +68,7 @@ export async function guardiaCifras(
   // debería pasar con la tool ya cableada).
   const snapshotCierre = cerro
     ? (toolCalls.find((t) => t.toolName === 'guardar_liquidacion' && !t.error)
-        ?.result as { liq?: Omit<Liquidacion, 'id' | 'creadaEn'> } | undefined)?.liq
+        ?.result as { liq?: CuadreParaResumen } | undefined)?.liq
     : undefined;
 
   // El detector NO decide sobre un cuadre. Antes esta función salía en la primera
@@ -102,6 +101,23 @@ export async function guardiaCifras(
   }
 
   try {
+    // ── AMPLIACIÓN DE AG-3 (AUDITORÍA 28, TC-A1) ────────────────────────────
+    // `cerro` sin `snapshotCierre` significaba, hasta aquí, "recalcula en
+    // `best_effort`" (el comentario viejo lo llamaba "defensivo; no debería
+    // pasar"). Pero SÍ pasaba: `confirmarCierreEnBase` fabricaba un registro
+    // sintético sin `liq` cada vez que recuperaba un cierre que la tool no
+    // pudo devolver en vivo, y `cuadrarDesdeDB(tenantId, viajeId)` SIN
+    // opciones cae en `best_effort` (perfil, acumulado del ejercicio y líneas
+    // ECC degradan en silencio) mientras lo archivado se calculó en `cierre`
+    // — el PDF y el WhatsApp del MISMO cierre podían narrar dos cuadres
+    // distintos. Ahora `confirmarCierreEnBase` SIEMPRE intenta traer el
+    // snapshot archivado; si de verdad no puede (fila no encontrada, lectura
+    // caída), esto es lo único correcto: fallar cerrado y decirlo, nunca
+    // inventar un cuadre nuevo sobre un cierre que ya quedó impreso distinto.
+    if (cerro && !snapshotCierre) {
+      logger.error('guardia_cierre_sin_snapshot', { tenantId, viajeId });
+      return { reply: 'Ya cerré tu liquidación ✅. Te mando el PDF.', forzado: true };
+    }
     // AG-3: con snapshot de cierre, NO se toca la DB — se narra exactamente lo
     // que ya quedó impreso en los dos PDF y persistido en `saveLiquidacion`.
     const liq = snapshotCierre ?? (await cuadrarDesdeDB(tenantId, viajeId));

@@ -100,6 +100,22 @@ vi.mock('@/lib/likida/repo', () => ({
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
   getPerfilCrudo: vi.fn(async () => ({})),
   getLiquidacionDeViaje: (...a: unknown[]) => getLiquidacionDeViaje(...(a as [string, string])),
+  // AUDITORÍA 28, TC-A1: la fotografía archivada que `confirmarCierreEnBase`
+  // (processor.ts) lee para poblar `registro.result.liq`. `resumenCuadre` está
+  // mockeado a una constante en este archivo (no le importa el contenido de
+  // `liq`, solo `cerrado`), así que un valor por defecto cualquiera basta para
+  // no romper las pruebas existentes de este archivo — el contraste
+  // snapshot-vs-recálculo se prueba con `resumenCuadre` REAL en
+  // `processor_cierre_recuperado_snapshot.test.ts`.
+  getSnapshotCierreLiquidacion: (...a: unknown[]) => getSnapshotCierreLiquidacion(...(a as [string, string])),
+}));
+type SnapshotCierre = {
+  totalComprobado: number; totalAnticipo: number; diferencia: number; diferencias: never[];
+  litrosDieselAcreditables: number; ivaAcreditable: number; peajeAcreditable: number;
+};
+const getSnapshotCierreLiquidacion = vi.fn<(t: string, id: string) => Promise<SnapshotCierre | null>>(async () => ({
+  totalComprobado: 8000, totalAnticipo: 8000, diferencia: 0, diferencias: [],
+  litrosDieselAcreditables: 0, ivaAcreditable: 0, peajeAcreditable: 0,
 }));
 /** AUDITORÍA 24, AGEN-1/AGEN-A1: la lectura de la BASE que decide si cerró. */
 const getLiquidacionDeViaje = vi.fn<(t: string, v: string) => Promise<{ id: string; pdfUrl: string | null } | undefined>>(async () => undefined);
@@ -158,10 +174,17 @@ const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', tim
 
 /** El agente MURIÓ a media ronda, pero `guardar_liquidacion` YA había corrido
  *  con éxito: la liquidación existe en la base, con sus dos PDFs. */
+// `liq`: en producción `guardar_liquidacion` SIEMPRE lo devuelve (AG-3,
+// tools.ts) — es el snapshot que ya imprimió en los dos PDF. Sin él aquí, la
+// prueba simularía un tool call que no existe en el código real.
+const LIQ_TOOL: SnapshotCierre = {
+  totalComprobado: 1234, totalAnticipo: 1234, diferencia: 0, diferencias: [],
+  litrosDieselAcreditables: 0, ivaAcreditable: 0, peajeAcreditable: 0,
+};
 const cierreParcial = () => new PartialExecutionError(
   'timeout del proveedor',
   new Error('timeout del proveedor'),
-  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true }, durationMs: 5 }],
+  [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: 't1/v1.pdf', pdf_generado: true, pdf_contralor_generado: true, liq: LIQ_TOOL }, durationMs: 5 }],
   10, 10, 0,
 );
 
@@ -178,6 +201,11 @@ beforeEach(() => {
   loadConversation.mockResolvedValue({ id: 'c1', turns: [], cierreSinComprobantes: true });
   vincularCostosALiquidacion.mockReset();
   getLiquidacionDeViaje.mockReset(); getLiquidacionDeViaje.mockResolvedValue(undefined);
+  getSnapshotCierreLiquidacion.mockReset();
+  getSnapshotCierreLiquidacion.mockResolvedValue({
+    totalComprobado: 8000, totalAnticipo: 8000, diferencia: 0, diferencias: [],
+    litrosDieselAcreditables: 0, ivaAcreditable: 0, peajeAcreditable: 0,
+  });
   consultasCierre.length = 0;
   lecturaCierre.mockReset();
   lecturaCierre.mockImplementation(async (t, v) => {
