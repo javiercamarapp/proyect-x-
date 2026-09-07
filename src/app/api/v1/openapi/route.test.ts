@@ -102,7 +102,7 @@ describe('el spec no se queda atrás de las rutas', () => {
    * async function POST` nuevo sin su bloque hace fallar esta prueba.
    */
   it('cada método HTTP exportado por una ruta v1 está documentado', async () => {
-    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { readdirSync, readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const d = await doc();
     const paths = d.paths as Record<string, Record<string, unknown>>;
@@ -111,14 +111,15 @@ describe('el spec no se queda atrás de las rutas', () => {
     const faltan: string[] = [];
 
     const recorrer = (dir: string, ruta: string) => {
-      for (const e of readdirSync(dir)) {
+      for (const d of readdirSync(dir, { withFileTypes: true })) {
+        const e = d.name;
         const p = join(dir, e);
-        if (statSync(p).isDirectory()) {
+        if (d.isDirectory()) {
           // `openapi` se documenta a sí misma: no es parte del contrato.
           if (e !== 'openapi') recorrer(p, `${ruta}/${e.startsWith('[') ? `{${e.slice(1, -1)}}` : e}`);
           continue;
         }
-        if (e !== 'route.ts') continue;
+        if (!d.isFile() || e !== 'route.ts') continue;
         const metodos = [...readFileSync(p, 'utf8').matchAll(/export async function (GET|POST|PUT|PATCH|DELETE)\b/g)]
           .map((m) => m[1].toLowerCase());
         for (const m of metodos) {

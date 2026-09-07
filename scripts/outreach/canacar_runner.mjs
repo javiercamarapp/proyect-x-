@@ -24,8 +24,13 @@ for (const line of envContent.split('\n')) {
   }
 }
 
+if (!/^https:\/\/[a-z0-9]+\.supabase\.co$/.test(supabaseUrl)) {
+  console.error('NEXT_PUBLIC_SUPABASE_URL no es un host de Supabase');
+  process.exit(1);
+}
+
 const stagingDir = path.resolve(__dirname, '../../staging_canacar');
-if (!fs.existsSync(stagingDir)) fs.mkdirSync(stagingDir, { recursive: true });
+fs.mkdirSync(stagingDir, { recursive: true });
 
 const stagingMdPath = path.join(stagingDir, 'staging_emails.md');
 const stagingJsonPath = path.join(stagingDir, 'staging_emails.json');
@@ -50,25 +55,30 @@ function withLock(fn) {
 }
 
 
-// Initialize files if they don't exist
-if (!fs.existsSync(stagingMdPath)) {
-  fs.writeFileSync(stagingMdPath, '# Staging de Correos de Venta Likida — Padrón CANACAR\n\n', 'utf8');
+// Crea el archivo solo si no existe todavía — sin el hueco entre comprobar y
+// escribir del patrón existsSync+writeFileSync (auditoría CodeQL: otro
+// proceso pudo crearlo justo en medio, y el write lo pisaba con el estado
+// inicial). 'wx' falla con EEXIST si ya está, y eso se ignora a propósito.
+export function crearSiNoExiste(ruta, contenido) {
+  try {
+    fs.writeFileSync(ruta, contenido, { encoding: 'utf8', flag: 'wx' });
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+  }
 }
-if (!fs.existsSync(stagingJsonPath)) {
-  fs.writeFileSync(stagingJsonPath, JSON.stringify({ total_correos: 0, correos: [] }, null, 2), 'utf8');
-}
-if (!fs.existsSync(statePath)) {
-  fs.writeFileSync(statePath, JSON.stringify({
-    last_updated: new Date().toISOString(),
-    total_processed: 0,
-    encaje_si: 0,
-    encaje_no: 0,
-    encaje_dudoso: 0,
-    total_emails_generated: 0,
-    batches_completed: 0,
-    processed_ids: []
-  }, null, 2), 'utf8');
-}
+
+crearSiNoExiste(stagingMdPath, '# Staging de Correos de Venta Likida — Padrón CANACAR\n\n');
+crearSiNoExiste(stagingJsonPath, JSON.stringify({ total_correos: 0, correos: [] }, null, 2));
+crearSiNoExiste(statePath, JSON.stringify({
+  last_updated: new Date().toISOString(),
+  total_processed: 0,
+  encaje_si: 0,
+  encaje_no: 0,
+  encaje_dudoso: 0,
+  total_emails_generated: 0,
+  batches_completed: 0,
+  processed_ids: []
+}, null, 2));
 
 export function getState() {
   return JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -167,9 +177,11 @@ export async function fetchUnprocessedCandidates(limitCount = 50) {
 
 export async function saveCompanyResult(data) {
   if (!data.id) throw new Error('Falta el ID del prospecto');
+  if (!/^[0-9a-f-]{36}$/i.test(data.id)) throw new Error('data.id no es uuid');
+  const idFiltro = encodeURIComponent(data.id);
 
   // 1. Obtener notas actuales
-  const getRes = await fetch(`${supabaseUrl}/rest/v1/prospecto?id=eq.${data.id}&select=id,notas`, {
+  const getRes = await fetch(`${supabaseUrl}/rest/v1/prospecto?id=eq.${idFiltro}&select=id,notas`, {
     headers: {
       'apikey': supabaseKey,
       'Authorization': `Bearer ${supabaseKey}`,
@@ -247,7 +259,7 @@ export async function saveCompanyResult(data) {
     patchPayload.mensajes_modelo = 'Gemini 3.7 Flash';
   }
 
-  const patchRes = await fetch(`${supabaseUrl}/rest/v1/prospecto?id=eq.${data.id}`, {
+  const patchRes = await fetch(`${supabaseUrl}/rest/v1/prospecto?id=eq.${idFiltro}`, {
     method: 'PATCH',
     headers: {
       'apikey': supabaseKey,
@@ -263,10 +275,9 @@ export async function saveCompanyResult(data) {
   // 3b. Guardar decisor en prospecto_persona
   if (data.director_nombre && !data.director_nombre.toLowerCase().includes('no encontrado')) {
     try {
-      let origen = 'otro';
-      if (data.linkedin_director && !data.linkedin_director.includes('no encontrado')) origen = 'linkedin';
-      else if (data.sitio || data.sitio_web) origen = 'sitio_empresa';
-      else origen = 'directorio';
+      const origen = (data.linkedin_director && !data.linkedin_director.includes('no encontrado'))
+        ? 'linkedin'
+        : (data.sitio || data.sitio_web) ? 'sitio_empresa' : 'directorio';
 
       await fetch(`${supabaseUrl}/rest/v1/prospecto_persona`, {
         method: 'POST',

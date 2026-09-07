@@ -113,16 +113,17 @@ describe('datosBancarios — falla cerrado', () => {
 
 describe('ninguna CLABE real vive en el código', () => {
   it('el árbol de fuentes no trae cuentas bancarias válidas', async () => {
-    const { readdirSync, readFileSync, statSync } = await import('node:fs');
+    const { readdirSync, readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const raiz = fileURLToPath(new URL('../..', import.meta.url));   // src/
 
     const sospechosas: string[] = [];
     const recorrer = (dir: string) => {
-      for (const e of readdirSync(dir)) {
+      for (const d of readdirSync(dir, { withFileTypes: true })) {
+        const e = d.name;
         const ruta = `${dir}/${e}`;
-        if (statSync(ruta).isDirectory()) { recorrer(ruta); continue; }
-        if (!/\.(ts|tsx|md|sql|json)$/.test(e)) continue;
+        if (d.isDirectory()) { recorrer(ruta); continue; }
+        if (!d.isFile() || !/\.(ts|tsx|md|sql|json)$/.test(e)) continue;
         const texto = readFileSync(ruta, 'utf8');
         for (const m of texto.matchAll(/\b\d{18}\b/g)) {
           if (m[0] === CLABE_PRUEBA) continue;      // la inventada, a propósito

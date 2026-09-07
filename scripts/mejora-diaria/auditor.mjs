@@ -88,11 +88,14 @@ if (recortados) console.log(`(techo de contexto: ${recortados} archivos del áre
 // ── Lo ya visto (cualquier estado: pendiente, pr_abierto, descartado…) ─────
 const RUTA_REGISTRO = join(CARPETA, 'registro.jsonl');
 const vistos = new Set();
-if (existsSync(RUTA_REGISTRO)) {
-  for (const l of readFileSync(RUTA_REGISTRO, 'utf8').split('\n')) {
-    if (!l.trim()) continue;
-    try { vistos.add(JSON.parse(l).hash); } catch { /* línea rota: se ignora */ }
-  }
+// AUDITORÍA CODEQL (js/http-to-file-access): EAFP en vez de existsSync→read,
+// que es un TOCTOU teórico contra el mismo archivo que appendFileSync escribe.
+let registro = '';
+try { registro = readFileSync(RUTA_REGISTRO, 'utf8'); }
+catch (e) { if (e.code !== 'ENOENT') throw e; }
+for (const l of registro.split('\n')) {
+  if (!l.trim()) continue;
+  try { vistos.add(JSON.parse(l).hash); } catch { /* línea rota: se ignora */ }
 }
 const hashDe = (h) => createHash('sha256').update(`${h.archivo}|${h.titulo}`).digest('hex').slice(0, 12);
 

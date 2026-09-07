@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
-import { dirRonda, rondaActual, NOTAS_PREVIAS } from './config.audit';
+import { dirRonda, NOTAS_PREVIAS } from './config.audit';
 import { contextoAgente, evidenciaBaseline } from './contexto.audit';
 import { modeloRubro } from './modelos.audit';
 import { llamada, llamadaConTools } from './llamada.audit';
@@ -39,9 +39,6 @@ export interface ResultadoAuditor {
   nota?: number;
   tools?: number;
 }
-
-const SALTO = `\n\n`;
-const CORCHETE = '```';
 
 function promptRubro(n: number, r: Rubro): string {
   const ctx = contextoAgente(n, r);

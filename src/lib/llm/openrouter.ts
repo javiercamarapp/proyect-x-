@@ -935,7 +935,12 @@ export async function generateWithTools(opts: {
   const maxRounds = opts.maxToolRounds ?? 6;
   const client = getClient();
   const executed: ToolCallRecord[] = [];
-  let tokIn = 0, tokOut = 0, used = model;
+  let tokIn = 0, tokOut = 0;
+  // Sin inicializar a `model`: la única asignación real es la de la línea de
+  // abajo (`used = res.model || activeModel`, antes de cualquier `return`),
+  // y un valor de arranque nunca leído solo escondía que la corrida completa
+  // podía terminar sin haber corrido ni una ronda.
+  let used: string;
   // B23: el costo se acumula POR RONDA, con el modelo que de verdad respondió
   // esa ronda. Acumulando solo tokens y precificando una vez al final, un ciclo
   // que corre tres rondas en el primario y cae al fallback en la cuarta cobraba

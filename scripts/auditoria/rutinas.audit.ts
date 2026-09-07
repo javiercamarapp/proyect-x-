@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirRonda, rondaActual } from './config.audit';
+import { dirRonda } from './config.audit';
 import { M } from './modelos.audit';
 import { llamadaConTools } from './llamada.audit';
 import { aplicarCambio } from './aplicar.audit';

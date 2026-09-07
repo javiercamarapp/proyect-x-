@@ -22,7 +22,7 @@
 //   node scripts/cosecha/estaciones.mjs --limite 3000
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 const AQUI = dirname(new URL(import.meta.url).pathname);
@@ -33,11 +33,15 @@ const arg = (n, d) => { const i = process.argv.indexOf(n); return i > 0 ? proces
 const LIMITE = Number(arg('--limite', '0')) || Infinity;
 const PAUSA = Number(arg('--pausa', '300'));
 
-const st = existsSync(OUT) ? JSON.parse(readFileSync(OUT, 'utf8'))
-  : { estaciones: {}, hechas: [], fallos: 0, sinPermiso: 0 };
+/** EAFP: evita el TOCTOU de existsSync()+readFileSync() sobre el mismo archivo. */
+function leerJsonSiExiste(ruta) {
+  try { return JSON.parse(readFileSync(ruta, 'utf8')); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
+const st = leerJsonSiExiste(OUT) ?? { estaciones: {}, hechas: [], fallos: 0, sinPermiso: 0 };
 const hechas = new Set(st.hechas);
 
-const texto = (h) => h.replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<style[\s\S]*?<\/style>/g, ' ')
+const texto = (h) => h.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
   .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
 
 function extraer(html, url) {

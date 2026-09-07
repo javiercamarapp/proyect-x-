@@ -110,6 +110,10 @@ describe('armarInforme — cifras reales por rol', () => {
   });
 
   it('solo el dinero caído: los conteos salen y la línea de pesos dice la verdad', async () => {
+    // Fiel a supabase-js: con `error` presente, `data` viaja `null` — nunca
+    // un array. `range()` del mock lo refleja para que esta prueba SÍ pase
+    // por la rama `filasAnticipo === null` de la línea 26.
+    filasAnticipo = null;
     errorAnticipo = { message: 'boom' };
     const r = await armarInforme('t1', 'flota_admin');
     expect(r).toContain('3 viajes en curso');

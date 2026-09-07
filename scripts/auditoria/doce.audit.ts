@@ -6,7 +6,7 @@
 // la máquina ni morir de rate limit. Cada uno escribe UN archivo.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { RUBROS, topeRonda } from './config.audit';
+import { RUBROS } from './config.audit';
 import { correrUnAuditor } from './agente.audit';
 import { leerLedger, totalLedger, resumenLedger } from './ledger.audit';
 import type { ResultadoAuditor } from './agente.audit';

@@ -12,7 +12,7 @@
 //
 // Corre con: npx tsx scripts/mejora-diaria/vigia-produccion.mts (launchd).
 // ═══════════════════════════════════════════════════════════════════════════
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -33,9 +33,17 @@ for (const linea of readFileSync(join(REPO, '.env.local'), 'utf8').split('\n')) 
 const { clasificacionDeGuardia } = await import('../../src/lib/admin/guardia');
 
 type Estado = { vistos: string[]; baseCaidaDesde: string | null };
-const previo: Estado = existsSync(ESTADO)
-  ? JSON.parse(readFileSync(ESTADO, 'utf8'))
-  : { vistos: [], baseCaidaDesde: null };
+// AUDITORÍA CODEQL (js/http-to-file-access): el patrón existsSync→readFileSync
+// es un TOCTOU teórico; se lee con EAFP (try/catch ENOENT) en su lugar.
+function leerEstado(): Estado {
+  try {
+    return JSON.parse(readFileSync(ESTADO, 'utf8'));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { vistos: [], baseCaidaDesde: null };
+    throw e;
+  }
+}
+const previo: Estado = leerEstado();
 
 function whatsapp(texto: string) {
   try {

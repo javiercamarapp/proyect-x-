@@ -21,7 +21,6 @@ describe('fase 2 · siembra + alta + cierre', () => {
     const { crearViaje, crearUnidad } = await import('@/lib/likida/operacion');
     const { addGasto, getGastos, gastoExistePorHash, saveLiquidacion } = await import('@/lib/likida/repo');
     const { subirComprobante } = await import('@/lib/likida/intake/almacen');
-    const { hashImagen } = await import('@/lib/likida/intake/hash');
     const { decidirFoto } = await import('@/lib/likida/intake/decidir');
     const { decidirAcuse } = await import('@/lib/likida/acuse_ticket');
     const { cuadrarDesdeDB, ventanaDesdeDB } = await import('@/lib/likida/cuadre/desde_db');
