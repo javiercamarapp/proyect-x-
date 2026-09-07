@@ -37,6 +37,10 @@ vi.mock('../config', () => ({ getConfig: (...a: unknown[]) => getConfig(...a) })
 vi.mock('../perfil/preguntas', () => ({
   calificaEstimuloPeaje: () => ({ elegible: undefined }),
   facilidad15Declarada: () => null,
+  // AUDITORÍA 28, FIS-A3 (#385): con facilidad15Declarada -> null y el fixture
+  // de getConfig sin facilidadCombustibleEfectivo, la función real devolvería
+  // undefined — se replica aquí en vez de solo silenciar el mock.
+  facilidad15Vigente: () => undefined,
 }));
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('../presupuesto', () => ({ acotada: (q: unknown) => q }));
