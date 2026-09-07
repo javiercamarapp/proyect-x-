@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { VistaRentabilidad } from './vista';
 import type { Cobranza, Rentabilidad } from '@/lib/likida/comercial';
+import { mxn } from '@/lib/formato';
 
 // RUBRO 4 (honestidad de datos en UI), semana 36 — la cartera se pagina
 // (mig. 0152, `getCobranza`), pero el gate del vacío mira la página que
@@ -34,6 +35,37 @@ describe('VistaRentabilidad — la cartera paginada no se confunde con una carte
     // dependen de qué página se pidió: deben seguir en pantalla.
     expect(html).toMatch(/Por cobrar/);
     expect(html).toMatch(/350/);
+  });
+
+  // PRU-M1 (auditoría 28) — la prueba de arriba es CIEGA a la cifra: `/350/`
+  // y `/Por cobrar/` se satisfacen con solo la ETIQUETA o con el renglón de
+  // paginación, así que R2, R3 y R5 (auditoría de mutación, pruebas.md
+  // «Mutaciones») siguen vivas con la suite en verde. Aquí se afirma el
+  // mensaje EXACTO (mata R2 y R3, que cambian la condición o cambian
+  // `cobranza.total` por `facturas.length` en ese mismo texto) y la cifra
+  // FORMATEADA de verdad, no solo su etiqueta (mata R5, que sustituye
+  // `cobranza.porCobrar`/`vencido` por `0` sin que ninguna aserción note la
+  // diferencia).
+  it('página fuera de rango: el texto exacto nombra la cartera completa (350), no la página vacía (mata R2/R3)', () => {
+    const html = renderToStaticMarkup(
+      <VistaRentabilidad rentabilidad={RENTABILIDAD}
+        cobranza={cobranza({ facturas: [], total: 350, pagina: 99, porCobrar: 480_000, vencido: 120_000 })} />,
+    );
+    expect(html).toContain('Esta página no tiene facturas — hay 350 en la cartera completa.');
+    // Ni la tabla vacía ni sus encabezados: el modo de falla que R2 reintroduce
+    // es exactamente "página sin filas ⇒ se pinta la tabla con `<tbody>` vacío".
+    expect(html).not.toContain('<tbody>');
+    expect(html).not.toContain('<th class="px-3 py-2 font-medium">Folio</th>');
+  });
+
+  it('página fuera de rango: "Por cobrar" y "Vencido" muestran la cifra REAL formateada, no un $0.00 (mata R5)', () => {
+    const html = renderToStaticMarkup(
+      <VistaRentabilidad rentabilidad={RENTABILIDAD}
+        cobranza={cobranza({ facturas: [], total: 350, pagina: 99, porCobrar: 480_000, vencido: 120_000 })} />,
+    );
+    expect(html).toContain(mxn(480_000));
+    expect(html).toContain(mxn(120_000));
+    expect(html).not.toMatch(/\$0\.00/);
   });
 
   // AUD28 FE-2 — la regresión que destapó `4de95a0`. Antes de ese commit el
@@ -73,5 +105,13 @@ describe('VistaRentabilidad — la cartera paginada no se confunde con una carte
     );
     expect(html).not.toMatch(/Aún no hay facturas emitidas registradas/);
     expect(html).toMatch(/Cliente X/);
+    // Presencia real de la fila (folio y saldo), no solo del nombre del
+    // cliente, y el renglón de paginación con el rango correcto (mata la
+    // familia de R2/R3: una página con filas reales nunca debe mostrar el
+    // aviso "esta página no tiene facturas").
+    expect(html).toContain('A-1');
+    expect(html).toContain(mxn(1000));
+    expect(html).not.toContain('Esta página no tiene facturas');
+    expect(html).toMatch(/Facturas 1–1 de 1/);
   });
 });
