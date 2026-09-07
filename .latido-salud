@@ -1,93 +1,85 @@
-fecha: 2026-08-31
+fecha: 2026-09-07
 
 ## Bloque 1 — Tests intermitentes
-5/5 corridas válidas, idénticas: 708 archivos, 9995 passed | 1 skipped (9996) cada vez.
-Sin intermitencia, sin roto. Sano.
+5/5 corridas: mismo resultado exacto cada vez — 907 archivos verdes, 1 archivo con
+5 fallas fijas (`scripts/ci/e2e/proxy-local.test.ts`), 12187 passed | 1 skipped (12193)
+total cada corrida. Sin intermitencia.
 
-Nota de metodología: la primera corrida de la sesión fue descartada y repetida — falló
-con `Cannot find package 'zod'` por un `npm update` propio corriendo en paralelo sobre
-`node_modules` (contaminación del entorno, no un flake real del código). Se repitió esa
-corrida después de que el entorno quedó estable; las 5 que cuentan aquí no tuvieron
-ninguna modificación concurrente.
+Las 5 fallas NO son un flake ni un bug de producto: `listen EAFNOSUPPORT: address
+family not supported ::1` — este contenedor de ejecución no tiene stack IPv6
+(`/proc/net/if_inet6` no existe; un `net.createServer().listen({host:'::1'})` a pelo,
+sin ningún código del repo de por medio, falla igual). El mismo commit de master
+(`d56e626`) corrió verde en CI de GitHub Actions (run 34092224808, conclusion:
+success) — el runner de GH sí trae loopback IPv6. No se abre issue: es una diferencia
+de este entorno de ejecución efímero, no una regresión del repo. Se repitió la misma
+verificación después del bump de dependencias del Bloque 2 (ver abajo), mismo resultado.
 
-`node_modules` no estaba instalado al arrancar la sesión (entorno efímero) — se corrió
-`npm install` antes de la primera corrida.
+Estado: SANO (con la salvedad de entorno documentada arriba, no accionable aquí).
 
 ## Bloque 2 — Dependencias
-`npm audit --json`: 0 vulnerabilidades (0 críticas/altas/medias/bajas). `npm outdated
---json`: 13 paquetes — el mismo universo que la semana pasada, con trabajo ya en curso
-sobre casi todos:
+`npm audit --json`: 0 vulnerabilidades. `npm outdated --json`: 15 paquetes,
+clasificados con script determinista (major vs mismo-major, ver
+scripts/clasificar-outdated.mjs* usado ad-hoc en esta corrida):
 
-- MECÁNICO (2): PR #297, rama claude/salud-2026-08-31 (borrador).
-  sharp 0.35.3→0.35.4, zod 4.4.3→4.5.4 — ambos ya dentro del rango declarado en
-  package.json (^0.35.3, ^4.0.0); solo el lockfile quedaba atrás. tsc limpio, eslint
-  limpio (0 errores, 165 warnings preexistentes), vitest 9995/1/9996 verde.
-  Los otros 6 paquetes que subirían de versión con un bump mecánico normal
-  (@sentry/nextjs, eslint-config-next, fast-xml-parser, lucide-react, next, zxing-wasm)
-  YA tienen PR abierto y no se duplicaron: PR #293 (Dependabot, grupo produccion —
-  bloqueado, probablemente por conflicto con #290 sobre zxing-wasm) y PR #294
-  (Dependabot, grupo desarrollo, limpio).
+- MECÁNICO (9 detectados): @eslint/eslintrc, @playwright/test, @supabase/ssr,
+  @supabase/supabase-js, @types/react-dom, eslint-config-next, lucide-react, next,
+  openai, playwright-core (10 en total, ver nota). De estos, 7 ya estaban cubiertos
+  por Dependabot (PR #358 grupo producción, PR #359 grupo desarrollo, ambos abiertos
+  hoy mismo por el cron semanal de dependabot.yml). Los 3 restantes —@supabase/ssr,
+  playwright-core, @playwright/test (versión fija sin caret)— NO estaban en ningún PR
+  abierto: se agruparon en un PR propio.
+  → PR #361 (rama claude/salud-2026-09-07, borrador), verificado con
+    tsc/eslint/vitest después del bump (12187/12193 verde, misma falla de entorno
+    del Bloque 1, no relacionada).
 
-- NECESITA LECTURA (2, ninguno nuevo): issue #55 (openai, mayor) e issue #56
-  (tailwind-merge, mayor) siguen abiertos con los mismos números que la semana pasada
-  (openai ahora 6.49.0→7.8.0 vs 7.5.0 hace una semana; tailwind-merge sin cambio,
-  2.6.1→3.6.0). openai ya tiene PR #291 abierto (cierra #55, sin mergear). No se abrió
-  issue nuevo para ninguno de los dos — ya están rastreados.
+- NECESITA LECTURA: ninguno. 0 CVEs, y ningún major está en dependencia de
+  producción esta semana (los issues #55/#56 de la semana pasada, sobre openai y
+  tailwind-merge, ya no están abiertos — se resolvieron entre entonces y ahora;
+  tailwind-merge ya ni siquiera aparece en package.json).
 
-- RUIDO (3, descartado con razón, sin issue — mismo descarte que la semana pasada):
-  typescript 5.9.3→7.0.2, eslint 9.39.5→10.9.1, @types/node 22.20.1→26.4.0 — los tres
-  son herramientas de desarrollo (no corren en producción), sin CVE asociado. Cualquier
-  incompatibilidad se detecta de inmediato en las puertas de calidad obligatorias
-  (`npx tsc --noEmit`, `npx eslint src/`) antes de que llegue a nadie.
+- RUIDO (5, descartado con razón, sin issue): typescript 5.9.3→7.0.2,
+  eslint 9.39.5→10.10.0, vitest 4.1.11→5.0.0, @vitest/coverage-v8 4.1.11→5.0.0,
+  @types/node 22.20.1→26.4.1. Los cinco son majors en dependencias de DESARROLLO,
+  sin CVE asociado; dependabot.yml ya los excluye de los grupos a propósito, y
+  cualquier ruptura la detiene la puerta obligatoria (tsc/eslint) antes de mergear.
+  Mismo descarte que la semana pasada para 3 de estos 5 (typescript, eslint,
+  @types/node); vitest y @vitest/coverage-v8 son major nuevo esta semana (4.x→5.x),
+  mismo criterio aplicado.
 
 ## Bloque 3 — Deriva de documentación
-Revisados los 4 .md de la raíz: CLAUDE.md, DESIGN.md, MARCA.md, README.md
-(DOCUMENTO_MAESTRO/ROADMAP/DEPLOY/GUIA_BUILD/ESTADO_FINAL/DECISIONES_PENDIENTES no
-existen en este repo; AUDITORIA-PROD-REGLAS.md, que sí existía hace una semana, ya no
-está — no se investigó por qué, no forma parte del alcance de este bloque).
+Revisados los 5 .md de la raíz: CLAUDE.md, CONTEXT.md (nuevo desde la semana
+pasada — glosario comercial, no describe código de este repo, no verificable aquí),
+DESIGN.md, MARCA.md, README.md.
 
-1 hallazgo verificable nuevo:
-- README.md:145 — dice "~225 versioned, tested database migrations". Hoy hay 255
-  archivos en `supabase/migrations/` (el más alto es `0274_...`). La brecha creció
-  ~13% desde que se escribió esa cifra.
+1 hallazgo verificable, mismo síntoma que la semana pasada y creciendo:
+- README.md:145 — dice "~225 versioned, tested database migrations". Hoy hay 325
+  archivos en supabase/migrations/ (324 migraciones + NUMERACION-SALTADA.md), el más
+  alto 0347_revision_duplicados_identidad.sql. La semana pasada eran 255/0274; la
+  brecha con lo escrito casi se duplicó en 7 días de 30 a 100 migraciones de más.
 
-1 hallazgo ya conocido, sin resolver, y que sigue creciendo:
-- CLAUDE.md:85 — dice "~2,880 pruebas (la cifra crece; no la cites de memoria)". Se
-  reportó la semana pasada cuando ya eran 6,435; hoy son 9,996 — más del triple del
-  número escrito. El hedge sigue vigente pero la cifra ancla ya no orienta a nadie.
+1 ya conocido, sin resolver, mencionado solo como seguimiento (no es hallazgo nuevo):
+- CLAUDE.md:85 — "~2,880 pruebas (la cifra crece; no la cites de memoria)". El hedge
+  sigue siendo literalmente cierto, pero la cifra ancla ya no orienta: hoy son 12,193
+  (la semana pasada eran 9,996).
 
-Verificado y SIN drift: los paths de módulos que lista README.md (intake, cuadre,
-fiscal.ts, liquidacion, facturacion, agentes, src/lib/agents, saas, observability — los
-9 existen); docs/conocimiento/ (00-RESUMEN-EJECUTIVO.md, 30-dolores-flota.md,
-34-proceso-liquidacion.md, CONFIGURAR-META.md, fase1/, fiscal/, legal/ — los 7 existen);
-.env.example existe y trae CRON_SECRET; vercel.json sigue con el ignoreCommand
-`[deploy]` en el asunto; los comandos de "Running locally" (npm install, npm run dev,
-npx tsc --noEmit -p ., npx eslint src/, npx vitest run, npm run build) están todos en
-package.json; los paths que citan DESIGN.md/MARCA.md (kit.tsx, charts.tsx, graficas.tsx,
-resumen-visual.tsx, marco.ts, sidebar-nav.tsx, rutas.ts, barra-acciones.tsx,
-visibilidad.ts, globals.css, logo.tsx, layout.tsx) — todos existen; `lib/formato.ts` de
-MARCA.md es `src/app/dashboard/formato.ts`, que reexporta desde `src/lib/formato.ts` a
-propósito (documentado en su propio encabezado) — no es una segunda implementación, no
-es drift. Los .md de MARCA.md sin resolver (agente-guiones.md, banco-de-hooks.md,
-post.md, agente-visuales.md, bitacora-visuales.md) no son de este repo — son artefactos
-de una cola de trabajo de marketing externa (`likida-marketing-cola/...`), no código;
-descartados, no es hallazgo.
+README.md:148 "8,500+ automated tests" NO es hallazgo — sigue siendo cierto como
+cota inferior (12,193 ≥ 8,500).
 
-No se investigó: "60 agentes vivos en producción" y "37 portales, 5 automatizados de
-punta a punta" de README.md. El catálogo de agentes vive en una tabla de base de datos
-(`agente_definicion`, no en código estático) — no verificable sin acceso a producción,
-que este entorno no tiene (ver Bloque 4). El de portales sí tiene soporte en código
-(`portales_vivos.ts:6` confirma "37 portales" del reconocimiento del 28-ago-2026) pero
-no se verificó el conteo de "5 automatizados" con la misma profundidad — se dejó fuera
-por presupuesto de tiempo, no se reporta como hallazgo ni como sano.
+No se investigó (fuera de presupuesto, no verificable sin producción): "60 agentes"
+y "5 automatizados de punta a punta" de los 37 portales en README.md — mismo límite
+que la semana pasada.
 
 ## Bloque 4 — Costo por liquidación
-Saltado. Sin credenciales ni datos de producción en este entorno (sin .env.local, sin
-variables de Supabase/OpenRouter/OpenAI/WhatsApp/CRON_SECRET en el ambiente). No se
-estimó nada.
+Saltado. Sin .env.local ni variables de Supabase/OpenRouter/OpenAI/WhatsApp/
+CRON_SECRET en este entorno efímero. No se estimó nada.
 
 ## Estado: OK
-Los cuatro bloques corrieron. Bloque 4 se saltó por falta de datos, como indica su
-propia regla. 1 PR nuevo (#297, borrador). No se abrieron issues nuevos — los dos
-NECESITA LECTURA de esta semana ya estaban rastreados por #55/#56 de la semana pasada,
-sin cambios que ameriten reabrir la conversación.
+Los cuatro bloques corrieron. Bloque 4 se saltó por falta de datos (esperado).
+1 PR nuevo: #361 (borrador, dependencias mecánicas). No se abrieron issues nuevos.
+1 hallazgo de documentación nuevo (README.md:145), sin acción automática — es un
+conteo de texto, no algo que un PR mecánico deba tocar.
+
+Contexto visible pero fuera de alcance de esta skill: issue #344 "Salud de
+producción en rojo" (abierto 2026-09-06) sigue abierto; PR #360 (auditoria-diaria,
+borrador) ya lo tiene identificado como "producción rota (no por esta rama)". No se
+tocó — pertenece a la rutina de auditoría diaria, no a esta.
