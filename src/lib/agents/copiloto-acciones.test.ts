@@ -122,6 +122,18 @@ describe('ejecutarAccionCopiloto', () => {
     expect(apagar).toHaveBeenCalledWith('agente:cobranza', 'está mandando de más', 'u-javier');
   });
 
+  // TC-M2 (auditoría 28, mitad): el mensaje de éxito de apagar_agente decía
+  // "Se enciende desde Observabilidad (doble confirmación)" — la MISMA
+  // promesa falsa que ADM-13 (auditoría 24) ya había corregido en el campo
+  // `revertir` del catálogo, pero que se quedó viva aquí, por fuera. Ni
+  // /admin/observabilidad ni el ⌘K piden una segunda confirmación para
+  // ENCENDER: solo APAGAR pide motivo.
+  it('el mensaje de éxito NO promete una doble confirmación para encender que no existe', async () => {
+    const r = await ejecutarAccionCopiloto('apagar_agente', { id: 'agente:cobranza', motivo: 'está mandando de más' }, 'u-javier');
+    expect(r.mensaje).not.toMatch(/doble confirmaci[oó]n/i);
+    expect(r.mensaje).toMatch(/un clic/i);
+  });
+
   it('el motivo vacío VIAJA a apagar() — quien lo rebota es la función real, no una copia de su regla', async () => {
     apagar.mockRejectedValueOnce(new DatoInvalido('Apagar exige un motivo.'));
     await expect(ejecutarAccionCopiloto('apagar_agente', { id: 'agente:cobranza' }, 'u-1'))

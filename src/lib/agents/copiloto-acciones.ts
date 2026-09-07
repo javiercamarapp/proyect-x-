@@ -162,7 +162,14 @@ export async function ejecutarAccionCopiloto(
     // anota interruptor.apagado en bitacora_auditoria — una sola bitácora,
     // el mismo mecanismo que /admin/observabilidad y el ⌘K.
     await apagar(id as NombreInterruptor, params.motivo ?? '', userId);
-    return { ok: true, mensaje: `Listo: ${id} quedó apagado y el motivo en la bitácora. Se enciende desde Observabilidad (doble confirmación).` };
+    // TC-M2 (auditoría 28, mitad): este mensaje repetía la MISMA promesa
+    // falsa que el comentario de arriba (ADM-13, auditoría 24) ya corrigió
+    // en `revertir` — "doble confirmación" para encender no existe en
+    // ningún lado del repo: ni /admin/observabilidad ni el ⌘K piden una
+    // segunda confirmación para ENCENDER, solo APAGAR pide motivo. El campo
+    // `revertir` se arregló entonces; esta cadena, que dice lo mismo por
+    // fuera del catálogo, se quedó mintiendo.
+    return { ok: true, mensaje: `Listo: ${id} quedó apagado y el motivo en la bitácora. Se enciende desde Observabilidad o el ⌘K (un clic — el motivo es la única puerta que hoy tiene apagar/encender).` };
   }
 
   if (accionId === 'correr_runner') {
