@@ -42,6 +42,11 @@ function crearBuilder(tabla: string) {
     insert: (fila: Record<string, unknown>) => { l.op = 'insert'; l.fila = fila; return b; },
     update: (fila: Record<string, unknown>) => { l.op = 'update'; l.fila = fila; return b; },
     eq: (c: string, v: unknown) => { l.eq.push([c, v]); return b; },
+    // BE-B1: el claim de `tomarTicket` ancla con `.or(asignado_a.is.null,…)`,
+    // igual que `reclamarIntentos` en facturacion/al_vuelo.ts — no forma
+    // parte del acotamiento por flota que `eq` existe para vigilar, así que
+    // es un no-op que solo mantiene la cadena.
+    or: () => b,
     order: () => b,
     limit: (n: number) => { l.limite = n; return b; },
     maybeSingle: () => b,
@@ -247,7 +252,13 @@ describe('responderTicket', () => {
 });
 
 describe('tomarTicket', () => {
-  beforeEach(() => conTicket());
+  beforeEach(() => {
+    conTicket();
+    // BE-B1: el claim ahora exige `.select()` de vuelta para saber si el
+    // WHERE aplicó. Por omisión simula que SÍ aplicó (la fila ganó el claim);
+    // las pruebas de la carrera lo sobreescriben con `data: []`.
+    respuestas.set('ticket_soporte#update', { data: [{ id: 'tk-1', asignado_a: 'u-likida' }], error: null });
+  });
 
   it('le pone dueño y saca el ticket de «abierto»', async () => {
     const r = await tomarTicket('tk-1', TENANT_A, ADMIN_LIKIDA);
@@ -290,6 +301,33 @@ describe('tomarTicket', () => {
     const r = await tomarTicket('tk-1', TENANT_A, ADMIN_LIKIDA);
     expect(r.asignadoA).toBe('u-likida');
     expect(r.anotado).toBe(false);
+  });
+
+  // BE-B1: el escenario del hallazgo — dos superadmin pulsan «Tomar» con
+  // milisegundos de diferencia. El WHERE (`.or(asignado_a.is.null,…)`) lo
+  // decide la base, no la lectura de arriba: el segundo en LLEGAR AL UPDATE
+  // (no el segundo en pedir el ticket) no encuentra fila que actualizar.
+  it('el claim ancla en el WHERE del UPDATE, no solo en `eq`', async () => {
+    await tomarTicket('tk-1', TENANT_A, ADMIN_LIKIDA);
+    const upd = llamadas.find((l) => l.op === 'update')!;
+    expect(upd.eq).toEqual([['id', 'tk-1'], ['tenant_id', TENANT_A]]);
+  });
+
+  it('doble tomarTicket concurrente: el que pierde la carrera del UPDATE NO reporta éxito y NO anota bitácora', async () => {
+    // El ticket YA está tomado por otra persona para cuando este UPDATE
+    // corre de verdad en la base (la lectura de `exigirTicket` es anterior a
+    // la carrera y no lo sabe todavía) — el WHERE no encuentra fila.
+    conTicket({ asignado_a: 'u-otro-admin', asignado: { nombre: 'Ana Pérez' } });
+    respuestas.set('ticket_soporte#update', { data: [], error: null });
+    await expect(tomarTicket('tk-1', TENANT_A, ADMIN_LIKIDA)).rejects.toThrow(/ya lo tiene Ana Pérez/);
+    expect(anotarBitacora).not.toHaveBeenCalled();
+  });
+
+  it('retomar tu PROPIO ticket (reintento) sí aplica — no es la carrera que se bloquea', async () => {
+    conTicket({ asignado_a: 'u-likida' });
+    respuestas.set('ticket_soporte#update', { data: [{ id: 'tk-1', asignado_a: 'u-likida' }], error: null });
+    const r = await tomarTicket('tk-1', TENANT_A, ADMIN_LIKIDA);
+    expect(r.asignadoA).toBe('u-likida');
   });
 });
 
