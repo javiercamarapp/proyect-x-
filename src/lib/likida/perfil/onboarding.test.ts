@@ -35,6 +35,7 @@ describe('parseOnboarding', () => {
         ingresosMenoresA300M: true,
         parteRelacionada: false,
         dedicacionExclusivaCarga: undefined,
+        regimenSat: undefined,
         regimenElegible: undefined,
         transporteDedicado: undefined,
         hombreCamion: undefined,
@@ -52,7 +53,7 @@ describe('parseOnboarding', () => {
   it('stack y operación se capturan cuando vienen', () => {
     const r = parseOnboarding(fd({
       ingresos: 'mayor', parte: 'si',
-      dedicacion: 'si', regimen: 'no',
+      dedicacion: 'si', regimenSat: '624',
       gps: 'wialon', erp: 'contpaqi', tag: 'iave', monedero: 'ninguno',
       pagoOperador: 'viaje', tanquePropio: 'no',
     }));
@@ -62,6 +63,59 @@ describe('parseOnboarding', () => {
       expect(r.datos.gps).toBe('wialon');
       expect(r.datos.pagoOperador).toBe('viaje');
       expect(r.datos.tanquePropio).toBe(false);
+      expect(r.datos.regimenSat).toBe('624');
+      expect(r.datos.regimenElegible).toBe(true);
+    }
+  });
+});
+
+// AUDITORÍA 28 (FIS-C1, mitad quirúrgica): `regimenElegible` se deriva de la
+// clave SAT real, nunca de un "sí califico" capturado directo — un POST que
+// mande `regimen=si` (el campo viejo, ya no leído) sin una clave válida en
+// `regimenSat` no debe conceder la facilidad.
+describe('parseOnboarding — la elegibilidad del 15% depende de la clave SAT, no de un sí/no', () => {
+  it('clave 601 (general de ley PM) no es elegible', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimenSat: '601' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.datos.regimenSat).toBe('601');
+      expect(r.datos.regimenElegible).toBe(false);
+    }
+  });
+
+  it('clave 612 (personas físicas con actividad empresarial) es elegible', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimenSat: '612' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.datos.regimenElegible).toBe(true);
+  });
+
+  it('clave 624 (coordinados) es elegible', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimenSat: '624' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.datos.regimenElegible).toBe(true);
+  });
+
+  it('clave 626 (RESICO) no es elegible', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimenSat: '626' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.datos.regimenElegible).toBe(false);
+  });
+
+  it('un POST que intente forzar el campo viejo "regimen=si" sin clave válida no concede nada', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimen: 'si' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.datos.regimenSat).toBeUndefined();
+      expect(r.datos.regimenElegible).toBeUndefined();
+    }
+  });
+
+  it('una clave desconocida no inventa una respuesta', () => {
+    const r = parseOnboarding(fd({ ingresos: 'menor', parte: 'no', regimenSat: '999' }));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.datos.regimenSat).toBe('999');
+      expect(r.datos.regimenElegible).toBeUndefined();
     }
   });
 });

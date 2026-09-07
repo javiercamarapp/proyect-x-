@@ -27,6 +27,22 @@ const SI_NO: Opcion[] = [
   { valor: 'no', texto: 'No' },
 ];
 
+// AUDITORÍA 28 (FIS-C1, mitad quirúrgica): antes esto era un selector sí/no
+// que el dueño podía marcar "sí" de buena fe sin saber si su régimen
+// realmente califica — la misma puerta que la entrevista conversacional ya
+// cerró en entrevista.ts (parseRegimenSat + el cálculo de elegible ahí
+// mismo). Aquí se pide la clave SAT real y `regimenElegible` se deriva de
+// ella, nunca de lo que el dueño crea que aplica.
+const REGIMEN_SAT: Opcion[] = [
+  { valor: '', texto: 'Elige una' },
+  { valor: '601', texto: '601 — General de Ley Personas Morales' },
+  { valor: '603', texto: '603 — Personas Morales con Fines no Lucrativos' },
+  { valor: '612', texto: '612 — Personas Físicas con Actividades Empresariales y Profesionales' },
+  { valor: '621', texto: '621 — Incorporación Fiscal' },
+  { valor: '624', texto: '624 — Coordinados' },
+  { valor: '626', texto: '626 — RESICO' },
+];
+
 export function FormaOnboarding({
   accion, gps, erp, tag, monedero, inicial,
 }: {
@@ -77,8 +93,8 @@ export function FormaOnboarding({
               sin serlo. */}
           <Selector nombre="dedicacion" etiqueta="¿Dedicación exclusiva a transporte de carga federal / pasaje / turismo?"
             opciones={SI_NO} ayuda="RFA 2026 regla 2.9: exige carga FEDERAL específicamente — la carga local/municipal no califica. Válvula del 15% de combustible en efectivo y del estímulo de peaje." />
-          <Selector nombre="regimen" etiqueta="¿Régimen fiscal elegible para la facilidad del 15%?"
-            opciones={SI_NO} ayuda="RESICO y el régimen general de PM quedan fuera. Si no estás seguro, déjalo en blanco." />
+          <Selector nombre="regimenSat" etiqueta="Régimen fiscal (clave SAT c_RegimenFiscal)"
+            opciones={REGIMEN_SAT} ayuda="La facilidad del 15% en efectivo solo abre con 612 o 624 — se calcula de la clave, no de si crees que calificas. Si no estás seguro, déjalo en blanco." />
           <Selector nombre="dedicado" etiqueta="¿Hacen transporte dedicado?"
             opciones={SI_NO} ayuda="La RMF 2.7.7.1.3 invierte los roles del complemento Carta Porte." />
           <Selector nombre="hombreCamion" etiqueta="¿Hay hombre-camión (el dueño maneja)?"

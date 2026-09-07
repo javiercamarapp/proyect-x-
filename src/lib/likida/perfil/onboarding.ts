@@ -8,6 +8,19 @@ export function siNo(v: string): boolean | undefined {
   return undefined;
 }
 
+/** AUDITORÍA 28 (FIS-C1, mitad quirúrgica): las mismas 6 claves que
+ *  `entrevista.ts` acepta para `regimenSat` — la elegibilidad del 15% se
+ *  deriva de la clave real, nunca de un "sí califico" capturado a mano. */
+const CLAVES_REGIMEN_SAT = new Set(['601', '603', '612', '621', '624', '626']);
+
+/** Mismo cálculo que `entrevista.ts:704` (`case 'regimenSat'`): solo 612
+ *  (Personas Físicas con Actividades Empresariales) y 624 (Coordinados)
+ *  abren la facilidad del 15% en efectivo. */
+export function regimenElegibleDeClave(clave: string): boolean | undefined {
+  if (!CLAVES_REGIMEN_SAT.has(clave)) return undefined;
+  return clave === '612' || clave === '624';
+}
+
 export function parseOnboarding(fd: {
   get(name: string): FormDataEntryValue | null;
 }): { ok: true; datos: DatosOnboarding } | { ok: false; error: string } {
@@ -28,13 +41,23 @@ export function parseOnboarding(fd: {
     return t === '' ? undefined : t;
   };
 
+  // AUDITORÍA 28 (FIS-C1, mitad quirúrgica): antes `regimenElegible` venía
+  // directo de un select sí/no (`fd.get('regimen')`) — un dueño podía marcar
+  // "sí" sin que su régimen real calificara. Ahora se captura la clave SAT
+  // (`regimenSat`, mismo campo y mismas opciones que la entrevista
+  // conversacional) y `regimenElegible` se DERIVA de ella; un POST que mande
+  // `regimen=si` sin una clave válida en `regimenSat` ya no concede nada.
+  const regimenSat = limpio('regimenSat');
+  const regimenElegible = regimenSat ? regimenElegibleDeClave(regimenSat) : undefined;
+
   return {
     ok: true,
     datos: {
       ingresosMenoresA300M: ingresos === 'menor',
       parteRelacionada: parte === 'si',
       dedicacionExclusivaCarga: siNo(String(fd.get('dedicacion') ?? '')),
-      regimenElegible: siNo(String(fd.get('regimen') ?? '')),
+      regimenSat,
+      regimenElegible,
       transporteDedicado: siNo(String(fd.get('dedicado') ?? '')),
       hombreCamion: siNo(String(fd.get('hombreCamion') ?? '')),
       gps: limpio('gps'),
