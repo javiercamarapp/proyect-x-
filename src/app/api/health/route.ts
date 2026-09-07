@@ -170,9 +170,11 @@ export async function GET(req: NextRequest) {
   // con `atras > 0`.
   const migracion = db === 'ok'
     ? await cotejarMigracion(() => acotada(supabaseAdmin().rpc('migraciones_aplicadas'), 'health.migracion'))
-    : { base: null, codigo: null, atras: null, aplicados: null, motivo: 'base caída: no se cotejó' };
-  if (migracion.atras !== 0) {
-    logger.error('health.migracion', { base: migracion.base, codigo: migracion.codigo, atras: migracion.atras, motivo: migracion.motivo });
+    : { base: null, codigo: null, atras: null, adelante: null, aplicados: null, motivo: 'base caída: no se cotejó' };
+  // AUDITORÍA 28 (OP-C1): la deriva cuenta en LOS DOS SENTIDOS. `adelante > 0`
+  // es el esquema aplicado sin publicar el código, que antes se leía como sano.
+  if (migracion.atras !== 0 || migracion.adelante !== 0) {
+    logger.error('health.migracion', { base: migracion.base, codigo: migracion.codigo, atras: migracion.atras, adelante: migracion.adelante, motivo: migracion.motivo });
   }
 
   // OP-C1: `config_ausente` NO tumba el status global. No es benevolencia: es
@@ -182,11 +184,11 @@ export async function GET(req: NextRequest) {
   // `checks.crons` para quien quiera exigirlo.
   const status: 'ok' | 'degraded' | 'fail' =
     db !== 'ok' ? 'fail'
-      : cronCheck === 'degraded' || cronCheck === 'unknown' || migracion.atras !== 0 ? 'degraded'
+      : cronCheck === 'degraded' || cronCheck === 'unknown' || migracion.atras !== 0 || migracion.adelante !== 0 ? 'degraded'
         : 'ok';
   // Métrica de baja cardinalidad para logs/drains. El detalle de qué cron fue
   // vencido queda en el log privado y no se publica en este endpoint.
-  logger.info('metric.health', { status, db, cron: cronCheck, migracionAtras: migracion.atras, ms: Date.now() - iniciado });
+  logger.info('metric.health', { status, db, cron: cronCheck, migracionAtras: migracion.atras, migracionAdelante: migracion.adelante, ms: Date.now() - iniciado });
   const cuerpo = {
     ok: status === 'ok',
     status,

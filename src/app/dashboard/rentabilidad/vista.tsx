@@ -37,13 +37,18 @@ export function VistaRentabilidad({
   const sinNada = rentabilidad !== null && cobranza !== null
     && rentabilidad.viajesConIngreso === 0 && cobranza.total === 0;
 
-  // El rango de la página, para decirlo en palabras. `desde` es 0 cuando la
-  // página quedó vacía (alguien tecleó `?p=99`): entonces el renglón dice
-  // "0–0 de N", que es la verdad, en vez de un rango inventado.
+  // El rango de la página, para decirlo en palabras. `desde` y `hasta` son lo
+  // que se IMPRIME: los dos son 0 cuando la página quedó vacía (alguien tecleó
+  // `?p=99`), y entonces el renglón dice "0–0 de N", que es la verdad, en vez
+  // de un rango inventado — `(99−1)·100 + 0` imprimía "0–9,800 de 350".
+  // `hayMas` NO se calcula sobre lo impreso sino sobre el desplazamiento real
+  // (`consumidas`), para no ofrecer "Siguientes" hacia otra página vacía.
+  const consumidas = cobranza
+    ? (cobranza.pagina - 1) * cobranza.porPagina + cobranza.facturas.length : 0;
   const desde = cobranza && cobranza.facturas.length
     ? (cobranza.pagina - 1) * cobranza.porPagina + 1 : 0;
-  const hasta = cobranza ? (cobranza.pagina - 1) * cobranza.porPagina + cobranza.facturas.length : 0;
-  const hayMas = cobranza ? hasta < cobranza.total : false;
+  const hasta = cobranza && cobranza.facturas.length ? consumidas : 0;
+  const hayMas = cobranza ? consumidas < cobranza.total : false;
 
   return (
     <main className="h-full">

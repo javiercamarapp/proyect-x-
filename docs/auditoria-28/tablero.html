@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auditoría 28 — Likida</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --surface:#ffffff; --ink:#1a1a19; --ink2:#4a4a47; --ink3:#75736e;
+    --line:#e3e1dc; --line2:#cfccc5;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --accent:#3d6fd6;
+  }
+  :root:not([data-theme="light"]){ @media (prefers-color-scheme: dark){
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:28px 24px 56px;}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13px;margin-bottom:20px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);
+     margin:30px 0 11px;font-weight:600}
+
+  .gate{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .chip{background:var(--surface);border:1px solid var(--line);border-radius:7px;
+        padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .chip b{font-weight:600}
+  .chip span{color:var(--ink3)}
+  .note{font-size:12.5px;color:var(--ink2);background:var(--surface);
+        border:1px solid var(--line);border-left:3px solid var(--warn);
+        border-radius:0 7px 7px 0;padding:9px 13px;margin-top:8px}
+  .note.rojo{border-left-color:var(--crit)}
+
+  .hero{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;margin-top:18px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .glob{min-width:190px}
+  .glob .n{font-size:44px;font-weight:650;letter-spacing:-.03em;line-height:1.05}
+  .glob .d{font-size:14px;color:var(--crit);font-weight:600;margin-top:2px}
+  .glob .l{font-size:12px;color:var(--ink3);margin-top:5px}
+  .spark{flex:1;min-width:330px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:11px}
+  .r{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+     padding:13px 15px;border-left-width:4px;border-left-style:solid}
+  .r.g3,.r.g4{border-left-color:var(--crit)}
+  .r.g5,.r.g6{border-left-color:var(--warn)}
+  .r.g7{border-left-color:var(--good)}
+  .rh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .rn{font-weight:600;font-size:13.5px}
+  .rg{font-size:25px;font-weight:650;letter-spacing:-.02em;white-space:nowrap}
+  .rd{font-size:12px;font-weight:600}
+  .rd.baja{color:var(--crit)} .rd.igual{color:var(--ink3)}
+  .rr{font-size:12.5px;color:var(--ink2);margin-top:6px}
+  .rsev{font-size:11.5px;color:var(--ink3);margin-top:7px;font-variant-numeric:tabular-nums}
+  .rsev b{color:var(--crit)}
+
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:600;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
+       border:1px solid var(--line);border-radius:4px;padding:1px 4px}
+  .badge{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:20px;
+         border:1px solid var(--line2);color:var(--ink2);white-space:nowrap}
+  .badge.ok{color:var(--good);border-color:var(--good)}
+  .badge.crit{color:var(--crit);border-color:var(--crit)}
+  .badge.reinc{color:var(--serious);border-color:var(--serious)}
+  .foot{margin-top:28px;font-size:12px;color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Auditoría 28 — Likida</h1>
+  <div class="sub">7-sep-2026 · ronda COMPLETA, 12 rubros · rama <code>claude/auditoria-28</code> sobre <code>d56e626</code></div>
+
+  <!-- ═══ 1. QUÉ ESTÁ ROJO AHORA ═══ -->
+  <h2>Compuerta</h2>
+  <div class="gate">
+    <div class="chip"><span class="dot" style="background:var(--warn)"></span><b>npm test</b> <span>12,191 pasan · 5 fallan · 1 saltada (12,197)</span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span><b>tsc --noEmit</b> <span>exit 0</span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span><b>lint</b> <span>0 errores · 156 avisos</span></div>
+    <div class="chip"><span class="dot" style="background:var(--ink3)"></span><b>build</b> <span>no se corre en la nube (sin credenciales)</span></div>
+  </div>
+  <div class="note">Los <b>5 fallos son INFRA, no código</b>: los mismos 5 de la ronda 27, todos en
+    <code>scripts/ci/e2e/proxy-local.test.ts</code> con <code>listen EAFNOSUPPORT ::1</code> — el contenedor
+    de la nube no tiene loopback IPv6 y la prueba exige <code>::1</code>. La línea base al arrancar era
+    12,187/12,193; los <b>+4</b> son las pruebas nuevas de los dos arreglos de esta ronda.</div>
+  <div class="note rojo"><b>Producción está rota ahora mismo, y no por esta rama.</b>
+    <code>d56e626</code> aplicó las migraciones 0304-0347 y Vercel <b>no publicó el código</b>:
+    producción corre <code>4f94490</code> (3-sep, 231 commits atrás) contra el esquema <code>0347</code>.
+    La migración 0317 dropeó la firma de <code>gastos_fiscales_agregados_tenant</code> que ese build llama.
+    <code>salud-produccion</code> está en rojo (corrida 34111978075) con el issue <b>#344</b> abierto.
+    Se arregló la mitad que vive en el repo (el health ya lo denuncia, <code>ddf0131</code>);
+    <b>publicar es una mano humana</b> — Redeploy en el panel de Vercel.</div>
+
+  <!-- ═══ 2. LA GLOBAL ═══ -->
+  <div class="hero">
+    <div class="card glob">
+      <div class="n">4.4</div>
+      <div class="d">▼ 0.9 &nbsp;<span style="color:var(--ink3);font-weight:400">(antes 5.3)</span></div>
+      <div class="l">media de los 12 · 53/12 = 4.42</div>
+    </div>
+    <div class="card spark">
+      <div style="font-size:12px;color:var(--ink3);margin-bottom:8px">Serie histórica de la global</div>
+      <svg viewBox="0 0 600 130" width="100%" height="130" role="img"
+           aria-label="Global por ronda: 6.2 en la 24, 5.3 en la 25, 6.0 en la 26, 5.8 en la continuación de la 26, 5.3 en la 27, 4.4 en la 28.">
+        <line x1="40" y1="10" x2="40" y2="100" stroke="var(--line2)" stroke-width="1"/>
+        <line x1="40" y1="100" x2="590" y2="100" stroke="var(--line2)" stroke-width="1"/>
+        <text x="30" y="14" font-size="10" fill="var(--ink3)" text-anchor="end">7</text>
+        <text x="30" y="104" font-size="10" fill="var(--ink3)" text-anchor="end">4</text>
+        <!-- y = 100 - (v-4)*30 -->
+        <polyline fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"
+                  points="80,34 182,61 284,40 386,46 488,61 590,88"/>
+        <circle cx="80"  cy="34" r="4" fill="var(--accent)"/>
+        <circle cx="182" cy="61" r="4" fill="var(--accent)"/>
+        <circle cx="284" cy="40" r="4" fill="var(--accent)"/>
+        <circle cx="386" cy="46" r="4" fill="var(--accent)"/>
+        <circle cx="488" cy="61" r="4" fill="var(--accent)"/>
+        <circle cx="590" cy="88" r="5" fill="var(--crit)"/>
+        <text x="80"  y="24" font-size="11" fill="var(--ink2)" text-anchor="middle">6.2</text>
+        <text x="182" y="51" font-size="11" fill="var(--ink2)" text-anchor="middle">5.3</text>
+        <text x="284" y="30" font-size="11" fill="var(--ink2)" text-anchor="middle">6.0</text>
+        <text x="386" y="36" font-size="11" fill="var(--ink2)" text-anchor="middle">5.8</text>
+        <text x="488" y="51" font-size="11" fill="var(--ink2)" text-anchor="middle">5.3</text>
+        <text x="590" y="78" font-size="11" fill="var(--crit)" font-weight="600" text-anchor="middle">4.4</text>
+        <text x="80"  y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">24</text>
+        <text x="182" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">25</text>
+        <text x="284" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">26</text>
+        <text x="386" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">26c</text>
+        <text x="488" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">27</text>
+        <text x="590" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">28</text>
+      </svg>
+    </div>
+  </div>
+  <div class="note"><b>Léela con reserva.</b> Diez de los doce rubros bajaron exactamente 1, casi todos
+    citando «mirada más profunda» sobre código que <b>no cambió</b> — la ventana fueron 3 commits.
+    Puede ser una corrección real de notas infladas (es lo que pasó con <i>pruebas</i> en la 27), o
+    puede ser el sesgo del encargo: se les dijo que ésa era la vía honesta de mover la nota.
+    <b>La uniformidad del −1 es sospechosa y se anota como tal</b>; lo que sí aguanta verificación
+    son los hallazgos, no el tamaño del escalón.</div>
+
+  <!-- ═══ 3. LOS 12 RUBROS ═══ -->
+  <h2>Los 12 rubros — el color es la nota, nunca el delta</h2>
+  <div class="grid">
+    <div class="r g4"><div class="rh"><span class="rn">Frontend</span><span class="rg">4 <span class="rd igual">=</span></span></div>
+      <div class="rr">El despacho sigue sin ofrecer el Anticipo: el viaje nace en 0 y la firma presenta ese cero como medición.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 2 alto · 4 medio · 3 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Backend y API</span><span class="rg">4 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">El PDF de una liquidación RECHAZADA se descarga idéntico al de una vigente.</div>
+      <div class="rsev">0 crít · 4 alto · 1 medio · 1 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Sistema agéntico</span><span class="rg">4 <span class="rd baja">▼1</span></span></div>
+      <div class="rr"><code>ingerirRep</code> sin reloj: el REP muere a la mitad, media factura queda sellada como pagada y nadie avisa.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 5 alto · 3 medio · 3 bajo</div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Tool calling</span><span class="rg">5 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Tercera ronda sin recibir una línea: 33 tools, 53 archivos y 321 pruebas idénticos.</div>
+      <div class="rsev">0 crít · 3 alto · 4 medio · 7 bajo</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Seguridad</span><span class="rg">7 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Las 67 rutas de <code>/api</code> quedan fuera del matcher del proxy: ahí las capas son una sola.</div>
+      <div class="rsev">0 crít · 1 alto · 3 medio · 1 bajo</div></div>
+
+    <div class="r g3"><div class="rh"><span class="rn">Cumplimiento fiscal</span><span class="rg">3 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Un «sí califico» tecleado en el alta le gana a la clave del SAT y concede el 15% a quien la norma se lo niega.</div>
+      <div class="rsev"><b>2 CRÍT</b> · 3 alto · 3 medio · 2 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Cumplimiento legal</span><span class="rg">4 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Toda solicitud ARCO del canal de texto nace con <code>operador_id NULL</code>, y las dos RPC ejecutoras rechazan esa fila.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 6 alto · 5 medio · 1 bajo</div></div>
+
+    <div class="r g3"><div class="rh"><span class="rn">Arquitectura</span><span class="rg">3 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Un ajuste firmado inhabilita el export contable del periodo completo: 409 para las 40 liquidaciones del mes. 6ª aparición.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 5 alto · 3 medio · 5 bajo</div></div>
+
+    <div class="r g6"><div class="rh"><span class="rn">Pruebas</span><span class="rg">6 <span class="rd igual">=</span></span></div>
+      <div class="rr">15 mutaciones medidas sobre la superficie nueva: <b>5 muertas, 10 sobrevivientes</b>.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 3 alto · 6 medio · 4 bajo</div></div>
+
+    <div class="r g3"><div class="rh"><span class="rn">Operabilidad y DX</span><span class="rg">3 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">Producción con esquema nuevo y código viejo; el panel fiscal llama una función que la 0317 ya dropeó.</div>
+      <div class="rsev"><b>3 CRÍT</b> · 4 alto · 5 medio · 0 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Rendimiento y costo</span><span class="rg">4 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">El techo diario de IA cae al piso de $5.00 para los tres planes del catálogo — la derivación es código muerto.</div>
+      <div class="rsev"><b>1 CRÍT</b> · 5 alto · 5 medio · 1 bajo</div></div>
+
+    <div class="r g6"><div class="rh"><span class="rn">Modelo de datos</span><span class="rg">6 <span class="rd baja">▼1</span></span></div>
+      <div class="rr">El 7 anterior se apoyaba en «no se pudo escribir un escenario con dinero»; resultó falsa.</div>
+      <div class="rsev">0 crít · 1 alto · 4 medio · 3 bajo</div></div>
+  </div>
+
+  <!-- ═══ 4. LO ARREGLADO ═══ -->
+  <h2>Arreglado esta ronda — con prueba que lo reproduce</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>ID</th><th>Sha</th><th>Qué era</th><th>Prueba</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="badge crit">FE-2 ALTO</span></td>
+        <td><code>a28c7bb</code></td>
+        <td><b>Regresión de <code>4de95a0</code>, la única del código nuevo de la ventana.</b> Al arreglar el vacío
+            de la cartera se destapó el renglón de paginación, que antes era inalcanzable:
+            <code>hasta = (99−1)·100 + 0</code> imprimía <b>«Facturas 0–9,800 de 350»</b> sobre una cartera de 350.
+            El comentario de <code>vista.tsx:40-42</code> ya describía el comportamiento correcto; el código no lo
+            implementaba. Rompe la regla que define al producto: nunca inventar una cifra.</td>
+        <td>Rojo medido (<code>Facturas 0–9,800 de 350</code> literal en el render) → verde. <code>hayMas</code> se
+            dejó sobre el desplazamiento real para no ofrecer «Siguientes» hacia otra página vacía.</td>
+      </tr>
+      <tr>
+        <td><span class="badge crit">OP-C1 CRÍTICO</span></td>
+        <td><code>ddf0131</code></td>
+        <td><b>La deriva inversa era insatisfacible por construcción.</b> <code>cotejar()</code> clampaba con
+            <code>Math.max(0, codigo − base)</code>, así que «el esquema va 44 migraciones adelante del código»
+            se reportaba con los valores exactos de «todo al día» (<code>atras: 0</code>, sin motivo,
+            <code>status: ok</code>, HTTP 200). Es lo que pasó el 7-sep con <code>d56e626</code>.</td>
+        <td>Rojo medido (<code>cotejar('0347','0303')</code> indistinguible de <code>cotejar('0303','0303')</code>)
+            → verde. <code>atras</code> conserva su semántica: <code>compuerta-deploy.mjs</code> y
+            <code>production-candidate.mjs</code> la siguen leyendo igual.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <!-- ═══ 5. VERIFICADO A MANO ═══ -->
+  <h2>Verificado por el orquestador, abriendo el archivo</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Qué</th><th>Veredicto</th></tr></thead>
+    <tbody>
+      <tr><td><b>OP-C1</b> — el <code>DROP</code> de la firma de 7 args en <code>0317_…:43</code>, la firma nueva de 13 en <code>:45-58</code>, y el clamp en <code>health/migracion.ts:100</code></td><td><span class="badge crit">CONFIRMADO</span> y arreglada la mitad que vive en el repo</td></tr>
+      <tr><td><b>Producción en rojo</b> — corrida <code>34111978075</code> de <code>salud-produccion</code>, issue <b>#344</b> abierto («Ya hay un issue abierto (#344); no se duplica»)</td><td><span class="badge crit">CONFIRMADO</span> contra la API de GitHub</td></tr>
+      <tr><td><b>OP-C2 de la ronda 27</b> (<code>5569437</code>, el issue que se cerraba solo en cada push) — ¿cerró de verdad?</td><td><span class="badge ok">SÍ, AGUANTA</span> — #344 sobrevivió tres corridas por push en verde del 7-sep</td></tr>
+      <tr><td><b>FE-2</b> — <code>hasta</code> sin el portón que <code>desde</code> sí tiene, <code>vista.tsx:45</code></td><td><span class="badge crit">CONFIRMADO</span> y arreglado</td></tr>
+      <tr><td><b>FIS-C1</b> — <code>desde_db.ts:106-113</code> da precedencia al perfil declarado sobre <code>administracion.ts:198</code>, que sí deriva de la clave del SAT</td><td><span class="badge crit">CONFIRMADO</span> · <b>propuesto</b>, no arreglado (ver abajo)</td></tr>
+      <tr><td><b>AG-C1 / REN-C1</b> — <code>intake/rep.ts:190-241</code>: bucle anidado con llamadas a la base y <b>cero</b> referencias a reloj o límite</td><td><span class="badge crit">CONFIRMADO</span> · dos auditores independientes</td></tr>
+      <tr><td><b>OP-C4</b> — <code>staging-recovery.mjs:121</code> fija el inventario a <code>324/'0347'</code></td><td><span class="badge reinc">SIGUE VIVO</span> — bloquea cualquier arreglo que exija migración</td></tr>
+    </tbody>
+  </table></div>
+
+  <!-- ═══ 6. PENDIENTES ═══ -->
+  <h2>Los CRÍTICOS que no se arreglaron — con la razón, no en silencio</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>ID</th><th>Qué es</th><th>Por qué no se arregló</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge crit">FIS-C1</span></td>
+        <td>El <code>&lt;select&gt;</code> sí/no del alta le gana a la clave del SAT: una S.A. de C.V. ordinaria (clave 601) que conteste «sí» queda declarada elegible al 15%. Medido: el mismo CFDI de diésel pasa de <code>deducible $0</code> a <code>deducible $11,600 · IVA $1,600</code>.</td>
+        <td><b>Exige una decisión de producto</b>, no un parche: cuál fuente gana cuando la declarada y la derivada se contradicen. <code>facilidad15Declarada()</code> devuelve booleanos sin la clave, así que el arreglo obliga a plomear <code>regimenFiscal</code> hasta la precedencia. Y el comentario de <code>desde_db.ts:104-105</code> documenta la precedencia actual como <b>deliberada</b>. Cambiarla de madrugada, sola, en la ruta del dinero, es justo lo que esta rutina existe para no hacer.</td></tr>
+      <tr><td><span class="badge crit">OP-C1b</span></td>
+        <td>Publicar el código que ya tiene su esquema aplicado.</td>
+        <td><b>Mano humana.</b> La compuerta dejó pasar (<code>compuerta: CONSTRUIR</code>); el bloqueo está del lado de Vercel, que no publicó en 20 sondeos ni 3 h 47 min después. Redeploy en el panel.</td></tr>
+      <tr><td><span class="badge crit">FIS-C2</span></td>
+        <td>La COPIA de un comprobante entra al cubo del 15% por la RPC y no por el motor (<code>engine.ts:662/687</code> vs <code>0345:19-24</code>). REINCIDENTE.</td>
+        <td>Exigiría una <b>sexta</b> implementación del mismo predicado dentro de SQL — y una migración nueva, que <code>staging-recovery.mjs:121</code> bloquea (OP-C4).</td></tr>
+      <tr><td><span class="badge crit">AG-C1 / REN-C1</span></td>
+        <td><code>ingerirRep</code> sin reloj ni tope de doctos. REINCIDENTE, dos auditores.</td>
+        <td>Confirmado, pero el arreglo es un rediseño del ciclo de ingesta (reanudable y con aviso al emisor), no un cambio quirúrgico. Se propone.</td></tr>
+      <tr><td><span class="badge crit">ARQ-C1</span></td>
+        <td>Un ajuste firmado inhabilita el export contable del periodo completo. <b>6ª aparición</b> desde la 24.</td>
+        <td>Decisión de producto sin tomar («qué es la póliza tras <code>ajustar</code>»), explícitamente marcada así desde la 24.</td></tr>
+      <tr><td><span class="badge crit">LEG-C1</span></td>
+        <td>Toda solicitud ARCO del canal de texto nace con <code>operador_id NULL</code> y las dos RPC ejecutoras rechazan esa fila: la cancelación es imposible por el camino que el aviso publica.</td>
+        <td>El arreglo toca dos RPC y el registro de la solicitud — migración nueva, bloqueada por OP-C4. Se propone con su escenario.</td></tr>
+      <tr><td><span class="badge crit">FE-1</span></td>
+        <td>El despacho no ofrece el Anticipo cuando lo captura un <code>encargado</code>; el viaje nace en 0 y la firma presenta ese cero como medición. REINCIDENTE.</td>
+        <td>Decisión de producto: quién captura el anticipo si el jefe de tráfico no ve dinero, y cómo se representa «no capturado» en una columna <code>NOT NULL DEFAULT 0</code>.</td></tr>
+      <tr><td><span class="badge crit">PRU-C1</span></td>
+        <td>Tres capas de pruebas verdes sobre <code>ocr_extra.renglones</code>, una entrada que producción no puede producir desde <code>b349b724</code>. REINCIDENTE.</td>
+        <td>Borrar las pruebas no es el arreglo; el arreglo es decidir si <code>engine.ts:974</code> debe seguir leyendo ese campo. Se propone.</td></tr>
+      <tr><td><span class="badge crit">OP-C3</span></td>
+        <td>Toda la operación depende de GitHub Actions, sin monitor externo. REINCIDENTE.</td>
+        <td>Exige cablear un servicio de fuera; no cabe en un commit del repo.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note"><b>130 hallazgos en total</b> (11 críticos · 42 altos · 46 medios · 31 bajos), de los cuales
+    una mayoría son REINCIDENTES por construcción: la ventana fueron 3 commits, así que el código de nueve
+    rubros no recibió una sola línea. <b>El orquestador verificó a mano los 7 de la tabla de arriba</b>, no
+    los 130 — y eso se dice en vez de insinuar lo contrario.</div>
+
+  <div class="foot">
+    Ronda 28 · 12/12 rubros entregados · 2 arreglos retenidos, 0 revertidos · 1 vuelta de 3 sin gastar ·
+    compuerta al cerrar: <code>npm test</code> 12,191/12,197 (5 INFRA) · <code>tsc</code> exit 0 · <code>lint</code> 0 errores.
+  </div>
+</div>
+</body>
+</html>

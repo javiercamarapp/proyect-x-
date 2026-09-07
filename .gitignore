@@ -74,3 +74,9 @@ supabase/.temp/
 pruebas-navegador/.estado/
 pruebas-navegador/.reporte/
 pruebas-navegador/.artefactos/
+
+# Bytecode de los 9 scripts Python del repo (scripts/mejora-diaria/,
+# scripts/ci/innovativos-capacidad/). Correr cualquiera deja un __pycache__
+# sin rastrear; sin esta regla, acaba commiteado como .pyc.
+__pycache__/
+*.py[cod]
