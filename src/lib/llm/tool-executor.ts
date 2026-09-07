@@ -382,7 +382,13 @@ export function makeExecutor(ctx: ToolContext) {
   //
   // Registrando la promesa ANTES del await, el segundo llamador se engancha a la
   // MISMA ejecución. No hay ventana: entre el `get` y el `set` no hay await.
-  const mutacionesHechas = new Map<string, Promise<ToolExecResult>>();
+  // La llave del mapa es un objeto por llamada (no la promesa misma): comparar
+  // la promesa sin `await` en la línea de abajo activaba una alerta de CodeQL
+  // (js/redundant-await-comparison) aunque la comparación es a propósito —
+  // identidad de LA EJECUCIÓN, nunca de su valor resuelto. Un objeto fresco
+  // por llamada preserva exactamente la misma semántica de identidad sin ese
+  // patrón.
+  const mutacionesHechas = new Map<string, { p: Promise<ToolExecResult> }>();
   return async (name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecResult> => {
     if (REGISTRY.get(name)?.isMutation) {
       // LA LLAVE ES EL NOMBRE, no los args. Ninguna tool de Likida tiene
@@ -395,16 +401,16 @@ export function makeExecutor(ctx: ToolContext) {
       // línea.
       const key = name;
       const cache = mutacionesHechas.get(key);
-      if (cache) { logger.warn('tool.mutation_dedup', { name }); return cache; }
+      if (cache) { logger.warn('tool.mutation_dedup', { name }); return cache.p; }
       // `executeTool` nunca rechaza (captura y devuelve `success:false`), así que
       // esta promesa no puede quedar como rejection sin manejar.
-      const p = executeTool(name, args, ctx, signal);
-      mutacionesHechas.set(key, p);
-      const res = await p;
+      const entrada = { p: executeTool(name, args, ctx, signal) };
+      mutacionesHechas.set(key, entrada);
+      const res = await entrada.p;
       // Un FALLO no se queda cacheado: un blip de un segundo no puede convertirse
-      // en un fallo permanente del turno. Se compara la promesa antes de borrar
+      // en un fallo permanente del turno. Se compara la entrada antes de borrar
       // para no tirar el reintento de otro llamador que ya ocupó la llave.
-      if (!res.success && mutacionesHechas.get(key) === p) mutacionesHechas.delete(key);
+      if (!res.success && mutacionesHechas.get(key) === entrada) mutacionesHechas.delete(key);
       return res;
     }
     return executeTool(name, args, ctx, signal);
