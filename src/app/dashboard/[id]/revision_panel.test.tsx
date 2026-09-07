@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PanelRevision } from './revision-panel';
 import type { RevisionDetalle } from '@/lib/likida/revision';
@@ -73,5 +74,37 @@ describe('PanelRevision', () => {
     const html = pintar(estado(), null);
     expect(html).not.toContain('name="accion"');
     expect(html).toContain('Tu rol no firma liquidaciones');
+  });
+
+  // ── FE-M3 (auditoría 28) ──────────────────────────────────────────────
+  // Los tres radios de la firma son `<input class="sr-only">`: sin gancho de
+  // foco visible, `→`/Tab mueven la selección a ciegas y Enter firma la
+  // acción equivocada — el único control irreversible del producto (WCAG
+  // 2.4.7). El arreglo es una regla CSS aditiva en globals.css, así que la
+  // prueba tiene DOS mitades: el markup sigue teniendo el gancho que la
+  // regla necesita (input.sr-only hijo DIRECTO del label), y la regla existe.
+  it('FE-M3: el radio sr-only es hijo directo del label (gancho del foco visible)', () => {
+    const html = pintar(estado());
+    // Si el input dejara de ser el primer hijo del <label>, el selector
+    // `label:has(> input.sr-only:focus-visible)` de globals.css deja de
+    // aplicar EN SILENCIO — de ahí la aserción sobre el orden exacto.
+    expect(html).toMatch(/<label[^>]*>\s*<input type="radio"[^>]*class="sr-only"/);
+  });
+
+  it('FE-M3: globals.css pinta el foco visible del label cuando el radio interno lo tiene', () => {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- lee el globals.css HERMANO de esta prueba, resuelto de import.meta.url en tiempo de prueba; no viene de entrada de usuario.
+    const css = readFileSync(new URL('../../globals.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/label:has\(>\s*input\.sr-only:focus-visible\)\s*\{[^}]*outline:\s*3px solid/);
+  });
+
+  // ── FE-B3 (auditoría 28) ──────────────────────────────────────────────
+  // El comentario de cabecera decía de AJUSTAR «NO vuelve a cuadrar», pero
+  // `revision.ts` SÍ recalcula el cuadre y regenera el PDF (mig. 0306) —el
+  // comentario documentaba lo contrario del código.
+  it('FE-B3: el comentario de cabecera ya no dice que Ajustar no vuelve a cuadrar', () => {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- lee el revision-panel.tsx HERMANO de esta prueba, resuelto de import.meta.url en tiempo de prueba; no viene de entrada de usuario.
+    const fuente = readFileSync(new URL('./revision-panel.tsx', import.meta.url), 'utf8');
+    expect(fuente).not.toContain('NO vuelve a cuadrar');
+    expect(fuente).toMatch(/RECALCULA el cuadre/);
   });
 });
