@@ -68,7 +68,7 @@ pruebas nuevas de `4de95a0` y `18c7ebd`.
 | 21 | **FIS-C1 NO se arregló**: exige decidir qué fuente gana (declarada vs. derivada de la clave del SAT) y plomear `regimenFiscal` hasta `desde_db.ts`; la precedencia actual está documentada como deliberada. Queda **propuesto** | propuesto |
 | 22 | `tablero.html` + captura headless → `tablero.png`, **mirado**: 12 rubros, notas suman 53, severidades suman 130 | ok |
 | 23 | `00-SINTESIS.md` y `RESULTADO.md` escritos, con la reserva sobre la uniformidad del −1 | ok |
+| 24 | Al cerrar, el `__pycache__` **volvió a aparecer una tercera vez**. Borrarlo era un bucle, así que se atacó la causa: el repo trae **9 scripts Python** y `.gitignore` **no tenía regla para su bytecode**. Se agregó `__pycache__/` + `*.py[cod]`, en **commit aparte** de los dos arreglos con prueba para que se pueda revertir solo. Verificado recreando el directorio: `git status --porcelain` vacío | **`22be35a`** (higiene, no un hallazgo) |
 
 **Vueltas de arreglo: 2 de 3.** La tercera no se gastó porque ninguno de los 9
 CRÍTICOS restantes era quirúrgico — no por falta de presupuesto.
-| 24 | Al cerrar, el `__pycache__` **volvió a aparecer una tercera vez**. Borrarlo era un bucle, así que se atacó la causa: el repo trae **9 scripts Python** y `.gitignore` **no tenía regla para su bytecode**. Se agregó `__pycache__/` + `*.py[cod]`, en **commit aparte** de los dos arreglos con prueba para que se pueda revertir solo. Verificado recreando el directorio: `git status --porcelain` vacío | **`22be35a`** (higiene, no un hallazgo) |
