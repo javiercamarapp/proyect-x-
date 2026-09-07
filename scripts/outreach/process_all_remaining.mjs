@@ -5,8 +5,8 @@
 // 3️⃣  Ejecuta la ingestión final con auto_ingest_scanned.mjs.
 // ---------------------------------------------------------------
 
-import { execSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.cwd(); // /Users/javiercamaraportepetit/likida
@@ -33,12 +33,11 @@ function prepareMissingBatches() {
       console.log(`▶️  Preparando batch ${batch}…`);
       const scriptPath = path.join(SCRIPTS, `prepare_batch${batch}.mjs`);
       // Sólo ejecutar si el script realmente existe
-      try {
-        execSync(`test -f ${scriptPath}`);
-        execSync(`node ${scriptPath}`, { stdio: "inherit" });
-      } catch (_) {
+      if (!existsSync(scriptPath)) {
         console.log(`⚠️  No se encontró script para batch ${batch}, se omite.`);
+        continue;
       }
+      execFileSync(process.execPath, [scriptPath], { stdio: "inherit" });
     }
   }
 }
@@ -78,7 +77,7 @@ Para cada empresa busca:
   * Sin riesgo: levantamiento gratis, mes 1 gratis, pago a partir del mes 3
   * Cierre: "¿Tendrían 30 minutos esta semana o la próxima para platicarlo?"
 Guarda el JSON resultante en ${path.join(STAGING, resultFile)} con {id, empresa, …, correo_venta, fecha, lote}`.trim();
-    execSync(`agy subagents launch --name ${subName} --model flash_lite --workspace ${ROOT} -p "${prompt.replace(/"/g, '\\"')}"`, { stdio: "inherit" });
+    execFileSync("agy", ["subagents", "launch", "--name", subName, "--model", "flash_lite", "--workspace", ROOT, "-p", prompt], { stdio: "inherit" });
   }
 }
 
@@ -97,7 +96,7 @@ function waitAndIngest() {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
   }
   console.log('\n✅  Todos los resultados están listos. Ejecutando ingestión…');
-  execSync(`node ${path.join(SCRIPTS, 'auto_ingest_scanned.mjs')}`, { stdio: 'inherit' });
+  execFileSync(process.execPath, [path.join(SCRIPTS, 'auto_ingest_scanned.mjs')], { stdio: 'inherit' });
 }
 
 prepareMissingBatches();
