@@ -36,6 +36,22 @@ describe('VistaRentabilidad — la cartera paginada no se confunde con una carte
     expect(html).toMatch(/350/);
   });
 
+  // AUD28 FE-2 — la regresión que destapó `4de95a0`. Antes de ese commit el
+  // `EstadoVacio` sustituía la sección entera, así que el renglón de
+  // paginación era inalcanzable con `?p=` fuera de rango. Ahora se pinta, y
+  // `hasta` no tiene el mismo portón que `desde`: `(99−1)·100 + 0 = 9800`
+  // imprime "Facturas 0–9,800 de 350" — un rango inventado, sobre una
+  // pantalla cuya regla es no inventar cifras. El comentario de vista.tsx:40-42
+  // ya dice que debe decir "0–0 de N"; esto es lo que lo mide.
+  it('página fuera de rango: el renglón dice "0–0 de 350", no un rango inventado mayor que la cartera', () => {
+    const html = renderToStaticMarkup(
+      <VistaRentabilidad rentabilidad={RENTABILIDAD}
+        cobranza={cobranza({ facturas: [], total: 350, pagina: 99, porCobrar: 480_000, vencido: 120_000 })} />,
+    );
+    expect(html).toMatch(/Facturas 0–0 de 350/);
+    expect(html).not.toMatch(/9,800/);
+  });
+
   it('cartera de verdad vacía (total=0) sigue diciendo "aún no hay facturas"', () => {
     const html = renderToStaticMarkup(
       <VistaRentabilidad rentabilidad={RENTABILIDAD} cobranza={cobranza({ total: 0 })} />,
