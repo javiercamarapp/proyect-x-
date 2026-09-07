@@ -97,12 +97,22 @@ async function expedienteAbierto(
   return { id: f.id as string, tipo: f.tipo as string, prioridad: f.prioridad as string };
 }
 
-/** Rótulo de la unidad para el aviso. Best-effort: es un rótulo. */
+/**
+ * Rótulo de la unidad para el aviso. Best-effort: es un rótulo.
+ *
+ * AUDITORÍA 28, MEDIO (REN-M3). Esta consulta era la única del archivo sin
+ * `acotada()`: sin techo de tiempo propio, un Postgres lento aquí podía
+ * colgar el disparo del 🚨 completo detrás de un rótulo — el mismo helper de
+ * timeout que ya envuelve `expedienteAbierto` arriba y el resto del repo.
+ */
 async function rotuloUnidad(tenantId: string, unidadId: string): Promise<string> {
   try {
-    const { data } = await supabaseAdmin()
-      .from('unidad').select('numero_economico, placas')
-      .eq('id', unidadId).eq('tenant_id', tenantId).maybeSingle();
+    const { data } = await acotada(
+      supabaseAdmin()
+        .from('unidad').select('numero_economico, placas')
+        .eq('id', unidadId).eq('tenant_id', tenantId).maybeSingle(),
+      'asistencia_camara.rotulo_unidad',
+    );
     if (data?.numero_economico) {
       return `la unidad ${data.numero_economico}${data.placas ? ` (placas ${data.placas})` : ''}`;
     }

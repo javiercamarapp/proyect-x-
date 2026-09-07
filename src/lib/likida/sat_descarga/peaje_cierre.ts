@@ -35,6 +35,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '@/lib/likida/presupuesto';
+import { traerTodo, conteo } from '@/lib/likida/pg';
 import { logger } from '@/lib/logger';
 import { hoyMx, mxn } from '@/lib/formato';
 import { sendText } from '@/lib/meta/client';
@@ -49,11 +50,6 @@ export const DIAS_AVISO_DEFECTO = 7;
 /** Cuántos cruces se listan en el WhatsApp antes de mandar al panel. Mismo
  *  tope que el vigilante de reglas: un mensaje de 300 líneas no se lee. */
 export const MAX_LINEAS = 10;
-
-/** El tope de la lectura de casetas del mes. Era un `5000` literal dentro de la
- *  consulta; se declara aquí porque el barrido tiene que poder COMPARARSE
- *  contra él para saber si la lectura vino truncada (ver `truncado`). */
-export const TOPE_GASTOS_PEAJE = 5_000;
 
 export interface GastoPorFacturar {
   id: string;
@@ -132,10 +128,17 @@ export interface ResumenCierrePeaje {
    *  es lo mismo que «no les tocaba»: es trabajo que el tiempo le quitó a este
    *  barrido, y por eso se cuenta aparte y sube al latido como 'parcial'. */
   sinTurno: number;
-  /** `true` cuando la lectura de casetas llegó AL TOPE: hay más cruces del mes
-   *  de los que se leyeron, así que hay flotas que este barrido ni siquiera
-   *  supo que existían. Se dice; no se calla detrás de un `gastos: 5000` con
-   *  cara de universo. */
+  /**
+   * AUDITORÍA 28, MEDIO (REN-A4). Antes: `true` cuando la lectura de casetas
+   * llegaba AL TOPE de un `.limit(5_000)` fijo — hay más cruces del mes de
+   * los que se leyeron, y el barrido seguía con datos parciales sin que nada
+   * más que un log lo dijera. Hoy la lectura usa `traerTodo` (paginación real,
+   * hasta 100,000 filas) y LANZA `LecturaIncompleta` si no puede demostrar que
+   * trajo todo — fail-closed, igual que `configIlegible` más abajo — así que
+   * una lectura truncada nunca produce un resumen `corrio: true` a medias.
+   * El campo se conserva SIEMPRE en `false` por compatibilidad con el latido
+   * (`descarga-sat/route.ts` todavía lo lee) y con el panel.
+   */
   truncado: boolean;
 }
 
@@ -225,38 +228,38 @@ export async function avisarCierrePeaje(
   // no del catálogo de flotas: una flota sin casetas no necesita el aviso, y
   // recorrer todos los tenants para descubrirlo sería trabajo por nada.
   //
-  // EL `.order()` NO ES COSMÉTICO. Sin él la rebanada que entra cuando se
-  // agota el tope es la del orden FÍSICO de la tabla —arbitraria y sin
-  // relación con nada— y qué flota se queda sin aviso depende de dónde cayeron
-  // sus filas en el heap. Ordenando por `tenant_id, fecha` el corte es al menos
-  // determinista y reproducible: la misma pasada dos veces se queda con las
-  // mismas flotas, y quien depure sabe por dónde cortó.
-  const { data: gastos, error } = await acotada(supabaseAdmin()
-    .from('gasto')
-    .select('id, tenant_id, monto, fecha')
-    .eq('concepto', 'caseta')
-    .is('cfdi_uuid', null)
-    .gte('fecha', periodo)
-    .lte('fecha', hoy)
-    .order('tenant_id', { ascending: true })
-    .order('fecha', { ascending: true })
-    .limit(TOPE_GASTOS_PEAJE), 'peaje_cierre.gastos');
-  if (error) throw new Error(`avisarCierrePeaje: ${error.message}`);
-  // LA LECTURA TRUNCADA SE DECLARA. A 200 flotas con casetas diarias los 5,000
-  // cruces del mes se agotan, y las flotas que caen fuera del corte no reciben
-  // NINGÚN aviso — sin que nada lo diga, porque `gastos: gastos.length`
-  // reportaba 5000 como si fuera el universo. Ese es el número que un tablero
-  // lee como «todo bien». Hoy es latente (producción no tiene ese volumen),
-  // pero el día que lo tenga el síntoma sería «a mi flota nunca le avisan» y
-  // nada en el latido apuntaría aquí.
-  const truncado = (gastos ?? []).length >= TOPE_GASTOS_PEAJE;
-  if (truncado) {
-    logger.error('peaje_cierre.lectura_truncada', {
-      periodo, faltan, tope: TOPE_GASTOS_PEAJE,
-      nota: 'hay más casetas sin CFDI este mes de las que se leyeron: hay flotas que este barrido no vio',
-    });
+  // AUDITORÍA 28, MEDIO (REN-A4). Esto era UNA página con `.limit(5_000)` y
+  // se seguía trabajando con datos parciales si la tocaba (declarando
+  // `truncado`, pero sin dejar de avisar a medias). El `.order()` tampoco
+  // desempataba por `id`: sin PK en el orden, la rebanada que entra cuando se
+  // agota el tope depende de cómo Postgres resuelva el empate entre filas con
+  // el mismo `(tenant_id, fecha)` — no es determinista fila por fila, aunque
+  // no cruce de flota (mismo patrón de riesgo que otros lotes de esta
+  // auditoría: PostgREST recorta a N filas cualesquiera sin un orden que
+  // desempate del todo). `traerTodo` pagina de verdad —hasta 100,000 filas— y
+  // LANZA `LecturaIncompleta` si no puede demostrar que trajo todo, en vez de
+  // continuar con un subconjunto: fail-closed, igual que `configIlegible` más
+  // abajo. El desempate final por `id` hace el cursor de página determinista.
+  let gastos: Array<{ id: string; tenant_id: string; monto: number; fecha: string }>;
+  try {
+    gastos = await traerTodo<{ id: string; tenant_id: string; monto: number; fecha: string }>(
+      (desde, hasta) => acotada(supabaseAdmin()
+        .from('gasto')
+        .select('id, tenant_id, monto, fecha', conteo(desde))
+        .eq('concepto', 'caseta')
+        .is('cfdi_uuid', null)
+        .gte('fecha', periodo)
+        .lte('fecha', hoy)
+        .order('tenant_id', { ascending: true })
+        .order('fecha', { ascending: true })
+        .order('id', { ascending: true })
+        .range(desde, hasta), 'peaje_cierre.gastos'),
+      'peaje_cierre.gastos',
+    );
+  } catch (e) {
+    throw new Error(`avisarCierrePeaje: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if ((gastos ?? []).length === 0) {
+  if (gastos.length === 0) {
     return {
       corrio: true, flotas: 0, avisadas: 0, sinDestinatario: 0, gastos: 0,
       sinReserva: 0, reservasAtoradas: 0, sinTurno: 0, truncado: false,
@@ -264,10 +267,10 @@ export async function avisarCierrePeaje(
   }
 
   const porFlota = new Map<string, GastoPorFacturar[]>();
-  for (const g of gastos ?? []) {
-    const t = g.tenant_id as string;
+  for (const g of gastos) {
+    const t = g.tenant_id;
     const lista = porFlota.get(t) ?? [];
-    lista.push({ id: g.id as string, monto: Number(g.monto), fecha: g.fecha as string });
+    lista.push({ id: g.id, monto: Number(g.monto), fecha: g.fecha });
     porFlota.set(t, lista);
   }
 
@@ -389,8 +392,10 @@ export async function avisarCierrePeaje(
 
   const resumen: ResumenCierrePeaje = {
     corrio: true, flotas, avisadas, sinDestinatario,
-    gastos: gastos?.length ?? 0, sinReserva, reservasAtoradas,
-    sinTurno, truncado,
+    gastos: gastos.length, sinReserva, reservasAtoradas,
+    // `truncado` siempre `false` aquí: una lectura incompleta ya LANZÓ arriba
+    // (`traerTodo`) en vez de llegar a este punto con datos parciales.
+    sinTurno, truncado: false,
   };
 
   // Si la configuración no se pudo leer, la pasada NO fue limpia y hay que

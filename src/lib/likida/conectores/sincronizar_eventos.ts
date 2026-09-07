@@ -817,12 +817,31 @@ export async function sincronizarEventosDeFlota(
   // actualizan explícitamente esa misma fila después de pasar privacidad.
   // Una alerta mínima no resuelve el permiso del dato original. Tampoco
   // debe enriquecerse al reparar otra referencia del mismo evento.
+  //
+  // AUDITORÍA 28, MEDIO (REN-M2). Los dos bucles de abajo —reparar legacy y
+  // soltar cuarentena sin resolver— no preguntaban la hora: con una cuarentena
+  // grande cada vuelta hace uno o más viajes de red (`acotada` los acota
+  // individualmente, pero el TOTAL del bucle no tenía techo), y podían comerse
+  // el presupuesto del cron sin cortar, dejando que Vercel matara el worker a
+  // mitad del barrido — mudo, igual que el fallo que el arreglo c2-1 ya
+  // corrigió para el drenaje de graves. Mismo patrón #152 que el resto del
+  // archivo: se pregunta ANTES de cada vuelta y se corta limpio, reportando
+  // cuántos elementos quedaron pendientes.
   const persistidos = new Set(filas.filter((f) => f.privacidad_minima === false)
     .map((f) => String(f.evento_id_externo)));
   const recuperadosUnicos = [...new Map(
     recuperados.eventos.map((evento) => [evento.eventoId, evento]),
   ).values()];
-  for (const e of recuperadosUnicos.filter((evento) => persistidos.has(evento.eventoId))) {
+  const paraReparar = recuperadosUnicos.filter((evento) => persistidos.has(evento.eventoId));
+  for (let i = 0; i < paraReparar.length; i++) {
+    if (opciones.venceEn !== undefined && ahoraMs() >= opciones.venceEn) {
+      base.backlog = true;
+      logger.warn('eventos.reparacion_legacy_sin_turno', {
+        tenantId, proveedor: conectorId, pendientes: paraReparar.length - i,
+      });
+      break;
+    }
+    const e = paraReparar[i];
     const unidadId = e.assetId ? porDevice.get(e.assetId) : null;
     const { error } = await acotada(
       supabaseAdmin().from('evento_seguridad_flota')
@@ -845,11 +864,18 @@ export async function sincronizarEventosDeFlota(
       for (const claim of claims) await finalizarCuarentena(tenantId, conectorId, claim, true);
     }
   }
-  for (const [eventoId, claims] of recuperados.claims) {
-    if (!persistidos.has(eventoId)) {
-      for (const claim of claims) {
-        await finalizarCuarentena(tenantId, conectorId, claim, false, 'mapeo o privacidad aún sin resolver');
-      }
+  const claimsSinResolver = [...recuperados.claims.entries()].filter(([eventoId]) => !persistidos.has(eventoId));
+  for (let i = 0; i < claimsSinResolver.length; i++) {
+    if (opciones.venceEn !== undefined && ahoraMs() >= opciones.venceEn) {
+      base.backlog = true;
+      logger.warn('eventos.cuarentena_sin_resolver_sin_turno', {
+        tenantId, proveedor: conectorId, pendientes: claimsSinResolver.length - i,
+      });
+      break;
+    }
+    const [, claims] = claimsSinResolver[i];
+    for (const claim of claims) {
+      await finalizarCuarentena(tenantId, conectorId, claim, false, 'mapeo o privacidad aún sin resolver');
     }
   }
 
