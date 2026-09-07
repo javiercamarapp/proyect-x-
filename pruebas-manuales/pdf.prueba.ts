@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { test, expect } from 'vitest';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Liquidacion, Viaje, Operador, Gasto } from '@/types/likida';
@@ -42,8 +42,12 @@ test('PDF con 25 comprobantes: anuncia lo que no cupo y trae el descargo', async
   const operador: Operador = { id: 'o1', nombre: 'Juan Pérez', terminal: 'Mérida' } as Operador;
 
   const bytes = await generarLiquidacionPDF(liq, viaje, operador, 'TRANSPORTES DEL SURESTE SA DE CV');
-  const ruta = join(tmpdir(), 'liquidacion-prueba.pdf');
-  writeFileSync(ruta, bytes);
+  // Nombre fijo en /tmp compartido = objetivo de symlink por otro usuario del
+  // sistema (CodeQL: Insecure temporary file). Un directorio temporal propio
+  // y exclusivo del proceso lo cierra.
+  const dir = mkdtempSync(join(tmpdir(), 'likida-pdf-'));
+  const ruta = join(dir, 'liquidacion-prueba.pdf');
+  writeFileSync(ruta, bytes, { mode: 0o600 });
 
   console.log(`\n📄 PDF escrito en: ${ruta}`);
   console.log(`   ${gastos.length} comprobantes, total ${total}`);
