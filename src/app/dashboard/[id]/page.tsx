@@ -20,6 +20,7 @@ import {
 } from '@/lib/likida/revision';
 import { mxn } from '@/lib/formato';
 import { reintentarPdfAjustado } from '@/lib/likida/revision_recalculo';
+import { logger } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -195,7 +196,27 @@ export default async function Detalle({
   // agente cerraba y nadie firmaba. `leerRevision` degrada solo — si no se
   // pudo leer, el panel NO se pinta: unos botones sin saber si la liquidación
   // ya está firmada invitan a firmarla dos veces.
-  const revisionEstado: RevisionDetalle | null = await leerRevision(tenantId, id).catch(() => null);
+  //
+  // `leerRevision` LANZA ante un error real de lectura (`exigir()` en pg.ts
+  // es fail-closed) y solo devuelve `null` cuando la fila simplemente no
+  // tiene revisión. Un `.catch(() => null)` ciego —lo que había aquí antes—
+  // metía los dos casos en el mismo balde: "no hay revisión" y "no se pudo
+  // leer la revisión" se veían IGUAL, y con eso una liquidación rechazada
+  // cuya revisión falló de leer se pintaba como si nunca hubiera pasado por
+  // revisión — sin el panel de estado, pero también sin el aviso de que algo
+  // falló, y `pdfHref` (abajo) seguía ofreciendo la descarga (BE-A1/FE-M2).
+  // Mismo criterio que `totalOperadores`/`contarCatalogo` unas líneas abajo:
+  // separar "no hay dato" de "no se pudo leer el dato" en vez de igualarlos.
+  let revisionEstado: RevisionDetalle | null = null;
+  let revisionIlegible = false;
+  try {
+    revisionEstado = await leerRevision(tenantId, id);
+  } catch (err) {
+    logger.error('dashboard.detalle.revision_ilegible', {
+      tenantId, liquidacion: id, err: err instanceof Error ? err.message : String(err),
+    });
+    revisionIlegible = true;
+  }
   const puedeFirmar = puedeFirmarLiquidacion(rol);
 
   /**
@@ -282,7 +303,16 @@ export default async function Detalle({
       sufijo={sufijo}
       estatus={{ label: e.label, estado: estadoDeColor(e.color) }}
       etiqueta={etiquetaGasto}
-      pdfHref={d.pdfPath && puedeExportar(rol) ? `/api/export/pdf/${d.id}` : null}
+      // BE-A1/FE-M2: una liquidación RECHAZADA no tiene PDF vigente aunque
+      // `pdfPath` siga guardado (la 0346 solo lo anula en 'ajustada'), y una
+      // revisión que no se pudo LEER tampoco puede afirmar que sí está
+      // vigente — las dos apagan el botón. El export vuelve a comprobar
+      // `revision` por su cuenta (defensa en profundidad, mismo criterio del
+      // IDOR de rol/tenant): esto es solo para no ofrecer un botón que la
+      // ruta va a rechazar.
+      pdfHref={d.pdfPath && puedeExportar(rol) && revisionEstado?.revision !== 'rechazada' && !revisionIlegible
+        ? `/api/export/pdf/${d.id}` : null}
+      revisionIlegible={revisionIlegible}
       reintentarPdf={!d.pdfPath && revisionEstado?.revision === 'ajustada' && puedeFirmar ? reintentarPdf : null}
       wa={hrefWhatsApp(d.viaje.operadorTelefono)}
       reasignar={puedeReasignar && totalOperadores !== 0

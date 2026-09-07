@@ -60,3 +60,37 @@ it('no ofrece regenerar una pareja disponible ni una revisión sin ajuste', asyn
   mocks.revision.mockResolvedValue({ revision: 'pendiente' });
   expect((await props()).reintentarPdf).toBeNull();
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// L07 (BE-A1/BE-M1/FE-M2) — "La liquidación rechazada no se sirve como vigente".
+//
+// Antes `pdfHref` solo miraba `d.pdfPath`, nunca `revisionEstado`: una
+// liquidación RECHAZADA con un `pdf_url` viejo (la 0346 no lo anula en ese
+// caso) seguía ofreciendo el botón "Descargar PDF". Y `leerRevision().catch(()
+// => null)` metía un error REAL de lectura en el mismo balde que "no hay
+// revisión" — con eso una rechazada cuya revisión no se pudo confirmar se
+// veía vigente en vez de mostrar un aviso.
+// ═══════════════════════════════════════════════════════════════════════════
+it('revisión RECHAZADA: sin botón de descarga aunque quede un pdf_url viejo (BE-A1)', async () => {
+  mocks.pdf = 'flota/viaje.pdf';
+  mocks.revision.mockResolvedValue({ revision: 'rechazada' });
+  const p = await props();
+  expect(p.pdfHref).toBeNull();
+  expect(p.revisionIlegible).toBe(false);
+});
+
+it('revisión ILEGIBLE (leerRevision lanza, error real): sin botón de descarga + aviso, NO "vigente" (BE-M1/FE-M2)', async () => {
+  mocks.pdf = 'flota/viaje.pdf';
+  mocks.revision.mockRejectedValue(new Error('revision.leer: la base no contestó'));
+  const p = await props();
+  expect(p.pdfHref).toBeNull();
+  expect(p.revisionIlegible).toBe(true);
+});
+
+it('revisión legible y NO rechazada (aprobada) con pdf_url: sí ofrece la descarga', async () => {
+  mocks.pdf = 'flota/viaje.pdf';
+  mocks.revision.mockResolvedValue({ revision: 'aprobada' });
+  const p = await props();
+  expect(p.pdfHref).toBe('/api/export/pdf/liq');
+  expect(p.revisionIlegible).toBe(false);
+});

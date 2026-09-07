@@ -19,7 +19,9 @@ vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: 
 
 // La base: una consulta a `liquidacion` que registra sus filtros, y el
 // storage que firma. `filaPdf` es lo que devuelve `.maybeSingle()`.
-let filaPdf: { pdf_url: string | null } | null = { pdf_url: 't-1/v-1.pdf' };
+// `revision` es opcional a propósito: una fila de antes de la 0299 no la
+// trae, y eso NO debe leerse como "rechazada".
+let filaPdf: { pdf_url: string | null; revision?: string } | null = { pdf_url: 't-1/v-1.pdf' };
 const filtros: Array<[string, unknown]> = [];
 /** Los `range(d, h)` que pidió el export de liquidaciones, en orden. */
 const rangos: Array<[number, number]> = [];
@@ -220,6 +222,39 @@ describe('export/pdf/[id] — el tenant es el de la SESIÓN, no el de la URL', (
   it('si storage no firma, 502 y nada de redirigir a una URL vacía', async () => {
     createSignedUrl.mockResolvedValueOnce({ data: { signedUrl: '' }, error: null });
     expect((await GET_PDF()).status).toBe(502);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// L07 (BE-A1) — la liquidación rechazada NO se sirve como vigente.
+//
+// El `select` no traía `revision`: la ruta firmaba y redirigía al PDF viejo
+// sin poder preguntarse si la liquidación seguía siendo la vigente. La 0346
+// anula `pdf_url` cuando la revisión pasa a 'ajustada' pero NO cuando pasa a
+// 'rechazada' — así que una fila rechazada con un `pdf_url` de ANTES del
+// rechazo la ruta la servía igual que una aprobada.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('export/pdf/[id] — revisión rechazada: no se sirve como vigente (BE-A1)', () => {
+  it('revision === rechazada: 409 con motivo, sin firmar URL ni redirigir', async () => {
+    filaPdf = { pdf_url: 't-1/v-1.pdf', revision: 'rechazada' };
+    const r = await GET_PDF();
+    expect(r.status).toBe(409);
+    expect(await r.text()).toContain('rechazada');
+    expect(createSignedUrl).not.toHaveBeenCalled();
+    expect(r.headers.get('location')).toBeNull();
+  });
+
+  it('una fila SIN `revision` (de antes de la 0299) no se confunde con rechazada: sigue sirviendo', async () => {
+    filaPdf = { pdf_url: 't-1/v-1.pdf' };
+    const r = await GET_PDF();
+    expect(r.status).toBe(302);
+  });
+
+  it.each(['pendiente', 'aprobada', 'ajustada'])('revision === %s: sigue sirviendo el PDF', async (revision) => {
+    filaPdf = { pdf_url: 't-1/v-1.pdf', revision };
+    const r = await GET_PDF();
+    expect(r.status).toBe(302);
+    expect(r.headers.get('location')).toBe('https://storage/firmada');
   });
 });
 

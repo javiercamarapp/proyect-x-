@@ -36,8 +36,14 @@ export interface PropsDetalle {
   /** La etiqueta del renglón (la del motor, igual que el PDF) — vive en la
    *  página porque `etiquetas_panel.test.ts` la vigila ahí. */
   etiqueta: (g: { concepto: string; ocrExtra?: Record<string, unknown> }) => string;
-  /** `/api/export/pdf/<id>` si hay PDF y el rol puede exportar; si no, null. */
+  /** `/api/export/pdf/<id>` si hay PDF, el rol puede exportar, la revisión
+   *  se pudo leer y NO dice 'rechazada'; si no, null (BE-A1/FE-M2). */
   pdfHref: string | null;
+  /** true si `leerRevision` LANZÓ (fail-closed) en vez de responder "no hay
+   *  revisión". Distinto de `revision === null`: aquí SÍ pudo haber una
+   *  revisión —quizás una que dice 'rechazada'— y no se pudo confirmar, así
+   *  que la pantalla no puede afirmar que la liquidación está vigente. */
+  revisionIlegible?: boolean;
   reintentarPdf?: ((previo: ResultadoAccion, fd: FormData) => Promise<ResultadoAccion>) | null;
   /** `https://wa.me/…` del operador, o null si no hay teléfono. */
   wa: string | null;
@@ -69,7 +75,7 @@ export interface PropsDetalle {
   } | null;
 }
 
-export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, reintentarPdf, wa, reasignar, reabrir, revision }: PropsDetalle) {
+export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, revisionIlegible, reintentarPdf, wa, reasignar, reabrir, revision }: PropsDetalle) {
   // LA FOTO DEL TICKET SE GUARDA (CFF art. 30, conservación 5 años) PERO NO SE
   // ENSEÑA AQUÍ. El aviso de privacidad (privacidad.ts:498) le promete al
   // operador que un dato sensible que aparezca por accidente en su ticket "no
@@ -85,7 +91,16 @@ export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, rein
   // Un desglose que contradice al total que tiene tres centímetros arriba es
   // peor que no tener desglose.
   const deducibilidad = d.deducibilidad
-    ? filasDeducibilidad({ ...d.deducibilidad, totalComprobado: d.totalComprobado, diferencias: d.diferencias })
+    // FIS-6: sin `gastos`, `filasDeducibilidad` no puede ver la forma de pago
+    // de cada comprobante y el pie de "Por confirmar" cae a la razón
+    // genérica ("falta timbrar la factura o acreditar el medio de pago") aun
+    // cuando el motivo real es un crédito (forma de pago '99') sin
+    // complemento de pago — que el PDF SÍ nombra (LEYENDA_PAGO_PENDIENTE). Un
+    // mismo comprobante con dos razones distintas en dos papeles es
+    // exactamente lo que este producto existe para no hacer.
+    ? filasDeducibilidad({
+        ...d.deducibilidad, totalComprobado: d.totalComprobado, diferencias: d.diferencias, gastos: d.gastos,
+      })
     : null;
 
   // ── Las diferencias, por comprobante ──
@@ -163,6 +178,21 @@ export function DetalleLiquidacion({ d, sufijo, estatus, etiqueta, pdfHref, rein
         />
 
         <div className="px-5 py-5 flex-1 space-y-4">
+          {/* No se pudo leer el estado de revisión (BE-A1/FE-M2): esta pantalla
+              NO puede afirmar que la liquidación está vigente, porque podría
+              estar rechazada y no lo sabemos. Va PRIMERO — antes que cualquier
+              otro aviso — porque pone en duda todo lo que sigue. */}
+          {revisionIlegible && (
+            <section className="card p-4" aria-label="No se pudo leer la revisión" style={{ borderColor: 'var(--bad)' }}>
+              <p className="text-[13px] font-medium" style={{ color: 'var(--bad)' }}>
+                No se pudo leer el estado de revisión de esta liquidación.
+              </p>
+              <p className="text-[12px] mt-1" style={{ color: 'var(--muted)' }}>
+                No se ofrece la descarga del PDF hasta confirmar que no fue rechazada. Recarga la
+                página; si el problema sigue, avisa a soporte antes de tratar esta liquidación como vigente.
+              </p>
+            </section>
+          )}
           {reintentarPdf && (
             <section className="card p-4" aria-label="PDF pendiente">
               <p>El ajuste y la firma están guardados. Falta generar los dos ejemplares del PDF.</p>
