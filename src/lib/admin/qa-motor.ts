@@ -633,6 +633,7 @@ export async function ejecutarCorridaRapida(corrida: CorridaQA): Promise<Corrida
           mediaId: `${prefijo}media-${msg}`,   // jamás llega a Meta: mediaDataUrlQA lo sustituye
           mediaDataUrlQA: dataUrl,
           waMessageId: `${prefijo}f${msg}`,
+          timestampMs: Date.now(),
         });
         // El reintento por saturación se DECLARA aunque haya salido bien: es
         // la evidencia de que Storage anduvo apretado (incidente 28-ago-2026).
@@ -742,10 +743,10 @@ export async function ejecutarCorridaRapida(corrida: CorridaQA): Promise<Corrida
         return corrida;
       }
       try {
-        await processInbound({ from: telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t1` });
+        await processInbound({ from: telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t1`, timestampMs: Date.now() });
         if (!(await hayLiquidacion(db, corrida.tenantId!, viajeId)) && !sinTiempo() && !excedeTope()) {
           pC.detalle = 'el primer «listo» no cerró; se insistió una vez (mismo criterio que el ejército)';
-          await processInbound({ from: telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t2` });
+          await processInbound({ from: telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t2`, timestampMs: Date.now() });
         }
         await cerrarPaso(pC, 'ok', pC.detalle);
       } catch (e) {
@@ -1167,6 +1168,7 @@ export async function ejecutarPasada(corridaId: string, venceEn: number): Promis
             // Determinista por foto: si una pasada muriera después de mandarla,
             // un reenvío caería en el mismo claim de `wa_mensaje_procesado`.
             waMessageId: `${prefijo}f${i + 1}`,
+            timestampMs: Date.now(),
           });
         } catch (e) {
           estadoFoto = 'bad';
@@ -1277,6 +1279,7 @@ export async function ejecutarPasada(corridaId: string, venceEn: number): Promis
             await processInbound({
               from: desde, type: 'image',
               mediaId: `${prefijo}media-r1`, mediaDataUrlQA: dataUrl, waMessageId: `${prefijo}r1`,
+              timestampMs: Date.now(),
             });
           } catch (e) {
             estado = 'bad';
@@ -1367,6 +1370,7 @@ export async function ejecutarPasada(corridaId: string, venceEn: number): Promis
               await processInbound({
                 from: memoria.telefono, type: 'image',
                 mediaId: `${prefijo}media-tarde`, mediaDataUrlQA: dataUrl, waMessageId: `${prefijo}tarde`,
+                timestampMs: Date.now(),
               });
             } catch (e) {
               estadoTarde = 'bad';
@@ -1394,10 +1398,10 @@ export async function ejecutarPasada(corridaId: string, venceEn: number): Promis
         let detalleC: string | null = null;
         let estadoC: PasoQA['estado'] = 'ok';
         try {
-          await processInbound({ from: memoria.telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t1` });
+          await processInbound({ from: memoria.telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t1`, timestampMs: Date.now() });
           if (!(await hayLiquidacion(db, memoria.tenantId, memoria.viajeId)) && !relojAgotado(venceEn)) {
             detalleC = 'el primer «listo» no cerró; se insistió una vez (mismo criterio que el ejército)';
-            await processInbound({ from: memoria.telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t2` });
+            await processInbound({ from: memoria.telefono, type: 'text', text: TEXTO_CIERRE, waMessageId: `${prefijo}t2`, timestampMs: Date.now() });
           }
         } catch (e) {
           estadoC = 'bad';
