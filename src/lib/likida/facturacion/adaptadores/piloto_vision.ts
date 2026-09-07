@@ -672,6 +672,7 @@ function senalDeSesion(venceSesionEn: number): AbortSignal {
  */
 async function comoDataUriAcotada(comercio: string, captura: string): Promise<string> {
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta de la captura de pantalla que el propio piloto generó con Playwright; nunca viene de entrada de usuario.
     const buf = captura.startsWith('data:') ? bufferFromDataUrl(captura) : await readFile(captura);
     const reducida = await redimensionarParaVision(buf);
     return `data:image/jpeg;base64,${reducida.toString('base64')}`;
@@ -683,6 +684,7 @@ async function comoDataUriAcotada(comercio: string, captura: string): Promise<st
 
 /** En la Mac la captura es una RUTA en disco; el modelo necesita el data-uri. */
 async function comoDataUri(ruta: string): Promise<string> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta de la captura de pantalla que el propio piloto generó con Playwright; nunca viene de entrada de usuario.
   const buf = await readFile(ruta);
   return `data:image/jpeg;base64,${buf.toString('base64')}`;
 }
