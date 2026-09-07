@@ -47,6 +47,14 @@ export interface ColaConductores {
   /** FE-6: `viajesEsperandoAceptarPaginados` no lanza — un fallo viaja aquí,
    *  para que la sección lo diga en vez de pintar "nadie debe respuesta". */
   error: string | null;
+  /** FE-B1 (auditoría 28): `Pagina.truncada` de `viajesEsperandoAceptarPaginados`
+   *  — `true` cuando el total real rebasa lo que esta paginación alcanza a
+   *  recorrer (`paginaMax * porPagina`, repo_paginado.ts). Esta pantalla no
+   *  ofrece "Siguiente" (no hay navegación por página aquí), pero sin
+   *  declarar esto el jefe de tráfico no sabe que la lectura misma tiene un
+   *  techo — no solo lo que se lista de esta vuelta. `undefined`/`false` =
+   *  no truncado (u origen que todavía no manda el campo). */
+  truncada?: boolean;
 }
 
 /**
@@ -188,7 +196,7 @@ async function BloqueConteos({ kpis: p }: { kpis: Promise<ConteosConductores> })
 export async function BloqueCola({ cola, sufijo }: {
   cola: Promise<ColaConductores>; sufijo: string;
 }) {
-  const { esperan, totalEsperan, sinAvisar, error } = await cola;
+  const { esperan, totalEsperan, sinAvisar, error, truncada = false } = await cola;
   return (
     /* La cola honesta de aceptación */
     <section className="card p-4 flex flex-col">
@@ -235,6 +243,18 @@ export async function BloqueCola({ cola, sufijo }: {
         <p className="text-[12px] mt-3 pt-2.5 border-t" style={{ color: 'var(--warn)', borderColor: 'var(--line2)' }}>
           {numero(sinAvisar)} viaje{sinAvisar === 1 ? '' : 's'} en curso SIN aviso —
           el botón Avisar vive en <Link href={`/dashboard/despacho${sufijo}`} className="underline">Despacho</Link>.
+        </p>
+      )}
+      {/* FE-B1: aquí no hay "Siguiente" que quede muerto (esta pantalla no
+          pagina por URL), pero sin esto la lectura tenía un techo que nunca
+          se decía — mismo patrón que `despacho/vista.tsx` y
+          `descarga-sat/bandeja/vista.tsx`. */}
+      {truncada && (
+        <p className="text-[12px] mt-3 pt-2.5 border-t" style={{ color: 'var(--warn)', borderColor: 'var(--line2)' }}>
+          Esta lista no alcanza a traerlos a todos: hay más esperando aceptar de los que una sola
+          lectura puede recorrer — revisa el{' '}
+          <Link href={`/dashboard/viajes${sufijo}`} className="underline">registro</Link> para lo que
+          sobra.
         </p>
       )}
     </section>

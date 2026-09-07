@@ -38,3 +38,38 @@ describe('Conductores — "Esperan aceptar" con lectura dedicada (FE-6)', () => 
     expect(html).not.toContain('más antiguos');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FE-B1 (auditoría 28): `Pagina.truncada` tampoco lo leía esta pantalla. Aquí
+// no hay botón "Siguiente" que pueda quedar muerto, pero SÍ hay que declarar
+// que la cola no alcanza a mostrarlos todos cuando la lectura viene truncada
+// — igual que `despacho/vista.tsx` y `descarga-sat/bandeja/vista.tsx`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Conductores — "Esperan aceptar" declara el recorte de la paginación (FE-B1)', () => {
+  it('con truncada=true, declara que hay más de los que esta lectura alcanza y ofrece el registro', async () => {
+    const cola: ColaConductores = {
+      esperan: Array.from({ length: 20 }, (_, i) => ({
+        id: `v${i}`, folio: `F-${i}`, operadorNombre: `Op ${i}`, horasDesdeAviso: 20 - i, avisos: 1,
+      })),
+      totalEsperan: 6000, sinAvisar: null, error: null, truncada: true,
+    };
+    const html = await pintar(cola);
+    expect(html).not.toContain('Siguiente');
+    // Frase propia de la declaración del recorte — no la del "Se listan X de
+    // Y" (esa ya existe y también menciona "registro", pero no dice que la
+    // LECTURA misma no alcanza a traerlos a todos).
+    expect(html).toContain('no alcanza a traerlos a todos');
+  });
+
+  it('sin truncada, no declara ningún recorte de la lectura', async () => {
+    const cola: ColaConductores = {
+      esperan: Array.from({ length: 5 }, (_, i) => ({
+        id: `v${i}`, folio: `F-${i}`, operadorNombre: `Op ${i}`, horasDesdeAviso: 1, avisos: 1,
+      })),
+      totalEsperan: 5, sinAvisar: null, error: null, truncada: false,
+    };
+    const html = await pintar(cola);
+    expect(html).not.toContain('no alcanza a traerlos a todos');
+  });
+});
