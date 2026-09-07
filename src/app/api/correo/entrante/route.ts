@@ -342,9 +342,14 @@ export async function POST(req: Request) {
       if (xml.tipoComprobante === 'P') {
         const rep = parseRepXml(texto);
         if (rep) {
-          const resumen = await ingerirRep(flota.id as string, rep, texto);
+          // AUDITORÍA 28 (AG-C1/REN-C1): `finPresupuesto` como tope — un
+          // consolidado con muchos doctos ya no se corta a la mitad sin
+          // avisar. Registrar en `cfdi_pago` es idempotente: si quedan
+          // `pendientes`, contarlo como caída hace que Resend reintente CON
+          // EL MISMO adjunto y retome justo donde se cortó, sin duplicar.
+          const resumen = await ingerirRep(flota.id as string, rep, texto, finPresupuesto);
           logger.info('correo_entrante.rep', { emailId, tenantId: flota.id, rep: rep.uuid, ...resumen });
-          guardadas++;
+          if (resumen.pendientes > 0) { caidas++; } else { guardadas++; }
         } else {
           logger.warn('correo_entrante.rep_ilegible', { emailId, tenantId: flota.id });
           ignoradas++;

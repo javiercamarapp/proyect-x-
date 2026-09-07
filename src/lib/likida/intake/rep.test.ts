@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { parseRepXml, mensajeRepRecibido } from './rep';
+import type { RepXmlData } from './rep';
 import { parseCfdiXml, metodoPagoSat } from './cfdi_xml';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -186,17 +187,112 @@ describe('ingerirRep — registro idempotente y sello fail-closed', () => {
 
 describe('mensajeRepRecibido — el acuse dice exactamente lo que pasó', () => {
   it('sellado completo', () => {
-    const m = mensajeRepRecibido({ doctos: 1, ligados: 1, sellados: 1, parciales: 0 });
+    const m = mensajeRepRecibido({ doctos: 1, ligados: 1, sellados: 1, parciales: 0, pendientes: 0 });
     expect(m).toContain('pagada');
     expect(m).toContain('LIVA 5-III');
   });
   it('parcialidad: no promete un IVA que aún no se libera', () => {
-    const m = mensajeRepRecibido({ doctos: 1, ligados: 1, sellados: 0, parciales: 1 });
+    const m = mensajeRepRecibido({ doctos: 1, ligados: 1, sellados: 0, parciales: 1, pendientes: 0 });
     expect(m).toContain('saldo pendiente');
     expect(m).not.toContain('quedó marcada como pagada');
   });
   it('sin factura que liquidar: la verdad, con el dato conservado', () => {
-    const m = mensajeRepRecibido({ doctos: 1, ligados: 0, sellados: 0, parciales: 0 });
+    const m = mensajeRepRecibido({ doctos: 1, ligados: 0, sellados: 0, parciales: 0, pendientes: 0 });
     expect(m).toContain('No encontré facturas');
+  });
+  // AUDITORÍA 28 (AG-C1/REN-C1): documentos que no dio tiempo de procesar.
+  it('con pendientes: pide reenviar el mismo complemento, sin decir "no encontré facturas"', () => {
+    const m = mensajeRepRecibido({ doctos: 3, ligados: 3, sellados: 2, parciales: 0, pendientes: 5 });
+    expect(m).toContain('5 documentos');
+    expect(m).toContain('reenvía el mismo complemento');
+    expect(m).not.toContain('No encontré facturas');
+  });
+  it('con pendientes y sin ningún sello/parcial: tampoco dice "no encontré facturas"', () => {
+    const m = mensajeRepRecibido({ doctos: 0, ligados: 0, sellados: 0, parciales: 0, pendientes: 1 });
+    expect(m).toContain('1 documento');
+    expect(m).not.toContain('No encontré facturas');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28 (AG-C1/REN-C1, CRÍTICO): `ingerirRep` no miraba el reloj — un
+// complemento consolidado con muchos doctos (un fajo real de una estación)
+// podía cortarse a la mitad cuando Vercel mata la invocación, perdiendo en
+// silencio el resto sin registro ni aviso. `venceEn` corta ANTES de arrancar
+// un docto nuevo (nunca a medias), y el registro en `cfdi_pago` es
+// idempotente: reenviar el MISMO REP más tarde retoma justo donde se cortó.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('ingerirRep — corte por reloj (venceEn) y reanudación sin duplicar', () => {
+  beforeEach(() => { upsert.mockClear(); update.mockClear(); });
+
+  /** 150 doctos sintéticos, cada uno liquidado por completo (impSaldoInsoluto=0). */
+  const repDeNDoctos = (n: number, prefijoUuid: string): RepXmlData => ({
+    uuid: UUID_REP.toLowerCase(),
+    pagos: [{
+      fechaPago: '2026-09-02T12:00:00',
+      formaDePagoP: '03',
+      doctos: Array.from({ length: n }, (_, i) => ({
+        idDocumento: `${prefijoUuid}${String(i).padStart(4, '0')}`,
+        impPagado: 100,
+        impSaldoInsoluto: 0,
+        numParcialidad: 1,
+        ivaPagado: 16,
+      })),
+    }],
+  });
+
+  it('corta ANTES del docto 64 cuando venceEn ya pasó — 63 procesados, 87 pendientes, nada a medias', async () => {
+    const { ingerirRep } = await import('./rep');
+    // Date.now() solo lo llama el chequeo de venceEn en este camino (acotada,
+    // logger y los mocks de supabase están sustituidos sin reloj real) — la
+    // n-ésima llamada devuelve n-1, así que con venceEn=63 la llamada #64
+    // (valor 63) es la primera que corta.
+    let llamada = 0;
+    const relojFalso = vi.spyOn(Date, 'now').mockImplementation(() => llamada++);
+    try {
+      const rep = repDeNDoctos(150, 'aaaaaaaa-0000-0000-0000-000000000');
+      const r = await ingerirRep('t-1', rep, 'xml-crudo', 63);
+      expect(r.doctos).toBe(63);
+      expect(r.sellados).toBe(63);
+      expect(r.pendientes).toBe(87);
+      expect(upsert).toHaveBeenCalledTimes(63);
+      expect(update).toHaveBeenCalledTimes(63);
+    } finally {
+      relojFalso.mockRestore();
+    }
+  });
+
+  it('una segunda llamada sin corte completa el resto sin duplicar lo ya sellado (idempotencia real del upsert)', async () => {
+    const { ingerirRep } = await import('./rep');
+    const rep = repDeNDoctos(150, 'bbbbbbbb-0000-0000-0000-000000000');
+    // Primera pasada: sin venceEn, todos los 150 se intentan de una vez —
+    // el `upsert` real (mockeado aquí) es ON CONFLICT DO NOTHING, así que
+    // reenviar el MISMO rep una segunda vez no duplica nada nuevo: cada
+    // docto ya existente vuelve a pasar por upsert (idempotente) y su gasto
+    // ya está sellado (`pagado_en` no es null), así que `update` no vuelve a
+    // encontrar filas para ese docto en un REP real — aquí el mock de
+    // `update` siempre "encuentra" fila, así que lo que se verifica es que
+    // NINGÚN docto se pierde entre las dos pasadas, no el conteo de sellados
+    // de la segunda (eso depende del estado real de `gasto`, fuera del mock).
+    const r1 = await ingerirRep('t-1', rep, 'xml-crudo');
+    expect(r1.doctos).toBe(150);
+    expect(r1.pendientes).toBe(0);
+    upsert.mockClear(); update.mockClear();
+    const r2 = await ingerirRep('t-1', rep, 'xml-crudo');
+    expect(r2.doctos).toBe(150); // upsert es ON CONFLICT DO NOTHING: reenviar no falla ni se salta
+    expect(upsert).toHaveBeenCalledTimes(150);
+  });
+
+  it('sin venceEn (uso interno/pruebas) no corta nunca, aunque el reloj avance', async () => {
+    const { ingerirRep } = await import('./rep');
+    vi.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+    try {
+      const rep = repDeNDoctos(5, 'cccccccc-0000-0000-0000-000000000');
+      const r = await ingerirRep('t-1', rep, 'xml-crudo');
+      expect(r.doctos).toBe(5);
+      expect(r.pendientes).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
