@@ -397,7 +397,10 @@ describe('OP-P1: el health coteja la migración de la base contra la del código
     const r = await GET(peticion());
     const c = await r.json();
     expect(r.status).toBe(200);
-    expect(c.migracion).toEqual({ base: CODIGO, codigo: CODIGO, atras: 0, aplicados: [CODIGO] });
+    // AUD28 OP-C1: `adelante` entra al veredicto para que la deriva inversa
+    // (esquema aplicado, código sin publicar) deje de leerse como «al día».
+    // El caso sano la trae en 0, igual que `atras`.
+    expect(c.migracion).toEqual({ base: CODIGO, codigo: CODIGO, atras: 0, adelante: 0, aplicados: [CODIGO] });
   });
 
   it('la base va atrás: degraded, con cuántas faltan y qué aplicar', async () => {

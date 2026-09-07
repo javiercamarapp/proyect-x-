@@ -37,6 +37,19 @@ export interface Migracion {
   codigo: string | null;
   /** Cuántas migraciones le faltan a la base. `null` si algún lado no se pudo leer. */
   atras: number | null;
+  /**
+   * Cuántas migraciones tiene la base que el código NO conoce — la deriva
+   * INVERSA. `null` si algún lado no se pudo leer.
+   *
+   * AUDITORÍA 28 (OP-C1, CRÍTICO): `atras` se clampaba con `Math.max(0, …)`, así
+   * que este estado se reportaba idéntico a «al día» (`atras: 0`, sin motivo) y
+   * `route.ts` respondía `status: ok`. Es exactamente lo que pasó el 7-sep-2026:
+   * `d56e626` aplicó las migraciones 0304-0347 y Vercel no publicó el código,
+   * dejando producción con `base=0347` / `codigo=0303` y un health en verde,
+   * mientras la 0317 ya había dropeado la firma de
+   * `gastos_fiscales_agregados_tenant` que ese código llama.
+   */
+  adelante: number | null;
   /** Solo cuando algo no cuadra: por qué. */
   motivo?: string;
   /**
@@ -92,16 +105,22 @@ export function prefijosAplicados(filas: Array<{ nombre?: unknown }>): string[] 
 /** Puro, para probarlo: arma el veredicto a partir de los dos prefijos. */
 export function cotejar(base: string | null, codigo: string | null, motivoBase?: string, aplicados: string[] | null = null): Migracion {
   if (codigo === null) {
-    return { base, codigo, atras: null, aplicados: null, motivo: 'no se pudo saber la última migración del código (LIKIDA_MIGRACION_CODIGO ausente y sin carpeta supabase/migrations)' };
+    return { base, codigo, atras: null, adelante: null, aplicados: null, motivo: 'no se pudo saber la última migración del código (LIKIDA_MIGRACION_CODIGO ausente y sin carpeta supabase/migrations)' };
   }
   if (base === null) {
-    return { base, codigo, atras: null, aplicados: null, motivo: motivoBase ?? 'no se pudo leer qué migración tiene aplicada la base' };
+    return { base, codigo, atras: null, adelante: null, aplicados: null, motivo: motivoBase ?? 'no se pudo leer qué migración tiene aplicada la base' };
   }
   const atras = Math.max(0, Number(codigo) - Number(base));
   if (atras > 0) {
-    return { base, codigo, atras, aplicados, motivo: `la base va ${atras} migración(es) atrás del código: aplica ${siguiente(base)}..${codigo} antes de desplegar` };
+    return { base, codigo, atras, adelante: 0, aplicados, motivo: `la base va ${atras} migración(es) atrás del código: aplica ${siguiente(base)}..${codigo} antes de desplegar` };
   }
-  return { base, codigo, atras: 0, aplicados };
+  // La deriva INVERSA: el esquema se aplicó y el código no se publicó. Se
+  // denuncia con su propio motivo en vez de clamparse a cero — ver `adelante`.
+  const adelante = Math.max(0, Number(base) - Number(codigo));
+  if (adelante > 0) {
+    return { base, codigo, atras: 0, adelante, aplicados, motivo: `la base va ${adelante} migración(es) ADELANTE del código (base ${base}, código ${codigo}): el esquema se aplicó y este build no se publicó — el código puede estar llamando funciones que una migración ya cambió` };
+  }
+  return { base, codigo, atras: 0, adelante: 0, aplicados };
 }
 
 function siguiente(prefijo: string): string {
