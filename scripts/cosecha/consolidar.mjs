@@ -44,15 +44,26 @@ const host = (u) => { try { return new URL(u).host.replace(/^www\./, ''); } catc
 // rastreador y un CDN de imágenes. Filtrar solo al cosechar deja el error
 // congelado en los datos ya bajados; filtrar aquí lo corrige sin re-bajar 2,000
 // páginas.
-const RUIDO = new RegExp([
+// CodeQL (js/regex/missing-regexp-anchor): los tokens que SON un dominio
+// completo (`x\.com`, `w\.org`, `wp\.com`, `clara\.com`…) casaban como
+// substring en cualquier posición — `x\.com` prendía en `fedex.com` e
+// `imex.com`, `w\.org` en cualquier `…w.org`, `clara\.com` en `declara.com`.
+// No es un hueco de seguridad (es un filtro de ruido sobre datos de
+// investigación), pero SÍ es un bug de datos: portales legítimos descartados
+// como ruido. Se separan en dos listas: DOMINIOS se ancla como sufijo de host
+// (`(?:^|\.)dominio$`, igual que ya hacía `^gob\.mx$` a propósito abajo);
+// FRAGMENTOS son marcas/palabras sin TLD que sí deben casar en cualquier
+// posición (aparecen como subdominio, ruta o parte de un host compuesto,
+// p.ej. `stats.g.doubleclick.net`).
+const DOMINIOS = [
   // los propios directorios y sus dominios de marca
   //
-  // `facturaenlineamexico.com` ENTRA AQUÍ Y ES LA CORRECCIÓN MÁS IMPORTANTE DEL
-  // consolidado: salía como el portal de 889 comercios, con diferencia el mayor
-  // apalancamiento del catálogo. Se abrió con navegador y NO es una plataforma
-  // de facturación: es OTRO DIRECTORIO SEO del mismo dueño que
-  // `facturaelectronicamexico.mx`, enlazado desde la plantilla de las 889
-  // fichas. El "hallazgo" era un enlace de pie de página.
+  // `facturaenlineamexico.com` (ver FRAGMENTOS) fue LA CORRECCIÓN MÁS
+  // IMPORTANTE del consolidado: salía como el portal de 889 comercios, con
+  // diferencia el mayor apalancamiento del catálogo. Se abrió con navegador y
+  // NO es una plataforma de facturación: es OTRO DIRECTORIO SEO del mismo
+  // dueño que `facturaelectronicamexico.mx`, enlazado desde la plantilla de
+  // las 889 fichas. El "hallazgo" era un enlace de pie de página.
   //
   // Es la tercera vez en esta investigación que el dato más llamativo resulta
   // ser un artefacto: antes fueron `doubleclick` con 221 y `wixstatic` con 158.
@@ -61,22 +72,28 @@ const RUIDO = new RegExp([
   // `comofacturar.com` es el CUARTO artefacto de la misma familia: salía con 107
   // comercios y es otro directorio SEO ("Cómo facturar en cualquier comercio en
   // México"). Verificado abriéndolo.
-  'facturaenlineamexico', 'comofacturar\\.com',
-  'facturaelectronicamexico', 'facturasfacil', 'recuperafacturas', 'rfacturacion',
-  'gasolinerasmx', 'facturacion-ticket', 'zummafinancial', 'zumma\\.ai',
-  'clara\\.com', 'claraintelligence', 'gastosdeviaje', 'focaltec', 'dirind',
+  'comofacturar\\.com', 'zumma\\.ai', 'clara\\.com',
   // rastreo, CDNs, fuentes, librerías
-  'doubleclick', 'googletagmanager', 'google-analytics', 'analytics', 'gstatic',
-  'wixstatic', 'wix\\.com', 'parastorage', 'cloudflare', 'jsdelivr', 'unpkg',
-  'jquery', 'bootstrap', 'fontawesome', 'gravatar', 'wp\\.com', 'w\\.org',
+  'wix\\.com', 'wp\\.com', 'w\\.org',
   // redes y mensajería
-  'whatsapp', 'facebook', 'twitter', 'x\\.com', 'instagram', 'youtube',
-  'linkedin', 'tiktok', 'pinterest', 'm\\.me', 'wa\\.me',
-  // gobierno y normativa: son CITAS, no portales de facturación
-  '^gob\\.mx$', 'sat\\.gob\\.mx', 'diputados\\.gob\\.mx', 'dof\\.gob\\.mx',
-  'schema\\.org', 'w3\\.org', 'hubspot', 'calendly', 'meetings\\.',
-  'apps\\.apple\\.com', 'play\\.google',
-].join('|'), 'i');
+  'x\\.com', 'm\\.me', 'wa\\.me',
+  // gobierno y normativa: son CITAS, no portales de facturación — un solo
+  // sufijo cubre gob.mx y cualquier subdominio (sat., diputados., dof., portal.…).
+  'gob\\.mx',
+  'schema\\.org', 'w3\\.org', 'apps\\.apple\\.com', 'play\\.google\\.com',
+];
+const FRAGMENTOS = [
+  'facturaenlineamexico', 'facturaelectronicamexico', 'facturasfacil', 'recuperafacturas',
+  'rfacturacion', 'gasolinerasmx', 'facturacion-ticket', 'zummafinancial',
+  'claraintelligence', 'gastosdeviaje', 'focaltec', 'dirind',
+  'doubleclick', 'googletagmanager', 'google-analytics', 'analytics', 'gstatic',
+  'wixstatic', 'parastorage', 'cloudflare', 'jsdelivr', 'unpkg',
+  'jquery', 'bootstrap', 'fontawesome', 'gravatar',
+  'whatsapp', 'facebook', 'twitter', 'instagram', 'youtube',
+  'linkedin', 'tiktok', 'pinterest',
+  'hubspot', 'calendly', 'meetings\\.',
+];
+const RUIDO = new RegExp(`(?:^|\\.)(?:${DOMINIOS.join('|')})$|(?:${FRAGMENTOS.join('|')})`, 'i');
 const porPortal = new Map();
 let sinPortal = 0;
 
