@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { generateStructured } from '@/lib/llm/openrouter';
-import { createLlmBudget } from '@/lib/llm/budget';
+import { createLlmBudget, type LlmBudget } from '@/lib/llm/budget';
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/lib/logger';
 import type { AdaptadorPortal, ModoAgente, ResultadoAgente } from '../agente';
@@ -9,6 +9,8 @@ import type { CampoListo } from '../pendientes';
 import type { Comercio } from '../comercios';
 import { clasificarFallo, escrituraPermitida, pantallaDeLogin } from '../vinculo_senales';
 import type { FabricaDePagina, InventarioPagina, PaginaConInventario, PaginaPortal } from './playwright_base';
+import { redimensionarParaVision } from '../../intake/cfdi_imagen';
+import { bufferFromDataUrl } from '../../intake/cfdi';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL PILOTO DE VISIÓN — un adaptador para los portales que nadie ha mapeado.
@@ -106,7 +108,7 @@ export const PASOS_MAXIMOS = 14;
  * portal que YA está en vuelo — el número con el que se dimensionó viene de
  * sumar los techos de OTRO adaptador (`pagina_playwright.ts`/`capufe.ts`,
  * ~147 s). Este piloto no tiene ese techo: cada paso es una llamada de visión
- * SIN `signal` (10-12 s típicos, hasta 120 s en el peor caso de la escalera de
+ * (10-12 s típicos, hasta 120 s en el peor caso de la escalera de
  * reintentos), y 14 pasos típicos ya suman 140-168 s — por arriba de los 150 s
  * que el cron le promete a la sesión abierta.
  *
@@ -116,6 +118,15 @@ export const PASOS_MAXIMOS = 14;
  * `MARGEN_LOTE_MS`, que el piloto se autoimpone y consulta ANTES de cada paso
  * nuevo — el mismo patrón que el resto del repo usa donde no se puede
  * cancelar una llamada en vuelo.
+ *
+ * AUDITORÍA 28, MEDIO (REN-A3/REN-A6, REINCIDENTE): «consulta ANTES de cada
+ * paso nuevo» cortaba el SIGUIENTE paso, pero no el que YA estaba en vuelo —
+ * la llamada de visión de `decidir()` seguía sin `signal`, así que un paso
+ * individual podía tardar los 120 s del peor caso de la escalera de
+ * reintentos y quedarse solo, muy por encima de lo que le queda a la sesión.
+ * Ahora `decidir()` recibe `venceSesionEn` y arma su propio
+ * `AbortSignal.timeout` con lo que quede del presupuesto: el paso en vuelo no
+ * puede rebasar el reloj de la sesión, se corte donde se corte.
  */
 const PRESUPUESTO_SESION_MS = 130_000;
 
@@ -260,6 +271,19 @@ async function volar(op: OpcionesPiloto, campos: CampoListo[], modo: ModoAgente)
     /** REND-A8: el reloj propio de la sesión — ver el comentario de la constante. */
     const venceSesionEn = Date.now() + PRESUPUESTO_SESION_MS;
     let sinTiempo = false;
+    /**
+     * AUDITORÍA 28 (REN-A3, MEDIO, REINCIDENTE): UN `LlmBudget` por SESIÓN de
+     * vuelo, no uno por paso. `decidir()` creaba `createLlmBudget(...,
+     * randomUUID(), ...)` en cada llamada — un `runId` nuevo por cada una de
+     * las hasta 14 llamadas de visión de una sola corrida — así que el techo
+     * `maxRunUsd` (el que de verdad limita el gasto de UNA sesión) se
+     * reiniciaba en cada paso: una sesión de 14 pasos podía reservar hasta 14
+     * veces ese techo en vez de una. El mismo patrón que `run.ts`
+     * (`runAgent`) y `runner.ts` (`loteRedactor`): un `runId`/`budget` creado
+     * UNA vez antes del ciclo y pasado tal cual a cada llamada del ciclo.
+     */
+    const runId = randomUUID();
+    const budget = op.tenantId ? createLlmBudget(op.tenantId, runId, 'ocr_lote') : undefined;
 
     for (let paso = 1; paso <= PASOS_MAXIMOS; paso++) {
       // El corte, ANTES del siguiente paso, no a la mitad de uno: lo que no
@@ -306,7 +330,7 @@ async function volar(op: OpcionesPiloto, campos: CampoListo[], modo: ModoAgente)
       }
 
       captura = await capturaSegura(pagina);
-      const accion = await decidir(op, campos, inv, captura, historial, paso);
+      const accion = await decidir(op, campos, inv, captura, historial, paso, budget, venceSesionEn);
       logger.info('piloto.paso', { comercio: op.comercio.clave, paso, tipo: accion.tipo, selector: accion.selector, veo: accion.veo.slice(0, 120) });
 
       if (accion.hayCaptcha) {
@@ -541,6 +565,10 @@ async function decidir(
   captura: string | undefined,
   historial: string[],
   paso: number,
+  /** AUDITORÍA 28 (REN-A3): el MISMO `LlmBudget` de toda la sesión, no uno por paso. */
+  budget: LlmBudget | undefined,
+  /** AUDITORÍA 28 (REN-A6): el reloj de la sesión — este paso no puede rebasarlo. */
+  venceSesionEn: number,
 ): Promise<AccionPiloto> {
   const datosTicket = campos
     .map((c) => `· ${c.etiqueta}${c.requerido ? ' (requerido)' : ''}: ${c.valor ?? '(sin leer)'}`)
@@ -595,16 +623,68 @@ async function decidir(
     messages: [{ role: 'user', content: usuario }],
     schema: Accion,
     schemaName: 'accion_piloto',
-    images: captura?.startsWith('data:') ? [captura] : captura ? [await comoDataUri(captura)] : undefined,
+    images: captura ? [await comoDataUriAcotada(op.comercio.clave, captura)] : undefined,
     maxTokens: 700,
     temperature: 0,
-    budget: op.tenantId ? createLlmBudget(op.tenantId, randomUUID(), 'ocr_lote') : undefined,
+    budget,
+    // AUDITORÍA 28 (REN-A6, MEDIO, REINCIDENTE de REND-A8): el reloj de la
+    // sesión se consultaba ANTES de arrancar el siguiente paso, pero el paso
+    // YA EN VUELO no tenía `signal` — una llamada de visión podía tardar los
+    // 120 s del peor caso de la escalera de reintentos de `openrouter.ts` y
+    // quedarse sola, sin que nada la cortara al llegar al presupuesto de la
+    // sesión.
+    signal: senalDeSesion(venceSesionEn),
   });
   return data;
 }
 
+/**
+ * La señal que le pone techo al PASO EN VUELO: se aborta cuando se acaba lo
+ * que queda del presupuesto de la SESIÓN completa (REN-A6, auditoría 28).
+ *
+ * Mismo patrón que `senal()` de `presupuesto.ts`: `AbortSignal.timeout(0)` NO
+ * aborta de inmediato, se agenda — así que con el reloj ya vencido se
+ * devuelve una señal YA abortada, para que el paso se corte limpio en vez de
+ * quedarse colgado esperando el timeout por defecto del SDK (10 minutos).
+ */
+function senalDeSesion(venceSesionEn: number): AbortSignal {
+  const ms = venceSesionEn - Date.now();
+  if (!(ms > 0)) {
+    const ac = new AbortController();
+    ac.abort();
+    return ac.signal;
+  }
+  return AbortSignal.timeout(ms);
+}
+
+/**
+ * La captura, acotada al mismo ancho que ya usa el resto del repo antes de
+ * mandar una imagen a visión (`redimensionarParaVision`, `cfdi_imagen.ts`).
+ *
+ * AUDITORÍA 28, MEDIO (REN-M5): esta llamada mandaba la captura TAL CUAL —el
+ * JPEG completo de `pagina_playwright.ts` (hasta `MAX_CAPTURA_B64`) o, en la
+ * Mac, el archivo en disco sin acotar ningún lado— mientras que el OCR de
+ * comprobantes (`ocr.ts`) ya reusa este mismo redimensionado para no mandar
+ * una foto a resolución nativa que se reenvía tal cual en cada intento de la
+ * escalera de reintentos. Si el redimensionado falla, la captura se manda
+ * TAL CUAL: es la evidencia del ensayo, y perderla por un problema de `sharp`
+ * sería peor que mandarla grande.
+ */
+async function comoDataUriAcotada(comercio: string, captura: string): Promise<string> {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta de la captura de pantalla que el propio piloto generó con Playwright; nunca viene de entrada de usuario.
+    const buf = captura.startsWith('data:') ? bufferFromDataUrl(captura) : await readFile(captura);
+    const reducida = await redimensionarParaVision(buf);
+    return `data:image/jpeg;base64,${reducida.toString('base64')}`;
+  } catch (e) {
+    logger.warn('piloto.redimension_fallo', { comercio, err: e instanceof Error ? e.message : String(e) });
+    return captura.startsWith('data:') ? captura : await comoDataUri(captura);
+  }
+}
+
 /** En la Mac la captura es una RUTA en disco; el modelo necesita el data-uri. */
 async function comoDataUri(ruta: string): Promise<string> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta de la captura de pantalla que el propio piloto generó con Playwright; nunca viene de entrada de usuario.
   const buf = await readFile(ruta);
   return `data:image/jpeg;base64,${buf.toString('base64')}`;
 }
