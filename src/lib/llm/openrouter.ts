@@ -391,28 +391,9 @@ export async function generateResponse(opts: {
       try { await settleLlmBudget(opts.budget!, reservation, amount); }
       catch (e) { logger.error('llm.presupuesto_no_liquidado', { runId: opts.budget?.runId, err: e instanceof Error ? e.message : String(e) }); }
     };
+    let res: OpenAI.Chat.ChatCompletion;
     try {
-      const res = await getClient().chat.completions.create(body, opts.signal ? { signal: opts.signal } : undefined);
-      const tokensIn = res.usage?.prompt_tokens ?? 0;
-      const tokensOut = res.usage?.completion_tokens ?? 0;
-      const costo = costoReal(res.usage as { cost?: number } | undefined, m, tokensIn, tokensOut);
-      const usageValido = Boolean(res.usage && (tokensIn > 0 || tokensOut > 0 || typeof (res.usage as { cost?: unknown }).cost === 'number'));
-      const costoContabilizado = usageValido ? costo : reservation?.amountUsd ?? costo;
-      await settle(costoContabilizado);
-      // Si el proveedor omite `usage`, el ledger conserva la reserva por
-      // seguridad. El resultado público debe reflejar lo mismo; devolver 0
-      // aquí haría que el Redactor/runner subestimara su gasto aunque la RPC
-      // central ya hubiera retenido la reserva.
-      //
-      // TOOL-CALLING-19C2-1 (barrido MEDIO/BAJO): `costoContabilizado` en
-      // ese caso es la RESERVA (una cota conservadora), no lo medido de
-      // verdad — mismo patrón que `noMedido` en `intake/ocr.ts`. Sin la
-      // marca, un consumidor (p.ej. `redactor.ts`) lo escribía en
-      // `llm_costo` como si fuera una cifra real.
-      return {
-        text: (res.choices[0]?.message?.content ?? '').trim(), model: res.model || m, tokensIn, tokensOut, cost: costoContabilizado,
-        ...(usageValido ? {} : { noMedido: true as const }),
-      };
+      res = await getClient().chat.completions.create(body, opts.signal ? { signal: opts.signal } : undefined);
     } catch (e) {
       // BACKEND-19C2-1: antes se liquidaba aquí al monto RESERVADO (el
       // estimado, no lo que de verdad se gastó) — una racha de
@@ -423,12 +404,58 @@ export async function generateResponse(opts: {
       if (reservation) logger.error('llm.reserva_sin_liquidar_por_error', { runId: opts.budget?.runId, reservaId: reservation.id, err: e instanceof Error ? e.message : String(e) });
       throw e;
     }
+    const tokensIn = res.usage?.prompt_tokens ?? 0;
+    const tokensOut = res.usage?.completion_tokens ?? 0;
+    const costo = costoReal(res.usage as { cost?: number } | undefined, m, tokensIn, tokensOut);
+    const usageValido = Boolean(res.usage && (tokensIn > 0 || tokensOut > 0 || typeof (res.usage as { cost?: unknown }).cost === 'number'));
+    const costoContabilizado = usageValido ? costo : reservation?.amountUsd ?? costo;
+    await settle(costoContabilizado);
+    // AUDITORÍA 28, TC-A3: SE CORTÓ ≠ TERMINÓ. `generateStructured` y
+    // `generateWithTools` ya distinguen `finish_reason === 'length'` con
+    // `TruncatedError` — aquí faltaba. Sin esto, una respuesta cortada a
+    // media frase (el modelo se quedó sin `max_tokens` a la mitad de
+    // explicar una norma fiscal) volvía como si fuera texto completo: el
+    // llamador (p.ej. `entrevista-agente.ts`) la presentaba al dueño de la
+    // flota como una explicación entera de la ley, cuando en realidad se
+    // cortó a medio artículo. Va DESPUÉS de `settle`: la llamada ya se pagó,
+    // truncada o no.
+    if (res.choices[0]?.finish_reason === 'length') {
+      throw new TruncatedError(
+        `Respuesta truncada: se agotaron los ${body.max_tokens} tokens de salida (usó ${tokensOut}) antes de terminar`,
+        tokensOut,
+        Number(body.max_tokens),
+        res.choices[0]?.message?.content ?? undefined,
+        { model: res.model || m, tokensIn, tokensOut, cost: costoContabilizado },
+      );
+    }
+    // Si el proveedor omite `usage`, el ledger conserva la reserva por
+    // seguridad. El resultado público debe reflejar lo mismo; devolver 0
+    // aquí haría que el Redactor/runner subestimara su gasto aunque la RPC
+    // central ya hubiera retenido la reserva.
+    //
+    // TOOL-CALLING-19C2-1 (barrido MEDIO/BAJO): `costoContabilizado` en
+    // ese caso es la RESERVA (una cota conservadora), no lo medido de
+    // verdad — mismo patrón que `noMedido` en `intake/ocr.ts`. Sin la
+    // marca, un consumidor (p.ej. `redactor.ts`) lo escribía en
+    // `llm_costo` como si fuera una cifra real.
+    return {
+      text: (res.choices[0]?.message?.content ?? '').trim(), model: res.model || m, tokensIn, tokensOut, cost: costoContabilizado,
+      ...(usageValido ? {} : { noMedido: true as const }),
+    };
   };
 
   try {
     return await once(model);
   } catch (err) {
-    if (!fallback || !isTransientError(err)) throw err;
+    // TruncatedError no es un fallo de PROVEEDOR — es presupuesto de salida
+    // agotado, y cambiar de proveedor no lo arregla (mismo criterio que
+    // `generateStructured`/`generateWithTools`, que nunca lo pasan por su
+    // escalera de fallback cross-provider). Se excluye ANTES de
+    // `isTransientError` a propósito: su mensaje dice "se agotaron los 500
+    // tokens…" cuando `maxTokens` cae en el default, y `isTransientError`
+    // lee cualquier "5xx" suelto en el texto como un fallo del proveedor —
+    // el mismo dígito, por coincidencia numérica, no por ser un fallo real.
+    if (!fallback || err instanceof TruncatedError || !isTransientError(err)) throw err;
     logger.warn('llm.fallback', { from: model, to: fallback });
     return await once(fallback);
   }
@@ -452,8 +479,18 @@ export class StructuredError extends Error {
     message: string,
     public cause?: unknown,
     public raw?: string,
-    /** Consumo de la llamada que falló: se cobra igual, hay que contabilizarlo. */
-    public usage?: { model: string; tokensIn: number; tokensOut: number; cost: number },
+    /**
+     * Consumo de la llamada que falló: se cobra igual, hay que contabilizarlo.
+     *
+     * `costoPorModelo` (AUDITORÍA 28, TC-B5) solo trae más de una llave
+     * cuando el ciclo de reintentos de `generateStructured` cruzó de
+     * proveedor —`model`/`tokensIn`/`tokensOut`/`cost` de arriba siguen
+     * siendo el TOTAL acumulado (correcto, ya probado), pero esa etiqueta
+     * `model` sola es la del ÚLTIMO intento y atribuye TODO el gasto al
+     * modelo equivocado si hubo más de uno. Mismo criterio que
+     * `costoPorModelo` en `generateWithTools`.
+     */
+    public usage?: { model: string; tokensIn: number; tokensOut: number; cost: number; costoPorModelo?: Record<string, { tokensIn: number; tokensOut: number; cost: number }> },
   ) {
     super(message);
     this.name = 'StructuredError';
@@ -473,7 +510,7 @@ export class TruncatedError extends StructuredError {
     public tokensUsados: number,
     public tope: number,
     raw?: string,
-    usage?: { model: string; tokensIn: number; tokensOut: number; cost: number },
+    usage?: { model: string; tokensIn: number; tokensOut: number; cost: number; costoPorModelo?: Record<string, { tokensIn: number; tokensOut: number; cost: number }> },
   ) {
     super(message, undefined, raw, usage);
     this.name = 'TruncatedError';
@@ -586,7 +623,7 @@ export async function generateStructured<T>(opts: {
   temperature?: number;
   /** Reserva dura por corrida/tenant antes de cada intento, incluido fallback. */
   budget?: LlmBudget;
-}): Promise<{ data: T; raw: string; model: string; tokensIn: number; tokensOut: number; cost: number }> {
+}): Promise<{ data: T; raw: string; model: string; tokensIn: number; tokensOut: number; cost: number; costoPorModelo: Record<string, { tokensIn: number; tokensOut: number; cost: number }> }> {
   const model = modelFor(opts.role);
   const fallback = FALLBACK[model] ?? null;
   const jsonSchema = z.toJSONSchema(opts.schema, { target: 'draft-7' }) as Record<string, unknown>;
@@ -627,13 +664,27 @@ export async function generateStructured<T>(opts: {
   // habiendo pagado dos, tres o cuatro. Likida va a cobrar por liquidación, así
   // que un costo unitario subestimado se propaga directo al precio.
   const gastado = { tokensIn: 0, tokensOut: 0, cost: 0 };
-  const cobrar = (u: { tokensIn: number; tokensOut: number; cost: number }) => {
+  /**
+   * AUDITORÍA 28, TC-B5 (etiqueta de modelo). `gastado` ya suma el TOTAL
+   * correcto — ningún intento se pierde ni se duplica, y eso ya estaba
+   * probado (`openrouter_costo.test.ts`) — pero el `return` solo llevaba una
+   * etiqueta `model`: la del ÚLTIMO intento. Un ciclo que falla en el
+   * primario y cierra en el fallback cross-provider (CR-5, más abajo)
+   * reportaba el costo TOTAL (primario + fallback, dos tarifas distintas)
+   * bajo el modelo que NO corrió los intentos previos. Mismo criterio que
+   * `costoPorModelo` en `generateWithTools` (B23, auditoría 10), que faltaba
+   * aquí.
+   */
+  const costoPorModelo: Record<string, { tokensIn: number; tokensOut: number; cost: number }> = {};
+  const cobrar = (u: { model: string; tokensIn: number; tokensOut: number; cost: number }) => {
     gastado.tokensIn += u.tokensIn;
     gastado.tokensOut += u.tokensOut;
     gastado.cost += u.cost;
+    const prev = costoPorModelo[u.model] ?? { tokensIn: 0, tokensOut: 0, cost: 0 };
+    costoPorModelo[u.model] = { tokensIn: prev.tokensIn + u.tokensIn, tokensOut: prev.tokensOut + u.tokensOut, cost: prev.cost + u.cost };
   };
 
-  const attempt = async (m: string, note?: string, tope?: number): Promise<{ data: T; raw: string; model: string; tokensIn: number; tokensOut: number; cost: number }> => {
+  const attempt = async (m: string, note?: string, tope?: number): Promise<{ data: T; raw: string; model: string; tokensIn: number; tokensOut: number; cost: number; costoPorModelo: Record<string, { tokensIn: number; tokensOut: number; cost: number }> }> => {
     // Si el presupuesto ya se agotó, no se paga una llamada que se va a cortar a
     // media respuesta.
     opts.signal?.throwIfAborted();
@@ -713,7 +764,7 @@ export async function generateStructured<T>(opts: {
     // Se devuelve el ACUMULADO del turno, no el de este intento: el llamador
     // quiere saber qué costó extraer este comprobante, no qué costó el último
     // reintento.
-    return { data: v.data, raw, model: usage.model, ...gastado };
+    return { data: v.data, raw, model: usage.model, ...gastado, costoPorModelo };
   };
 
   /**
@@ -728,7 +779,7 @@ export async function generateStructured<T>(opts: {
     // en el log y en Sentry. Se sube al MENSAJE, que es lo único que casi todos
     // los `logger.error({ err: e.message })` del repo leen.
     const err = e instanceof StructuredError ? e : new StructuredError(`${msg}: ${resumenCausa(e)}`, e);
-    err.usage = { model, ...gastado };
+    err.usage = { model, ...gastado, costoPorModelo };
     return err;
   };
 
@@ -749,7 +800,7 @@ export async function generateStructured<T>(opts: {
         // pasándolo por la escalera de "formato malo". Se relanza tal cual para
         // conservar el diagnóstico, pero con el consumo de AMBOS intentos: el
         // error trae el suyo, y el del primero se perdía.
-        if (eT instanceof TruncatedError) { eT.usage = { model, ...gastado }; throw eT; }
+        if (eT instanceof TruncatedError) { eT.usage = { model, ...gastado, costoPorModelo }; throw eT; }
       }
     }
     // Reintento con el MISMO modelo + nota (típicamente errores de formato JSON).
@@ -777,7 +828,23 @@ export type ToolExecutor = (name: string, args: Record<string, unknown>, signal?
 export type ToolCallRecord = { toolName: string; args: Record<string, unknown>; result: unknown; durationMs: number; error?: string };
 
 export class LoopGuardError extends Error {
-  constructor(public rounds: number) {
+  constructor(
+    public rounds: number,
+    /**
+     * Lo que YA se ejecutó antes de que el guard cortara.
+     *
+     * AUDITORÍA 28, mitad de TC-M2: hoy el catch-all de `generateWithTools`
+     * SIEMPRE envuelve este error en `PartialExecutionError` antes de que
+     * cualquier llamador lo vea, y ese envoltorio ya trae `partialToolCalls`
+     * (ver más abajo) — así que en la práctica el dato NO se pierde. Pero la
+     * clase en sí nacía sin esa evidencia: un `catch` que capturara
+     * `LoopGuardError` directo (una prueba, o un camino futuro que no pase
+     * por el envoltorio) no tenía forma de reconstruir un cierre parcial
+     * `ok:false` a partir del error solo. Se deja aquí TAMBIÉN, no en vez de,
+     * para que la clase sea autocontenida.
+     */
+    public executed: ToolCallRecord[] = [],
+  ) {
     super(`Ciclo de tools excedió ${rounds} rondas`);
     this.name = 'LoopGuardError';
   }
@@ -1187,7 +1254,7 @@ export async function generateWithTools(opts: {
       let llamadas = calls;
       if (round === maxRounds - 1) {
         llamadas = calls.filter(esTerminal);
-        if (llamadas.length === 0) throw new LoopGuardError(maxRounds);
+        if (llamadas.length === 0) throw new LoopGuardError(maxRounds, executed);
       }
 
       convo.push({ role: 'assistant', content: choice.message.content ?? null, tool_calls: llamadas });
@@ -1254,7 +1321,7 @@ export async function generateWithTools(opts: {
         return { finalText: choice.message.content ?? '', toolCalls: executed, model: used, tokensIn: tokIn, tokensOut: tokOut, cost: costo, costoPorModelo };
       }
     }
-    throw new LoopGuardError(maxRounds);
+    throw new LoopGuardError(maxRounds, executed);
   } catch (err) {
     if (err instanceof PartialExecutionError) throw err;
     throw new PartialExecutionError(err instanceof Error ? err.message : String(err), err, executed, tokIn, tokOut, costo);
