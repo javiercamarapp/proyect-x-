@@ -143,6 +143,15 @@ export async function GET(req: Request) {
         }
         let id: string | undefined;
         try { id = (JSON.parse(body) as { messages?: Array<{ id?: string }> }).messages?.[0]?.id; } catch { /* no wamid */ }
+        // SEG-A1 (auditoría 28): defensa en profundidad. Un `id` con prefijo
+        // `qa_` nunca lo emite Meta (sus wamid empiezan `wamid.`) — solo
+        // puede venir del interceptor sintético de qa-motor.ts si, pese al
+        // aislamiento por AsyncLocalStorage, este `fetch` real se coló por
+        // ese parche. Tratarlo como sin wamid: nunca sellar como entregado.
+        if (id?.startsWith('qa_')) {
+          logger.error('wa.outbox_id_sintetico_qa', { id: s.id, wamid: id, cuerpo: body.slice(0, 300) });
+          id = undefined;
+        }
         if (!id) {
           // `r.ok` prueba aceptación HTTP, pero sin wamid no existe una
           // identidad que el webhook pueda reconciliar. Reenviar duplicaría un
