@@ -164,9 +164,17 @@ const { PartialExecutionError } = await import('@/lib/llm/openrouter');
 
 const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
 
+// `liq`: en producción `guardar_liquidacion` SIEMPRE lo devuelve (AG-3,
+// tools.ts) — es el snapshot que `guardiaCifras` usa para narrar el cierre
+// SIN volver a preguntarle a la base (auditoría 28, TC-A1). Sin él, la guardia
+// falla cerrado en vez de recalcular — esta prueba no es sobre esa rama.
+const LIQ_CIERRE = {
+  totalComprobado: 4850, totalAnticipo: 5000, diferencia: 150, diferencias: [],
+  litrosDieselAcreditables: 0, ivaAcreditable: 0, peajeAcreditable: 0,
+};
 const cierre = (pdf_generado: boolean, pdf_contralor_generado = pdf_generado) => ({
   finalText: 'Listo, cerré tu viaje',
-  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: pdf_generado || pdf_contralor_generado ? 't1/v1.pdf' : null, pdf_generado, pdf_contralor_generado }, durationMs: 5 }],
+  toolCalls: [{ toolName: 'guardar_liquidacion', args: {}, result: { liquidacion_id: 'L1', pdf_url: pdf_generado || pdf_contralor_generado ? 't1/v1.pdf' : null, pdf_generado, pdf_contralor_generado, liq: LIQ_CIERRE }, durationMs: 5 }],
   model: 'm', tokensIn: 1, tokensOut: 1, costUsd: 0,
 });
 

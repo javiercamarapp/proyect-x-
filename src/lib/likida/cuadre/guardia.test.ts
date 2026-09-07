@@ -70,14 +70,31 @@ describe('guardiaCifras', () => {
   });
 
   it('guardar_liquidacion: ahí sí se afirma el cierre', async () => {
-    const r = await guardiaCifras('sobró 999', [tc('guardar_liquidacion')], 't', 'v');
+    // Con el snapshot que la tool SIEMPRE devuelve en producción (`result.liq`,
+    // AG-3) — sin él, la guardia falla cerrado en vez de recalcular (ver el
+    // describe de abajo, "sin snapshot de cierre").
+    const r = await guardiaCifras('sobró 999', [tcRes('guardar_liquidacion', { liq: LIQ })], 't', 'v');
     expect(r.forzado).toBe(true);
     expect(r.reply).toContain('Listo, cuadré');
+    expect(cuadrarDesdeDB).not.toHaveBeenCalled();
   });
 
   it('guardar_liquidacion CON error: no afirma el cierre', async () => {
     const r = await guardiaCifras('sobró 999', [tc('guardar_liquidacion', new Error('boom'))], 't', 'v');
     expect(r.reply).not.toContain('Listo, cuadré');
+  });
+
+  // ── AUDITORÍA 28, TC-A1 (ampliación de AG-3) ──────────────────────────────
+  // `cerro` sin snapshot solía caer a `cuadrarDesdeDB` en `best_effort` — el
+  // mismo bug que el bloque "AG-3" de abajo prueba para el camino con
+  // snapshot. Aquí, sin snapshot, lo único correcto es fallar cerrado: nunca
+  // inventar un cuadre nuevo sobre un cierre que el PDF ya archivó distinto.
+  it('guardar_liquidacion SIN snapshot (liq ausente): fail-closed, no recalcula', async () => {
+    const r = await guardiaCifras('sobró 999', [tc('guardar_liquidacion')], 't', 'v');
+    expect(r.forzado).toBe(true);
+    expect(cuadrarDesdeDB).not.toHaveBeenCalled();
+    expect(r.reply).not.toContain('Listo, cuadré');
+    expect(r.reply).not.toMatch(/\$|\d{2,}/);
   });
 
   it('solo consultar_politica + cifras (topes): respeta el texto', async () => {
@@ -239,7 +256,7 @@ describe('guardiaCifras — el encabezado afirma el cierre cuando de verdad se c
   });
 
   it('con guardar_liquidacion, afirma el cierre', async () => {
-    const r = await guardiaCifras('Ya quedó, te paso el resumen: 8000', [tc('guardar_liquidacion')], 't', 'v');
+    const r = await guardiaCifras('Ya quedó, te paso el resumen: 8000', [tcRes('guardar_liquidacion', { liq: LIQ })], 't', 'v');
     expect(r.forzado).toBe(true);
     expect(r.reply).toMatch(/cuadré tu viaje/i);
   });

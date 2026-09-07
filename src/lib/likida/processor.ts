@@ -15,7 +15,7 @@ import { fechaDudosa } from '@/lib/likida/cuadre/fecha_dudosa';
 import { pipelineTenantApagado } from '@/lib/likida/interruptor_tenant';
 import { etiquetaConcepto, copiasDeComprobante } from '@/lib/likida/cuadre/engine';
 import { mensajePideFechaOtraVez } from '@/lib/likida/intake/pedir_fecha';
-import { resumenCuadre } from '@/lib/likida/cuadre/resumen';
+import { resumenCuadre, type CuadreParaResumen } from '@/lib/likida/cuadre/resumen';
 import { PartialExecutionError, isTransientError, esErrorDePresupuesto, type ToolCallRecord } from '@/lib/llm/openrouter';
 import type { Gasto } from '@/types/likida';
 import { extraerComprobante } from '@/lib/likida/intake/ocr';
@@ -65,7 +65,7 @@ import {
   guardarHuerfano, getHuerfanos, resolverHuerfanos, marcarHuerfanosOfrecidos, getViaje,
   enriquecerGastoConCodigo, guardarCodigoPendiente, getCodigosPendientes, reclamarCodigoPendiente,
   getDatosResponsable, reclamarEnvioAviso, confirmarEnvioAviso, liberarEnvioAviso,
-  getLiquidacionDeViaje,
+  getLiquidacionDeViaje, getSnapshotCierreLiquidacion,
   registrarSolicitudArco,
 } from '@/lib/likida/repo';
 import {
@@ -1221,19 +1221,67 @@ async function confirmarCierreEnBase(tenantId: string, viajeId: string): Promise
       return { estado: 'no_verificable', err: 'La liquidación y el viaje no confirman un cierre vigente coherente' };
     }
     const hayPdf = liq.pdf_url != null;
+    // ── AUDITORÍA 28, TC-A1: EL SNAPSHOT ARCHIVADO, NO UN RECÁLCULO ─────────
+    //
+    // Hasta aquí el registro sintético salía SIN `liq`, y `guardiaCifras`
+    // (cuadre/guardia.ts) se quedaba sin `snapshotCierre` y recalculaba en
+    // `best_effort` para armar el WhatsApp — mientras el PDF archivado se
+    // calculó en `cierre`. Tres lecturas degradan en silencio entre un modo y
+    // otro (perfil, acumulado del ejercicio, líneas ECC): el PDF y el
+    // WhatsApp del MISMO cierre podían narrar dos cuadres distintos.
+    //
+    // La fila de `liquidacion` YA guarda el cuadre archivado completo (ver
+    // `saveLiquidacion`/`guardar_liquidacion_tx`): el snapshot está a un
+    // `select` de distancia, por `id` — la fila EXACTA que se acaba de leer
+    // arriba, no por `viaje_id` (que un segundo cierre concurrente podría
+    // sustituir entre esta lectura y la siguiente).
+    //
+    // Un fallo AQUÍ no puede tumbar el `estado: 'cerrado'` que ya se
+    // confirmó con evidencia sólida (el select de arriba): se degrada a
+    // "cerrado sin snapshot", nunca a "no sé si cerró".
+    let snapshot: CuadreParaResumen | undefined;
+    try {
+      snapshot = (await getSnapshotCierreLiquidacion(tenantId, liq.id)) ?? undefined;
+      if (!snapshot) {
+        logger.error('agent.cierre_recuperado_sin_snapshot', { tenant: tenantId, viaje: viajeId, liquidacion: liq.id, motivo: 'fila no encontrada' });
+      }
+    } catch (e) {
+      logger.error('agent.cierre_recuperado_sin_snapshot', { tenant: tenantId, viaje: viajeId, liquidacion: liq.id, err: e instanceof Error ? e.message : String(e) });
+    }
     return {
       estado: 'cerrado',
       liqId: liq.id,
       registro: {
         toolName: 'guardar_liquidacion',
         args: {},
-        result: { liquidacion_id: liq.id, pdf_url: liq.pdf_url, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf },
+        result: { liquidacion_id: liq.id, pdf_url: liq.pdf_url, pdf_generado: hayPdf, pdf_contralor_generado: hayPdf, liq: snapshot },
         durationMs: 0,
       } as ToolCallRecord,
     };
   } catch (e) {
     return { estado: 'no_verificable', err: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * El texto de WhatsApp para un cierre recuperado (`confirmarCierreEnBase`
+ * ya confirmó `estado: 'cerrado'`).
+ *
+ * AUDITORÍA 28, TC-M1: los dos caminos de recuperación (más abajo) volvían a
+ * llamar `cuadrarDesdeDB(tenantId, viajeId)` — un SEGUNDO barrido del
+ * ejercicio en el mismo turno que ya hizo uno (`guardiaCifras`, ochenta
+ * líneas después, siempre recalcula si no encuentra `snapshotCierre` en
+ * `agentTools`). Dos `best_effort` en el mismo turno pueden diferir entre
+ * sí, y el primer texto se tiraba de todos modos porque la guardia lo
+ * sustituye. Con el snapshot ya en `registro.result.liq` (TC-A1), no hace
+ * falta preguntarle a la base otra vez: se narra la MISMA fotografía que va
+ * a imprimir la guardia.
+ */
+function replyDeCierreRecuperado(registro: ToolCallRecord): string {
+  const snapshot = (registro.result as { liq?: CuadreParaResumen } | undefined)?.liq;
+  return snapshot
+    ? resumenCuadre(snapshot, true, 'operador')
+    : 'Ya cerré tu liquidación ✅. Te mando el PDF.';
 }
 
 /**
@@ -4012,11 +4060,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           logger.error('agent.cierre_commiteado_tras_fallo_tool', { tenant: op.tenantId, viaje: viajeId, liquidacion: enBase.liqId });
           closed = true;
           agentTools = [...res.toolCalls.filter((t) => t.toolName !== 'guardar_liquidacion'), enBase.registro];
-          try {
-            reply = resumenCuadre(await cuadrarDesdeDB(op.tenantId, viajeId), true, 'operador');
-          } catch {
-            reply = 'Ya cerré tu liquidación ✅. Te mando el PDF.';
-          }
+          reply = replyDeCierreRecuperado(enBase.registro);
         } else if (enBase.estado === 'no_verificable') {
           // Fail-closed y DICHO: no se afirma ni «cerré» ni «no cerré».
           logger.error('agent.cierre_no_verificable', { tenant: op.tenantId, viaje: viajeId, err: enBase.err });
@@ -4144,14 +4188,12 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           try { await vincularCostosALiquidacion(op.tenantId, viajeId, liqId); } catch { /* best-effort */ }
         }
         // Resumen determinístico del motor (nunca cifras del modelo). Fail-closed:
-        // si no se puede recalcular, se avisa el cierre sin números (el PDF va abajo).
-        try {
-          // Va por WhatsApp AL OPERADOR: sin veredicto fiscal (EFOS, cancelado,
-          // RFC receptor). Eso es del contralor; al operador se le pide lo que falta.
-          reply = resumenCuadre(await cuadrarDesdeDB(op.tenantId, viajeId), true, 'operador');
-        } catch {
-          reply = 'Ya cerré tu liquidación ✅. Te mando el PDF.';
-        }
+        // sin snapshot legible, se avisa el cierre sin números (el PDF va abajo) —
+        // AUDITORÍA 28, TC-M1: ya no se recalcula (`cuadrarDesdeDB`), se narra la
+        // MISMA fotografía archivada que `cierreParcial.result.liq` ya trae.
+        // Va por WhatsApp AL OPERADOR: sin veredicto fiscal (EFOS, cancelado, RFC
+        // receptor). Eso es del contralor; al operador se le pide lo que falta.
+        reply = replyDeCierreRecuperado(cierreParcial);
         logger.warn('agent.cierre_parcial_recuperado', { viaje: viajeId, liqId });
       } else {
         // Con tenant y viaje: sin ellos, a las 3am el log dice que algo falló

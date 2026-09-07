@@ -8,10 +8,11 @@ import type { DatosIntegral, SenalGps } from './privacidad';
 import { CONECTORES_GPS } from './conectores/gps';
 import { acotada } from './presupuesto';
 import { traerTodo, conteo } from './pg';
-import type { Gasto, Liquidacion, Viaje, Operador } from '@/types/likida';
+import type { Gasto, Liquidacion, Viaje, Operador, Diferencia } from '@/types/likida';
 import type { CodigoPendiente } from './intake/emparejar';
 import { violaIndice } from './pg_errores';
 import { declararUmbralPeaje, declararFacilidad15 } from './perfil/preguntas';
+import type { CuadreParaResumen } from './cuadre/resumen';
 
 // El tope de consulta vive en `presupuesto.ts`, con `TOPE_CONSULTA_MS` y el
 // resto del presupuesto de la invocación. Estuvo aquí hasta la auditoría 8, y
@@ -1120,6 +1121,57 @@ export async function getLiquidacionDeViaje(
   if (!data) return undefined;
   const f = data as { id: unknown; pdf_url: unknown };
   return { id: String(f.id), pdfUrl: f.pdf_url == null ? null : String(f.pdf_url) };
+}
+
+/**
+ * La fotografía YA ARCHIVADA de un cierre — para narrar por WhatsApp el MISMO
+ * cuadre que ya se imprimió en los dos PDF, nunca un recálculo.
+ *
+ * AUDITORÍA 28, TC-A1: cuando `confirmarCierreEnBase` (processor.ts) recupera
+ * un cierre que la tool no pudo devolver en vivo (RPC commiteada con la tool
+ * reportando error, o un `PartialExecutionError` a media ronda), el registro
+ * sintético que arma solo traía `pdf_url`/`pdf_generado` — sin el cuadre. La
+ * guardia (`cuadre/guardia.ts`) se quedaba sin `snapshotCierre` y volvía a
+ * calcular en `best_effort`, degradando en silencio tres lecturas del
+ * ejercicio: el PDF archivado y el WhatsApp del MISMO cierre podían narrar dos
+ * cuadres distintos.
+ *
+ * Se lee por `id` (la fila EXACTA que `confirmarCierreEnBase` ya identificó
+ * como el cierre vigente), no por `viaje_id`: un segundo cierre concurrente no
+ * puede sustituir la fila entre las dos lecturas.
+ *
+ * Solo trae las columnas que `resumenCuadre` (cuadre/resumen.ts) de verdad lee
+ * — ver `CuadreParaResumen`. Las tres cubetas de deducibilidad y `gastos` NO
+ * se persisten en `liquidacion` (solo existen en el objeto que arma el motor
+ * al momento del cierre) y `resumenCuadre` no las usa: no se inventan aquí.
+ *
+ * `null` = la fila no existe (no debería pasar si `confirmarCierreEnBase` ya
+ * la vio, pero una lectura y otra no son atómicas). LANZA si no se puede leer:
+ * un error de red no es "no hay snapshot", es "no se sabe" — el llamador lo
+ * trata como fail-closed (sin snapshot, texto neutro, `logger.error`).
+ */
+export async function getSnapshotCierreLiquidacion(
+  tenantId: string,
+  id: string,
+): Promise<CuadreParaResumen | null> {
+  const { data, error } = await acotada(supabaseAdmin().from('liquidacion')
+    .select('total_comprobado, total_anticipo, diferencia, diferencias, litros_diesel_acreditables, iva_acreditable, peaje_acreditable')
+    .eq('tenant_id', tenantId).eq('id', id).maybeSingle(), 'getSnapshotCierreLiquidacion');
+  if (error) throw new Error(`getSnapshotCierreLiquidacion: ${error.message}`);
+  if (!data) return null;
+  const f = data as {
+    total_comprobado: unknown; total_anticipo: unknown; diferencia: unknown;
+    diferencias: unknown; litros_diesel_acreditables: unknown; iva_acreditable: unknown; peaje_acreditable: unknown;
+  };
+  return {
+    totalComprobado: Number(f.total_comprobado ?? 0),
+    totalAnticipo: Number(f.total_anticipo ?? 0),
+    diferencia: Number(f.diferencia ?? 0),
+    diferencias: (f.diferencias as Diferencia[] | null) ?? [],
+    litrosDieselAcreditables: Number(f.litros_diesel_acreditables ?? 0),
+    ivaAcreditable: Number(f.iva_acreditable ?? 0),
+    peajeAcreditable: Number(f.peaje_acreditable ?? 0),
+  };
 }
 
 export async function saveLiquidacion(
