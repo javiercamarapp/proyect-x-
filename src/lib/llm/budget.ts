@@ -16,9 +16,10 @@ import { COSTO_ESTIMADO_USD } from './models';
 // Tres propósitos (dominio cerrado, el mismo CHECK de la 0244):
 //   · 'interactivo' — hay una persona esperando AHORA: el turno de WhatsApp
 //     del chofer (agente, OCR de SU ticket, su audio), los chats del
-//     dashboard y las subidas manuales.
+//     dashboard —incluido el analista ("Pregunta a tus datos")— y las
+//     subidas manuales.
 //   · 'ocr_lote'    — extracción de comprobantes en fondo (piloto de visión).
-//   · 'fondo'       — agentes de back office (runner, analista, redactor).
+//   · 'fondo'       — agentes de back office (runner, redactor).
 //
 // La RESERVA: 'ocr_lote' y 'fondo' solo gastan hasta (tope_tenant − reserva);
 // 'interactivo' puede usar el techo completo. Cuando el fondo toca su parte,
