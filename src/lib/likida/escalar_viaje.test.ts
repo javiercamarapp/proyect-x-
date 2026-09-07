@@ -647,14 +647,24 @@ describe('el aviso de escalados por flota', () => {
     expect(avisarCorridasPorFlota).toHaveBeenCalledTimes(1);
   });
 
-  it('una flota sin escalados no recibe el aviso: un claim que no se pudo escribir no es un viaje escalado', async () => {
+  it('una flota sin escalados CIERRA el incidente de "escalado" (AG-A5, auditoría 28): un claim que no se pudo escribir no es un viaje escalado', async () => {
     resultadosUpdate = [{ error: { message: 'deadlock' } }];
     lectura = { data: [fila()], error: null };
 
     const r = await escalarViajesSinAceptar({ telefonoJefePorTenant: TEL, ahora: AHORA });
 
     expect(r.escalados).toBe(0);
-    expect(avisar).not.toHaveBeenCalled();
+    // Hasta la auditoría 28 esto era `expect(avisar).not.toHaveBeenCalled()`:
+    // una flota SIN escalados exitosos nunca mandaba `hayProblema: false`, así
+    // que el filo de `escalado` no se re-armaba y tras la tercera marca de
+    // insistencia quedaba mudo para siempre. Ahora SÍ se llama —con la
+    // magnitud real, cero— porque esta flota SÍ fue evaluada esta corrida
+    // (tuvo un candidato, aunque el claim fallara). El fallo del claim en sí
+    // se cuenta aparte, como `corrida_fallida` (ver abajo).
+    expect(avisar).toHaveBeenCalledTimes(1);
+    expect(avisar.mock.calls[0].slice(0, 4)).toEqual(
+      ['t-1', 'conductores', 'escalado', { hayProblema: false, magnitud: 0 }],
+    );
     // Pero SÍ entra al cierre de corrida_fallida: la escritura del claim
     // falló, y eso es "el agente no pudo trabajar" para esa flota.
     expect(avisarCorridasPorFlota).toHaveBeenCalledTimes(1);

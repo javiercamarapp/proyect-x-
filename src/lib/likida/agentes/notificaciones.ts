@@ -739,12 +739,20 @@ export async function usuariosAvisables(tenantId: string): Promise<UsuarioAvisab
 interface FilaEstado {
   magnitud: number;
   ultimo: HuellaAviso | null;
+  /**
+   * AG-M3 (auditoría 28): cuándo se tocó esta fila por ÚLTIMA VEZ desde
+   * `cerrarIncidente` — ver el comentario de `guardarMagnitud` sobre por qué
+   * esta función ya NO escribe esta columna. Comparada contra
+   * `ultimo.avisadoEn` en `avisar()`, es la señal —durable entre corridas—
+   * de que el incidente vigente es NUEVO desde el último correo real.
+   */
+  actualizadoEn: Date;
 }
 
 async function leerEstado(tenantId: string, agente: AgenteId, evento: EventoId): Promise<FilaEstado | null> {
   const { data, error } = await supabaseAdmin()
     .from('agente_notificacion_estado')
-    .select('magnitud, avisado_en, magnitud_avisada')
+    .select('magnitud, avisado_en, magnitud_avisada, actualizado_en')
     .eq('tenant_id', tenantId).eq('agente', agente).eq('evento', evento)
     .maybeSingle();
   if (error) throw new Error(`leerEstado: ${error.message}`);
@@ -758,6 +766,7 @@ async function leerEstado(tenantId: string, agente: AgenteId, evento: EventoId):
     // magnitud no se puede comparar contra nada y haría que `debeAvisar` la
     // leyera como magnitud 0, es decir, "cualquier cosa es noticia".
     ultimo: avisadoEn && magnitudAvisada !== null ? { avisadoEn, magnitud: magnitudAvisada } : null,
+    actualizadoEn: new Date(data.actualizado_en as string),
   };
 }
 
@@ -788,8 +797,7 @@ async function cerrarIncidente(
 }
 
 async function guardarMagnitud(
-  tenantId: string, agente: AgenteId, evento: EventoId, magnitud: number, ahora: Date,
-  degradarHuella: boolean,
+  tenantId: string, agente: AgenteId, evento: EventoId, magnitud: number,
 ): Promise<void> {
   // Lectura-modificación-escritura: dos corridas simultáneas pueden leer la
   // misma racha y escribir el mismo +1 (una se pierde). Se acepta a
@@ -798,22 +806,31 @@ async function guardarMagnitud(
   // igual. El error caro sería el contrario —contar de más y avisar de
   // nada—, y ese no puede pasar con esta forma.
   //
-  // `degradarHuella` (B7): cuando un incidente NUEVO arranca sobre la huella
-  // de uno cerrado, `magnitud_avisada` baja a la PRIMERA marca en esta misma
-  // escritura. La razón: esa columna es la vara del anti-ruido, y dejarle las
-  // marcas del incidente muerto callaría al nuevo hasta rebasarlas — con la
-  // última (20) lo callaría PARA SIEMPRE. `avisado_en` no se toca: es la
-  // memoria del piso. El precio, y se paga a conciencia: si el último correo
-  // real salió con más de 1, el «ya se avisó con 1» de la pantalla cita la
-  // marca re-armada y no aquel correo — el correo del cliente nunca cita esta
-  // columna, así que ninguna cifra inventada le llega a él.
+  // NO ESCRIBE `actualizado_en` (AG-M3, auditoría 28; antes sí lo hacía, en
+  // cada llamada). Esa columna queda RESERVADA para `cerrarIncidente`, que la
+  // usa como el sello de "cuándo se cerró por última vez este (agente,
+  // evento)". La huella completa —`avisado_en`/`magnitud_avisada`— tampoco se
+  // toca aquí: solo un envío REAL la mueve (`reclamarAviso`).
+  //
+  // POR QUÉ IMPORTA: antes de esto, la primera corrida tras un cierre
+  // degradaba `magnitud_avisada` a un valor fijo para "rearmar" el filo, pero
+  // la SEGUNDA corrida ya no podía saber que el incidente seguía siendo
+  // nuevo —`magnitud` había dejado de ser 0 en la primera escritura—, y caía
+  // otra vez al filtro de MARCAS (1/5/20) en vez de al piso de una hora. Un
+  // incidente reabierto con poca magnitud (1-4) se quedaba mudo mucho más
+  // allá de la hora prometida, esperando alcanzar la marca 5. Al no tocar
+  // `actualizado_en` aquí, esa columna se queda plantada en el momento del
+  // último cierre durante TODAS las corridas siguientes —sin importar cuánto
+  // suba `magnitud`—, así que `avisar()` puede comparar
+  // `actualizado_en > ultimo.avisadoEn` en cada una de ellas y seguir
+  // sabiendo "esto es nuevo desde el último correo real" hasta que ese correo
+  // de verdad salga (momento en el que `reclamarAviso` adelanta `avisado_en`
+  // y la comparación deja de ser cierta, como corresponde).
   const { error } = await supabaseAdmin()
     .from('agente_notificacion_estado')
     .upsert({
       tenant_id: tenantId, agente, evento,
       magnitud,
-      actualizado_en: ahora.toISOString(),
-      ...(degradarHuella ? { magnitud_avisada: 1 } : {}),
     }, { onConflict: 'tenant_id,agente,evento' });
   if (error) throw new Error(`guardarMagnitud: ${error.message}`);
 }
@@ -827,10 +844,15 @@ async function guardarMagnitud(
  * correo. El UPDATE condicional mueve la decisión a Postgres: la segunda
  * corrida ya no encuentra fila que cumpla la condición y no manda nada.
  *
- * El sello se pone ANTES del envío, así que un envío que falla consume el
- * turno. Es deliberado y es el mismo criterio del 0089: la alternativa es
- * reintentar para siempre contra un canal roto, que es como se llena una
- * bandeja de correos idénticos.
+ * El sello se pone ANTES del envío. Hasta la auditoría 28 (AG-A5b) eso
+ * significaba que un envío que falla consumía el turno igual que uno que
+ * sale: el problema seguía vivo y el canal quedaba mudo hasta la siguiente
+ * marca o el piso completo, por un 429 de Resend que no tiene nada que ver
+ * con el incidente. Ahora un envío fallido se REVIERTE (`revertirAviso`,
+ * abajo): el claim sigue impidiendo que dos corridas SOLAPADAS manden dos
+ * correos —eso no depende de si el envío sale—, pero una corrida
+ * SIGUIENTE, ya no solapada, vuelve a encontrar la huella tal como estaba
+ * y puede intentarlo de nuevo.
  */
 async function reclamarAviso(
   tenantId: string, agente: AgenteId, evento: EventoId, magnitud: number, ahora: Date,
@@ -847,6 +869,40 @@ async function reclamarAviso(
     return false;
   }
   return (data ?? []).length > 0;
+}
+
+/**
+ * DESHACE el claim de `reclamarAviso` cuando el envío FALLÓ — AG-A5(b),
+ * auditoría 28.
+ *
+ * Restaura la huella al valor que tenía ANTES de este intento (`previoUltimo`,
+ * leído por `avisar()` antes de reclamar). El candado —los dos `.eq` sobre
+ * `avisado_en`/`magnitud_avisada` con EXACTAMENTE lo que este intento acaba de
+ * escribir— es lo que evita pisar el reclamo de una corrida distinta que haya
+ * avanzado la huella mientras el envío de ÉSTA fallaba: si otra corrida ya
+ * mandó un correo real después de este claim, esos valores ya no coinciden y
+ * el `UPDATE` no toca nada.
+ *
+ * Nunca lanza: revertir es una limpieza de mejor esfuerzo, no el trabajo. Si
+ * falla, la huella queda como si el correo hubiera salido —el estado de antes
+ * de AG-A5b— y se grita en el log para que se note.
+ */
+async function revertirAviso(
+  tenantId: string, agente: AgenteId, evento: EventoId,
+  previoUltimo: HuellaAviso | null, ahora: Date, magnitudReclamada: number,
+): Promise<void> {
+  const { error } = await supabaseAdmin()
+    .from('agente_notificacion_estado')
+    .update({
+      avisado_en: previoUltimo?.avisadoEn.toISOString() ?? null,
+      magnitud_avisada: previoUltimo?.magnitud ?? null,
+    })
+    .eq('tenant_id', tenantId).eq('agente', agente).eq('evento', evento)
+    .eq('avisado_en', ahora.toISOString())
+    .eq('magnitud_avisada', magnitudReclamada);
+  if (error) {
+    logger.error('notificaciones.reclamo_no_revertido', { tenantId, agente, evento, err: error.message });
+  }
 }
 
 /** El nombre de la flota para el correo. `null` si no se pudo leer: el aviso
@@ -894,6 +950,13 @@ export interface ResultadoAviso {
  * NUNCA LANZA. Igual que `enviarCorreo`: el trabajo de fondo del agente ya se
  * hizo, y perderlo porque el aviso no se pudo evaluar sería el peor
  * intercambio posible. Devuelve el porqué y lo grita en el log.
+ *
+ * AUDITORÍA 28 (AG-A5, AG-M3, AG-B3): esta función solo cierra correctamente
+ * su PROPIO estado interno de marcas y piso. Que un (agente, evento) llegue
+ * aquí con `hayProblema: false` cuando de verdad ya no hay problema es
+ * responsabilidad de QUIEN LLAMA — ver `escalar_viaje.ts` y
+ * `cron/facturar/lote.ts`, que hasta esta auditoría solo llamaban con
+ * `hayProblema: true` y nunca re-armaban el filo de `escalado`/`cola_atorada`.
  */
 export async function avisar(
   tenantId: string,
@@ -903,8 +966,13 @@ export async function avisar(
   armar: (d: DatosDelAviso) => Correo,
   ahora: Date = new Date(),
 ): Promise<ResultadoAviso> {
-  const nada = (porque: string, magnitud = 0): ResultadoAviso =>
-    ({ avisado: false, porque, destinatarios: 0, magnitud });
+  // AG-B3 (auditoría 28): `destinatarios` es opcional y no siempre 0. Un
+  // envío que falla SÍ tenía a quién llegarle —el reparto ya se calculó—, y
+  // confundir "no hay a quién" con "había gente y rebotó" es la misma mentira
+  // que decir "no se avisó a nadie" de un correo que sí se armó y sí se
+  // intentó mandar.
+  const nada = (porque: string, magnitud = 0, destinatarios = 0): ResultadoAviso =>
+    ({ avisado: false, porque, destinatarios, magnitud });
 
   const agente = agentePorId(agenteId);
   if (!agente) return nada('ese agente no existe en el catálogo de avisos.');
@@ -925,17 +993,24 @@ export async function avisar(
     }
 
     const previo = await leerEstado(tenantId, agenteId, evento);
-    // `magnitud === 0` es la firma del cierre (`cerrarIncidente`): el problema
-    // de AHORA es un incidente nuevo, y la huella que quede en la fila es del
-    // anterior — su reloj cuenta (el piso), sus marcas no.
-    const incidenteCerrado = previo !== null && previo.magnitud === 0;
+    // AG-M3 (auditoría 28): el incidente de AHORA es NUEVO —su huella es la
+    // de uno YA CERRADO, cuyo reloj (el piso) cuenta pero cuyas marcas no—
+    // cuando el último cierre (`actualizado_en`, que SOLO toca
+    // `cerrarIncidente`) es más reciente que el último correo REAL
+    // (`ultimo.avisadoEn`, que SOLO tocan los envíos que salieron). A
+    // diferencia de comparar contra `previo.magnitud === 0` (la versión
+    // anterior a esta auditoría): esa comparación se rompía en la corrida
+    // SIGUIENTE a la primera tras el cierre, porque `magnitud` tiene que
+    // seguir subiendo para reportar la racha real y deja de ser 0 de
+    // inmediato. `actualizado_en` no se mueve por eso —`guardarMagnitud` ya
+    // no la toca— así que la comparación sigue siendo cierta mientras haga
+    // falta, corrida tras corrida, hasta que un correo real la invalide.
+    const incidenteCerrado = previo !== null && previo.ultimo !== null
+      && previo.actualizadoEn.getTime() > previo.ultimo.avisadoEn.getTime();
     const magnitud = estado.magnitud === null
       ? (previo?.magnitud ?? 0) + 1
       : Math.max(1, Math.floor(estado.magnitud));
-    await guardarMagnitud(
-      tenantId, agenteId, evento, magnitud, ahora,
-      incidenteCerrado && previo.ultimo !== null,
-    );
+    await guardarMagnitud(tenantId, agenteId, evento, magnitud);
 
     const conf = await leerConfigNotificaciones(tenantId, agente);
     if ('error' in conf) return nada(conf.error, magnitud);
@@ -968,8 +1043,15 @@ export async function avisar(
 
     const envio = await enviarCorreo(reparto.reciben.map((d) => d.email), correo);
     if (!envio.ok) {
+      // AG-A5(b): el claim de `reclamarAviso` ya selló la huella como si el
+      // correo hubiera salido. Un envío que rebota (Resend 429, dominio
+      // caído) no puede consumir el turno del incidente: se revierte para que
+      // la corrida siguiente lo pueda intentar de nuevo en vez de quedarse
+      // muda hasta la próxima marca o el piso completo por un fallo del canal
+      // que nada tiene que ver con el problema real.
+      await revertirAviso(tenantId, agenteId, evento, previo?.ultimo ?? null, ahora, magnitud);
       logger.warn('notificaciones.envio_fallido', { tenantId, agente: agenteId, evento, motivo: envio.motivo });
-      return nada(`el aviso no se pudo entregar (${envio.motivo}).`, magnitud);
+      return nada(`el aviso no se pudo entregar (${envio.motivo}).`, magnitud, reparto.reciben.length);
     }
 
     logger.info('notificaciones.aviso', {

@@ -652,11 +652,18 @@ describe('la cola atorada de Facturas (B2): lo que la máquina ya no va a intent
     expect(correo.datos).toEqual([['Agente', 'Agente de Facturas'], ['Pendientes', '1']]);
   });
 
-  it('un lote sin bloqueados NO lo dispara', async () => {
-    // El default de `facturarLoteAlVuelo` no bloquea nada: cero avisos de cola.
+  it('un lote sin bloqueados CIERRA el incidente en vez de dispararlo (AG-A5, auditoría 28)', async () => {
+    // El default de `facturarLoteAlVuelo` no bloquea nada. Hasta la auditoría
+    // 28 esto significaba CERO llamadas a `avisar` para `cola_atorada` — el
+    // filo de ese aviso nunca se re-armaba (AG-A5): un incidente que llegara a
+    // su tercera marca de insistencia se quedaba mudo para siempre, aunque la
+    // cola ya no tuviera nada. Ahora SÍ se llama, con `hayProblema: false`,
+    // para cada flota que la corrida procesó — es lo que re-arma el filo.
     const cuerpo = await (await pedir()).json();
     expect(cuerpo.corrio).toBe(true);
-    expect(avisar.mock.calls.filter((c) => c[2] === 'cola_atorada')).toHaveLength(0);
+    const deCola = avisar.mock.calls.filter((c) => c[2] === 'cola_atorada');
+    expect(deCola.length).toBeGreaterThan(0);
+    for (const c of deCola) expect(c[3]).toEqual({ hayProblema: false, magnitud: 0 });
   });
 
   it('el aviso jamás tumba la corrida, y el cierre de corrida_fallida sale igual', async () => {

@@ -470,28 +470,39 @@ export async function escalarViajesSinAceptar(args: {
     //
     // `avisoEscalados` existía desde el 14-ago sin un solo llamador: el dueño
     // podía leer el interruptor en la pestaña y ningún código lo disparaba.
-    // Se emite POR FLOTA, solo para las que escalaron viajes en ESTA corrida
-    // (una flota sin escalados no tiene noticia que darle a nadie), con la
-    // magnitud MEDIDA —cuántos viajes— y sus folios. El nombre de la flota lo
-    // resuelve `avisar` (llega en `d.flota`, o `null` si no se pudo leer: el
-    // correo dice "tu flota" en vez de inventarlo). El anti-ruido, la config
-    // y el reparto viven en `avisar`; aquí solo se mide y se entrega.
+    // Se emite POR FLOTA, para TODAS las que esta corrida evaluó —estén en
+    // `porFlota` con folios o en cero—, con la magnitud MEDIDA —cuántos
+    // viajes— y sus folios. El nombre de la flota lo resuelve `avisar` (llega
+    // en `d.flota`, o `null` si no se pudo leer: el correo dice "tu flota" en
+    // vez de inventarlo). El anti-ruido, la config y el reparto viven en
+    // `avisar`; aquí solo se mide y se entrega.
+    //
+    // AG-A5 (auditoría 28): ANTES esto solo se llamaba `if (c.folios.length >
+    // 0)`, así que una flota nunca mandaba `hayProblema: false` para
+    // `escalado` — el filo de ese aviso jamás se re-armaba y, tras la tercera
+    // marca, quedaba mudo DE POR VIDA mientras la pantalla de Notificaciones
+    // prometía lo contrario. Ahora se llama SIEMPRE que la flota tuvo
+    // candidatos esta corrida (`porFlota` la incluye solo entonces): cero
+    // folios escalados es la misma noticia de "no hay nada que avisar ahora
+    // mismo" que ya usa `corrida_fallida`, y cierra el incidente igual. Un
+    // claim que falló (`anota(tenantId, new Error(...))`, sin folio) también
+    // cae aquí como cero escalados — el fallo de ESE viaje ya se cuenta aparte
+    // en `corrida_fallida` vía `cierre`/`avisarCorridasPorFlota`; `escalado`
+    // solo informa de viajes que de verdad se avisaron al jefe.
     //
     // `avisar` promete no lanzar, pero la corrida no cuelga de esa promesa:
     // una invariante que solo aguanta fallos por valor no es una invariante
     // (el mismo criterio del try del envío al jefe, arriba).
-    if (c.folios.length > 0) {
-      try {
-        await avisar(
-          tenantId, 'conductores', 'escalado',
-          { hayProblema: true, magnitud: c.folios.length },
-          (d) => avisoEscalados({ flota: d.flota, cuantos: c.folios.length, folios: c.folios }),
-        );
-      } catch (e) {
-        logger.error('escalacion.aviso_escalados_roto', {
-          tenantId, err: e instanceof Error ? e.message : String(e),
-        });
-      }
+    try {
+      await avisar(
+        tenantId, 'conductores', 'escalado',
+        { hayProblema: c.folios.length > 0, magnitud: c.folios.length },
+        (d) => avisoEscalados({ flota: d.flota, cuantos: c.folios.length, folios: c.folios }),
+      );
+    } catch (e) {
+      logger.error('escalacion.aviso_escalados_roto', {
+        tenantId, err: e instanceof Error ? e.message : String(e),
+      });
     }
   }
   await avisarCorridasPorFlota('conductores', cierre);
