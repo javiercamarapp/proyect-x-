@@ -11,6 +11,14 @@ final no existe cuando se necesita.
 | 4 | Compuerta / línea base medida | ver abajo |
 | 5 | `docs/auditoria-28/MAPA.md` escrito con la ventana commit por commit | — |
 | 6 | 12 auditores lanzados en un solo mensaje, contexto fresco, uno por rubro | — |
+| 7 | Detritus de un auditor: `scripts/mejora-diaria/__pycache__/worker_payloads.cpython-311.pyc` sin rastrear (`__pycache__` **no está en `.gitignore`** — anotado como observación, NO se tocó `.gitignore`: fuera de alcance) | borrado, árbol limpio |
+| 8 | **FE-2 (ALTO, regresión de `4de95a0`)** verificado abriendo `vista.tsx:45`: `hasta` no tenía el portón que `desde` sí tiene | confirmado real |
+| 9 | Prueba que lo reproduce en `vista.test.tsx` → **ROJO medido**: `expected '<main …>' to match /Facturas 0–0 de 350/`, con `Facturas 0–9,800 de 350` literal en el render | rojo |
+| 10 | Arreglo: `hasta` clampado a 0 en página vacía; `hayMas` movido a `consumidas` (idéntico al `hasta` viejo) para no ofrecer «Siguientes» hacia otra página vacía | verde (4/4) |
+| 11 | Suite completa tras el arreglo: **12,188 pasan / 5 fallan / 1 saltada (12,194)** — línea base + 1 prueba, mismos 5 INFRA | **RETENIDO** |
+| 12 | Commit atómico | **`a28c7bb`** |
+| 13 | **OP-C1 (CRÍTICO) verificado por mí**, no heredado del auditor: el `DROP` de la firma de 7 args en `0317_…:43`, la firma nueva de 13 en `:45-58`, y el clamp `Math.max(0, Number(codigo) − Number(base))` en `health/migracion.ts:100`. Y contra la API: la corrida **34111978075** de `salud-produccion` en **rojo**, con el issue **#344** abierto («Ya hay un issue abierto (#344); no se duplica») | confirmado real |
+| 14 | Aviso al dueño por push: producción con esquema nuevo y código viejo | enviado |
 
 ## Línea base de la compuerta (salida real, medida a las 11:0x del 7-sep)
 
