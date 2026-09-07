@@ -24,7 +24,7 @@ function Boton({ texto, pendienteTexto, className, disabled, title }: {
   );
 }
 
-const BTN = 'rounded border px-2 py-1 hover:bg-neutral-50 disabled:opacity-50 dark:hover:bg-neutral-800';
+const BTN = 'rounded border px-2 py-1 hover:bg-[var(--canvas)] disabled:opacity-50';
 const BTN_VERDE = 'rounded border border-emerald-600 px-2 py-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:hover:bg-emerald-950';
 
 export function FilaAccionesCotizacion({
