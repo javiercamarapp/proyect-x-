@@ -11,7 +11,7 @@ final no existe cuando se necesita.
 | 4 | Compuerta / línea base medida | ver abajo |
 | 5 | `docs/auditoria-28/MAPA.md` escrito con la ventana commit por commit | — |
 | 6 | 12 auditores lanzados en un solo mensaje, contexto fresco, uno por rubro | — |
-| 7 | Detritus de un auditor: `scripts/mejora-diaria/__pycache__/worker_payloads.cpython-311.pyc` sin rastrear (`__pycache__` **no está en `.gitignore`** — anotado como observación, NO se tocó `.gitignore`: fuera de alcance) | borrado, árbol limpio |
+| 7 | Detritus de un auditor: `scripts/mejora-diaria/__pycache__/…pyc` sin rastrear. Se borró (dos veces; **se regenera solo**, algo corre esos scripts de forma periódica) | ver fila 24 |
 | 8 | **FE-2 (ALTO, regresión de `4de95a0`)** verificado abriendo `vista.tsx:45`: `hasta` no tenía el portón que `desde` sí tiene | confirmado real |
 | 9 | Prueba que lo reproduce en `vista.test.tsx` → **ROJO medido**: `expected '<main …>' to match /Facturas 0–0 de 350/`, con `Facturas 0–9,800 de 350` literal en el render | rojo |
 | 10 | Arreglo: `hasta` clampado a 0 en página vacía; `hayMas` movido a `consumidas` (idéntico al `hasta` viejo) para no ofrecer «Siguientes» hacia otra página vacía | verde (4/4) |
@@ -71,3 +71,4 @@ pruebas nuevas de `4de95a0` y `18c7ebd`.
 
 **Vueltas de arreglo: 2 de 3.** La tercera no se gastó porque ninguno de los 9
 CRÍTICOS restantes era quirúrgico — no por falta de presupuesto.
+| 24 | Al cerrar, el `__pycache__` **volvió a aparecer una tercera vez**. Borrarlo era un bucle, así que se atacó la causa: el repo trae **9 scripts Python** y `.gitignore` **no tenía regla para su bytecode**. Se agregó `__pycache__/` + `*.py[cod]`, en **commit aparte** de los dos arreglos con prueba para que se pueda revertir solo. Verificado recreando el directorio: `git status --porcelain` vacío | **`22be35a`** (higiene, no un hallazgo) |
