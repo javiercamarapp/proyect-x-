@@ -1,6 +1,17 @@
 \set ON_ERROR_STOP on
 -- BE-2: dos flotas, todas las revisiones, corte temporal e historial intacto.
 -- Sólo datos sintéticos propios y rollback; ninguna llamada de proveedor.
+--
+-- AUDITORÍA 28, L09 (DAT-A1/DAT-M4): fixture n=8 mete una diferencia
+-- `anticipo` a propósito. `kpis_liquidacion_tenant` sólo suma
+-- `sobre_politica`/`duplicado`, así que la ignora; `dinero_observado_por_tipo_tenant`
+-- suma TODOS los tipos, así que sí la cuenta. Antes de n=8 ambas RPC
+-- coincidían por coincidencia (el fixture sólo tenía esos dos tipos) — con
+-- `anticipo` en la mezcla, el total de la dona (70) diverge del
+-- `diferenciaDetectada` de los KPI (45) para el mismo tenant. Ver el
+-- comentario de `getDineroObservadoPorTipo` en `src/lib/likida/analytics.ts`
+-- y los rótulos de `vista.tsx`/`chat.tsx`: son DOS cifras de "dinero
+-- observado" distintas a propósito, no un bug de esta prueba.
 begin;
 insert into public.tenant(id,nombre) values
  ('34400000-0000-4000-8000-000000000001','Analytics344 A'),
@@ -16,7 +27,10 @@ insert into fixtures344 values
  (4,'34400000-0000-4000-8000-000000000001','rechazada','cuadrada',9000,'[{"tipo":"sobre_politica","monto":1000}]','2026-09-04T00:00:00Z'),
  (5,'34400000-0000-4000-8000-000000000001','aprobada','cuadrada',50,'[{"tipo":"duplicado","monto":5}]','2026-08-31T23:59:59Z'),
  (6,'34400000-0000-4000-8000-000000000002','aprobada','cuadrada',700,'[{"tipo":"sobre_politica","monto":70}]','2026-09-01T00:00:00Z'),
- (7,'34400000-0000-4000-8000-000000000002','rechazada','revisar',9900,'[{"tipo":"duplicado","monto":990}]','2026-09-02T00:00:00Z');
+ (7,'34400000-0000-4000-8000-000000000002','rechazada','revisar',9900,'[{"tipo":"duplicado","monto":990}]','2026-09-02T00:00:00Z'),
+ -- n=8: `anticipo` — cuenta en la dona (`dinero_observado_por_tipo_tenant`),
+ -- NO en el KPI (`kpis_liquidacion_tenant` sólo suma sobre_politica/duplicado).
+ (8,'34400000-0000-4000-8000-000000000001','aprobada','con_diferencias',400,'[{"tipo":"anticipo","monto":25}]','2026-09-03T12:00:00Z');
 insert into public.viaje(id,tenant_id,operador_id,folio,estatus)
 select ('34400000-0000-4000-8000-'||lpad((100+n)::text,12,'0'))::uuid,tenant,tenant,'A344-'||n,
  case when revision='rechazada' then 'en_cuadre' else 'liquidado' end from fixtures344;
@@ -36,16 +50,20 @@ create temp table historial344 as select id,md5(to_jsonb(l)::text) huella from p
 set local role service_role;
 do $$declare k jsonb; d jsonb; begin
  k:=public.kpis_liquidacion_tenant('34400000-0000-4000-8000-000000000001','2026-09-01T00:00:00Z');
- if k <> '{"viajesLiquidados":3,"montoComprobado":600,"diferenciaDetectada":40,"conDiferencias":1,"porRevisar":1,"tasaCuadre":33}'::jsonb then
+ if k <> '{"viajesLiquidados":4,"montoComprobado":1000,"diferenciaDetectada":40,"conDiferencias":2,"porRevisar":1,"tasaCuadre":25}'::jsonb then
   raise exception '0344 KPI A incluye rechazo, altera pendientes o cruza corte/tenant: %',k;end if;
  k:=public.kpis_liquidacion_tenant('34400000-0000-4000-8000-000000000001');
- if k <> '{"viajesLiquidados":4,"montoComprobado":650,"diferenciaDetectada":45,"conDiferencias":1,"porRevisar":1,"tasaCuadre":50}'::jsonb then
+ if k <> '{"viajesLiquidados":5,"montoComprobado":1050,"diferenciaDetectada":45,"conDiferencias":2,"porRevisar":1,"tasaCuadre":40}'::jsonb then
   raise exception '0344 KPI histórico A incorrecto: %',k;end if;
  k:=public.kpis_liquidacion_tenant('34400000-0000-4000-8000-000000000002');
  if k <> '{"viajesLiquidados":1,"montoComprobado":700,"diferenciaDetectada":70,"conDiferencias":0,"porRevisar":0,"tasaCuadre":100}'::jsonb then
   raise exception '0344 KPI B incorrecto: %',k;end if;
+ -- La divergencia a propósito: `diferenciaDetectada` histórico de A es 45
+ -- (sólo sobre_politica/duplicado) pero la suma de la dona de A es
+ -- 35+25+10=70 (TODOS los tipos, incluye el `anticipo` de n=8). Misma
+ -- fuente, cifras distintas — por diseño, no por bug (ver comentario arriba).
  d:=public.dinero_observado_por_tipo_tenant('34400000-0000-4000-8000-000000000001');
- if d <> '[{"tipo":"duplicado","monto":35,"n":2},{"tipo":"sobre_politica","monto":10,"n":1}]'::jsonb then
+ if d <> '[{"tipo":"duplicado","monto":35,"n":2},{"tipo":"anticipo","monto":25,"n":1},{"tipo":"sobre_politica","monto":10,"n":1}]'::jsonb then
   raise exception '0344 dona A incluye rechazo o cruza tenant: %',d;end if;
  d:=public.dinero_observado_por_tipo_tenant('34400000-0000-4000-8000-000000000002');
  if d <> '[{"tipo":"sobre_politica","monto":70,"n":1}]'::jsonb then raise exception '0344 dona B incorrecta: %',d;end if;

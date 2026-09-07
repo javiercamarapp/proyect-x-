@@ -300,13 +300,13 @@ async function BloqueHizoSolo({ hizoSolo }: { hizoSolo: Promise<HizoSolo> }) {
   );
 }
 
-async function BloqueDineroObservado({ porTipo: p }: { porTipo: Promise<DineroObservadoTipo[] | null> }) {
+export async function BloqueDineroObservado({ porTipo: p }: { porTipo: Promise<DineroObservadoTipo[] | null> }) {
   const porTipo = await p;
   const totalObservado = porTipo?.reduce((s, t) => s + t.monto, 0) ?? 0;
   return (
     <section className="card p-4 flex flex-col">
       <h2 className="font-display text-[15px] font-semibold">Dinero observado</h2>
-      <p className="text-[11px] mb-2" style={{ color: 'var(--faint)' }}>Lo que el agente atrapó fuera de regla o duplicado</p>
+      <p className="text-[11px] mb-2" style={{ color: 'var(--faint)' }}>Todas las diferencias que el motor registró, por tipo — histórico completo, no solo fuera de política o duplicado</p>
       {porTipo === null ? (
         <Leyenda>No se pudo leer el desglose ahora mismo.</Leyenda>
       ) : porTipo.length === 0 ? (

@@ -103,7 +103,7 @@ export function responder(pregunta: string, kpis: DashboardKpis | null, acred: A
           ['Viajes liquidados', numero(kpis.viajesLiquidados)],
           ['Con diferencias', numero(kpis.conDiferencias)],
           ['Por revisar', numero(kpis.porRevisar)],
-          ['Dinero observado', mxn(kpis.diferenciaDetectada)],
+          ['Fuera de regla o duplicado', mxn(kpis.diferenciaDetectada)],
         ],
       },
     };

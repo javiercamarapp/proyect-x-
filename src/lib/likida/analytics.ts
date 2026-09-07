@@ -325,10 +325,17 @@ export async function getHechosSolos(tenantId: string, limite = 8): Promise<Hech
 export interface DineroObservadoTipo { tipo: string; monto: number; n: number }
 
 /**
- * El dinero observado, DESGLOSADO por tipo de diferencia (sobre política,
- * duplicado, …). `getKpis` suma el total; esta lo abre para la dona del
- * agente — misma fuente (`liquidacion.diferencias`), mismo valor absoluto,
- * excluyendo revisiones rechazadas igual que los KPI (0344).
+ * TODAS las diferencias que el motor registró en `liquidacion.diferencias`
+ * (~40 tipos: sobre política, duplicado, anticipo, sin CFDI, …), agrupadas
+ * por tipo para la dona del agente. NO es el desglose de `getKpis()
+ * .diferenciaDetectada` — ese total sale de `kpis_liquidacion_tenant` y
+ * suma solo `sobre_politica`/`duplicado`. Dos cifras de "dinero observado"
+ * distintas a propósito (auditoría 28, DAT-A1/DAT-M4): misma fuente
+ * (`liquidacion.diferencias`) y mismo criterio de exclusión de rechazadas
+ * (0344), pero conjunto de tipos distinto — y esta, a diferencia de
+ * `kpis_liquidacion_tenant`, no acepta `p_desde`: no filtra por fecha, es
+ * histórico completo del tenant. Ver prueba de divergencia en
+ * `supabase/tests/0344_analytics_sin_rechazadas.sql`.
  */
 export async function getDineroObservadoPorTipo(tenantId: string): Promise<DineroObservadoTipo[]> {
   // AGREGADO EN SQL (mig. 0150): traía TODA `liquidacion` del tenant para
