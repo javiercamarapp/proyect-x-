@@ -146,6 +146,40 @@ describe('logger — lo que sí es dato personal se borra entero', () => {
     expect(salida).not.toContain('4111111111111111');
   });
 
+  it('un correo electrónico en `meta` se redacta como [EMAIL] (auditoría 28, SEG-M2)', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logger.error('correo.entrante', { remitente: 'chofer@transportesacme.com.mx', asunto: 'factura' });
+    const salida = ultimaLinea(spy);
+    expect(salida).toContain('[EMAIL]');
+    expect(salida).not.toContain('chofer@transportesacme.com.mx');
+  });
+
+  it('un correo electrónico en el mensaje principal también se redacta', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logger.error('fallo al notificar a operador@likida.mx');
+    const salida = ultimaLinea(spy);
+    expect(salida).toContain('[EMAIL]');
+    expect(salida).not.toContain('operador@likida.mx');
+  });
+
+  it('un correo con dominio guionado no se confunde con UUID ni pierde la huella', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logger.error('prueba', { correo: 'test@mi-empresa.com' });
+    const salida = ultimaLinea(spy);
+    expect(salida).toContain('[EMAIL]');
+    expect(salida).not.toContain('test@mi-empresa.com');
+    expect(salida).not.toContain('id:'); // no debe caer por error en huellaId()
+  });
+
+  it('un correo con local-part que parece RFC no se cuela como [RFC]', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logger.error('prueba', { correo: 'XAXX010101000@x.com' });
+    const salida = ultimaLinea(spy);
+    expect(salida).toContain('[EMAIL]');
+    expect(salida).not.toContain('XAXX010101000@x.com');
+    expect(salida).not.toContain('[RFC]');
+  });
+
   it('un epoch en milisegundos NO se confunde con un teléfono', () => {
     // Falso positivo caro: si `Date.now()` sale como [TEL] se pierde la hora,
     // que es justo lo único con lo que hoy se cruzan las líneas (t va vacío).

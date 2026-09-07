@@ -62,14 +62,24 @@ const PHONE = /\b\+?521?\d{10}\b|\b\d{10}\b/;
 // un folio largo — el mismo error que ya se documentó con `PHONE`.
 const CLABE = /\b\d{18}\b/;
 const TARJETA = /\b\d{16}\b/;
+// Correo electrónico (auditoría 28, SEG-M2): antes de esta regla un `meta` o
+// un mensaje con un correo —el de un chofer, el de un contacto ARCO, el de un
+// remitente de correo entrante— salía en claro. Patrón deliberadamente
+// permisivo en el dominio (acepta subdominios y TLD largos) porque un falso
+// negativo (un correo que se cuela sin redactar) es el error caro aquí, no un
+// falso positivo.
+const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/;
 
-// UNA sola pasada con las reglas alternadas, no tres `replace` encadenados.
+// UNA sola pasada con las reglas alternadas, no varios `replace` encadenados.
 // Encadenar significa que la salida de una regla vuelve a ser entrada de la
 // siguiente: una huella que por azar saliera toda en dígitos podía acabar
 // redactada como teléfono, y un UUID cuyo último segmento fuera numérico se
 // perdía antes de llegar a la regla de UUID. Con una pasada, lo ya sustituido no
 // se vuelve a mirar.
-const SENSIBLE = new RegExp([UUID.source, RFC.source, PHONE.source, CLABE.source, TARJETA.source].join('|'), 'g');
+const SENSIBLE = new RegExp(
+  [UUID.source, EMAIL.source, RFC.source, PHONE.source, CLABE.source, TARJETA.source].join('|'),
+  'g',
+);
 
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
@@ -99,6 +109,11 @@ export function huellaId(uuid: string): string {
 /** Redacta una cadena suelta. Exportada para que Sentry use ESTE camino y no otro. */
 export function redactarTexto(s: string): string {
   return s.replace(SENSIBLE, (m) => {
+    // Correo ANTES que UUID: un dominio con guión («test@mi-empresa.com»)
+    // también cumple `m.includes('-')`, y un local-part con mayúsculas
+    // seguidas de dígitos («XAXX010101000@x.com») también cumple el patrón de
+    // RFC — la presencia de `@` desambigua sin ambigüedad posible.
+    if (m.includes('@')) return '[EMAIL]'; // dato personal: se borra
     if (m.includes('-')) return huellaId(m); // UUID: se conserva la traza
     if (/^\d{18}$/.test(m)) return '[CLABE]'; // dato patrimonial: se borra
     if (/^\d{16}$/.test(m)) return '[TARJETA]'; // dato patrimonial: se borra

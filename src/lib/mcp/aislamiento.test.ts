@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // filtro está.
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface Filtro { tipo: 'eq' | 'is'; col: string; val: unknown }
+interface Filtro { tipo: 'eq' | 'is' | 'or'; col: string; val: unknown }
 
 const consultas: Array<{ tabla: string; filtros: Filtro[] }> = [];
 
@@ -50,6 +50,7 @@ function motorFalso(tablas: Record<string, Array<Record<string, unknown>>>) {
           return cadena;
         },
         or(expr: string) {
+          registro.filtros.push({ tipo: 'or', col: 'or', val: expr });
           // Solo el dialecto que los lectores del MCP usan: ilike con %…%.
           const ramas = expr.split(',').map((r) => {
             const m = /^([a-z_]+)\.ilike\.%(.*)%$/.exec(r);
@@ -129,6 +130,39 @@ describe('con la credencial de la flota A se pide lo de la B', () => {
     expect(r.map((v) => v.id)).toEqual([VIAJE_A.id]);
     const cruzada = await buscarViajesTexto('flota-A', 'Guadalajara');
     expect(cruzada).toEqual([]);
+  });
+
+  // Auditoría 28, SEG-M1: `,` `(` `)` son los metacaracteres del propio
+  // `.or()` de PostgREST (separan condiciones / abren-cierran agrupaciones).
+  // Un texto libre con una coma, como «Monterrey, NL», se mete crudo en la
+  // expresión `folio.ilike.%…%,origen.ilike.%…%,destino.ilike.%…%` y la
+  // revienta en más ramas de las tres que el lector espera — el mismo motor
+  // falso de este archivo, que ejecuta el `.or()` de verdad, deja de
+  // reconocer las tres ramas (cada una debe terminar en `%`) y la búsqueda
+  // deja de encontrar NADA, ni siquiera lo que sí es de la flota A.
+  it('buscar con una coma en el valor («Monterrey, NL») arma exactamente 3 ramas ilike, no más', async () => {
+    consultas.length = 0;
+    await buscarViajesTexto('flota-A', 'Monterrey, NL');
+    const or = consultas.at(-1)?.filtros.find((f) => f.tipo === 'or');
+    expect(or, 'la búsqueda no llegó a armar un .or()').toBeTruthy();
+    const expr = String(or?.val);
+    const ramas = expr.split(',');
+    expect(ramas, `expresión .or() con ramas de más: ${expr}`).toHaveLength(3);
+    for (const rama of ramas) {
+      expect(rama, `rama rota, la coma del usuario se coló sin sanear: ${expr}`)
+        .toMatch(/^[a-z_]+\.ilike\.%.*%$/);
+    }
+  });
+
+  it('buscar con paréntesis en el valor tampoco rompe el filtro', async () => {
+    consultas.length = 0;
+    await buscarViajesTexto('flota-A', 'Monterrey (centro)');
+    const or = consultas.at(-1)?.filtros.find((f) => f.tipo === 'or');
+    const expr = String(or?.val);
+    expect(expr.split(',')).toHaveLength(3);
+    for (const rama of expr.split(',')) {
+      expect(rama).toMatch(/^[a-z_]+\.ilike\.%.*%$/);
+    }
   });
 
   it('ESTRUCTURAL: cada consulta que salió llevó su eq de tenant', async () => {

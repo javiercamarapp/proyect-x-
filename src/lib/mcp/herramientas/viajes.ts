@@ -98,9 +98,17 @@ export async function resolverViaje(tenantId: string, ref: string): Promise<Viaj
 }
 
 /** Búsqueda por texto para la herramienta `search`: folio, origen o destino.
- *  El patrón se sanea — un `%` o `_` del usuario es texto, no comodín. */
+ *  El patrón se sanea — un `%` o `_` del usuario es texto, no comodín.
+ *
+ *  `,` `(` `)` NO son comodines de ILIKE: son los metacaracteres del propio
+ *  `.or()` de PostgREST (separan condiciones o abren/cierran agrupaciones).
+ *  Un valor libre como «Monterrey, NL» los mete crudos en la expresión que se
+ *  arma abajo y rompe el filtro. Mismo saneo que `buscarGastosParaLigar` en
+ *  `sat_descarga/bandeja.ts` (auditoría 28, SEG-M1). */
 export async function buscarViajesTexto(tenantId: string, consulta: string): Promise<ViajeOperativo[]> {
-  const limpio = consulta.trim().slice(0, 80).replace(/[%_\\]/g, (m) => `\\${m}`);
+  const limpio = consulta.trim().slice(0, 80)
+    .replace(/[,()]/g, ' ')
+    .replace(/[%_\\]/g, (m) => `\\${m}`);
   if (limpio.length === 0) return [];
   const patron = `%${limpio}%`;
   const res = await acotada(
