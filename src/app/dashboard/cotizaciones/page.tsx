@@ -157,10 +157,10 @@ export default async function PaginaCotizaciones({
   return (
     <div className="space-y-8">
       <header className="flex items-center gap-3">
-        <Calculator className="h-6 w-6 text-neutral-500" aria-hidden />
+        <Calculator className="h-6 w-6" style={{ color: 'var(--muted)' }} aria-hidden />
         <div>
           <h1 className="text-xl font-semibold">Cotizador</h1>
-          <p className="text-sm text-neutral-500">
+          <p className="text-sm" style={{ color: 'var(--muted)' }}>
             La ganancia real del viaje antes de aceptarlo: costos declarados, casetas medidas
             en tus viajes liquidados, y cada supuesto a la vista.
           </p>
@@ -178,7 +178,7 @@ export default async function PaginaCotizaciones({
         <>
           <section className="rounded-lg border p-4">
             <h2 className="mb-1 font-medium">Costos declarados de la flota</h2>
-            <p className="mb-3 text-sm text-neutral-500">
+            <p className="mb-3 text-sm" style={{ color: 'var(--muted)' }}>
               Lo que TÚ declaras — nada se supone. Un campo vacío = sin declarar, y el
               cotizador entonces no sugiere precio: dice qué falta.
             </p>
@@ -194,7 +194,7 @@ export default async function PaginaCotizaciones({
 
           <section className="rounded-lg border p-4">
             <h2 className="mb-1 font-medium">Nueva cotización</h2>
-            <p className="mb-3 text-sm text-neutral-500">
+            <p className="mb-3 text-sm" style={{ color: 'var(--muted)' }}>
               Si esta ruta tiene viajes liquidados, las casetas salen MEDIDAS de ahí (y la
               captura manual se ignora — la medición gana y el desglose lo dice).
             </p>
@@ -216,7 +216,7 @@ export default async function PaginaCotizaciones({
               Cotizaciones ({panel.cotizaciones.length})
             </h2>
             {panel.cotizaciones.length === 0 && (
-              <p className="text-sm text-neutral-500">
+              <p className="text-sm" style={{ color: 'var(--muted)' }}>
                 Aún no hay cotizaciones. La primera se arma arriba — con los costos
                 declarados y, si la ruta ya se corrió, con las casetas medidas.
               </p>
@@ -249,9 +249,9 @@ function Fila({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div className="text-sm">
           <span className="font-medium">{q.origen} → {q.destino}</span>
-          {q.folio && <span className="ml-2 text-neutral-500">({q.folio})</span>}
-          <span className="ml-2 text-neutral-500">{q.clienteNombre ?? 'sin cliente'}</span>
-          {q.km !== null && <span className="ml-2 text-neutral-500">{numero(q.km)} km</span>}
+          {q.folio && <span className="ml-2" style={{ color: 'var(--muted)' }}>({q.folio})</span>}
+          <span className="ml-2" style={{ color: 'var(--muted)' }}>{q.clienteNombre ?? 'sin cliente'}</span>
+          {q.km !== null && <span className="ml-2" style={{ color: 'var(--muted)' }}>{numero(q.km)} km</span>}
         </div>
         <div className="text-sm">
           <span className="mr-3">costo: {q.costoEstimado !== null ? mxn(q.costoEstimado) : 'incompleto'}</span>
@@ -259,7 +259,7 @@ function Fila({
           <span className="mr-3 font-medium">
             ganancia:{' '}
             {g === null ? (
-              <span className="font-normal text-neutral-500">
+              <span className="font-normal" style={{ color: 'var(--muted)' }}>
                 {q.precio === null ? 'falta el precio' : 'falta un dato del costo'}
               </span>
             ) : (
@@ -271,17 +271,20 @@ function Fila({
               </span>
             )}
           </span>
-          <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs uppercase dark:bg-neutral-800">{q.estado}</span>
+          <span
+            className="rounded px-2 py-0.5 text-xs uppercase"
+            style={{ background: 'var(--canvas)', color: 'var(--ink2)' }}
+          >{q.estado}</span>
         </div>
       </div>
 
       {q.desglose && (
         <details className="mt-2 text-sm">
-          <summary className="cursor-pointer text-neutral-600">Desglose citable (como se armó)</summary>
+          <summary className="cursor-pointer" style={{ color: 'var(--ink2)' }}>Desglose citable (como se armó)</summary>
           <ul className="mt-2 space-y-1">
             {q.desglose.lineas.map((l, i) => (
               <li key={i} className="flex justify-between gap-4">
-                <span>{l.concepto} <span className="text-neutral-500">— {l.supuesto}</span></span>
+                <span>{l.concepto} <span style={{ color: 'var(--muted)' }}>— {l.supuesto}</span></span>
                 <span className="whitespace-nowrap">{l.monto !== null ? mxn(l.monto) : '—'}</span>
               </li>
             ))}
@@ -295,21 +298,21 @@ function Fila({
             </li>
           </ul>
           {q.tarifaCatalogo && (
-            <p className="mt-2 text-neutral-600">
+            <p className="mt-2" style={{ color: 'var(--ink2)' }}>
               Tarifa del catálogo: {q.tarifaCatalogo.monto !== null ? mxn(q.tarifaCatalogo.monto) : 'sin monto (falta un dato de la tarifa)'}
               {' '}— {q.tarifaCatalogo.porque}{q.tarifaCatalogo.ambigua ? ' · ⚠️ el catálogo tiene dos verdades para esta ruta' : ''}
             </p>
           )}
           {q.desglose.faltantes.length > 0 && (
-            <p className="mt-2 text-amber-700">Falta: {q.desglose.faltantes.join(' · ')}</p>
+            <p className="mt-2" style={{ color: 'var(--color-warn)' }}>Falta: {q.desglose.faltantes.join(' · ')}</p>
           )}
           {q.desglose.notas.map((nota, i) => (
-            <p key={i} className="mt-1 text-neutral-500">{nota}</p>
+            <p key={i} className="mt-1" style={{ color: 'var(--muted)' }}>{nota}</p>
           ))}
         </details>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" style={{ color: 'var(--muted)' }}>
         <span>creada {fechaHoraMx(q.creadaEn)}</span>
         {q.vigenteHasta && <span>· vigente hasta {fechaMx(q.vigenteHasta)}</span>}
         {q.viajeId && <span>· viaje creado</span>}
