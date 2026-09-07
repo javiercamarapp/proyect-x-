@@ -7,7 +7,7 @@
 // Acceso restringido a directorios del proyecto: nada de `../`.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import { join, relative } from 'node:path';
 
 export const TOOLS_DEF = [
@@ -86,27 +86,22 @@ function buscarTool(args: { patron?: string; dir?: string; tope?: number }): str
   const skip = (f: string) => f.includes('node_modules') || f.startsWith('.') || f.includes('/.next');
   const walk = (d: string): void => {
     if (salida.length >= tope) return;
-    let items: string[];
+    let items: Dirent[];
     try {
-      items = readdirSync(d);
+      items = readdirSync(d, { withFileTypes: true });
     } catch {
       return;
     }
     for (const it of items) {
       if (salida.length >= tope) return;
-      const full = join(d, it);
+      const full = join(d, it.name);
       if (skip(full)) continue;
-      let st;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) {
+      if (it.isDirectory()) {
         walk(full);
         continue;
       }
-      if (!/\.([jt]sx?|mjs|cjs|yaml|sql|md|css|html)$/.test(it)) continue;
+      if (!it.isFile()) continue;
+      if (!/\.([jt]sx?|mjs|cjs|yaml|sql|md|css|html)$/.test(it.name)) continue;
       try {
         const lineasArr = readFileSync(full, 'utf8').split('\n');
         for (let i = 0; i < lineasArr.length && salida.length < tope; i++) {

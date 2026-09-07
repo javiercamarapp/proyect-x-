@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GET as getSpec } from '@/app/api/v1/openapi/route';
 
@@ -18,13 +18,14 @@ const RAIZ = join(process.cwd(), 'src/app/api/v1');
 function areasDelCodigo(): Record<string, Record<string, string>> {
   const out: Record<string, Record<string, string>> = {};
   const recorrer = (dir: string, ruta: string) => {
-    for (const e of readdirSync(dir)) {
+    for (const d of readdirSync(dir, { withFileTypes: true })) {
+      const e = d.name;
       const p = join(dir, e);
-      if (statSync(p).isDirectory()) {
+      if (d.isDirectory()) {
         if (e !== 'openapi') recorrer(p, `${ruta}/${e.startsWith('[') ? `{${e.slice(1, -1)}}` : e}`);
         continue;
       }
-      if (e !== 'route.ts') continue;
+      if (!d.isFile() || e !== 'route.ts') continue;
       const src = readFileSync(p, 'utf8');
       // Cada `export async function GET(...)` hasta el siguiente export: el
       // `abrir(req, 'x')` que contiene es el área de ese método.
