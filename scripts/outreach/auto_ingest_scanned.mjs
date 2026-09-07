@@ -1,15 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import { saveCompanyResult } from './canacar_runner.mjs';
+import { saveCompanyResult, crearSiNoExiste } from './canacar_runner.mjs';
 
 const brainDir = '/Users/javiercamaraportepetit/.gemini/antigravity-cli/brain';
 const stagingDir = '/Users/javiercamaraportepetit/likida/staging_canacar';
 const trackerPath = '/Users/javiercamaraportepetit/likida/staging_canacar/ingested_files.json';
 
-// Initialize tracker if it doesn't exist
-if (!fs.existsSync(trackerPath)) {
-  fs.writeFileSync(trackerPath, JSON.stringify([], null, 2), 'utf8');
-}
+// Initialize tracker if it doesn't exist — sin el hueco entre comprobar y
+// escribir del patrón existsSync+writeFileSync (ver canacar_runner.mjs).
+crearSiNoExiste(trackerPath, JSON.stringify([], null, 2));
 
 async function run() {
   const processedFiles = JSON.parse(fs.readFileSync(trackerPath, 'utf8'));
