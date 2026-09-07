@@ -10,6 +10,7 @@ import { calificaEstimuloPeaje, facilidad15Declarada } from '../perfil/preguntas
 import { logger } from '@/lib/logger';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
+import { traerTodo, conteo } from '../pg';
 import type { Liquidacion, Gasto } from '@/types/likida';
 import type { LineaEccRef } from '../intake/evidencia_monedero';
 
@@ -228,7 +229,26 @@ export async function cuadrarDesdeDB(
  *  matcher las descarte una por una era leer la cola entera de casetas de la
  *  flota EN CADA CUADRE, en el camino caliente de WhatsApp, para no usar ni
  *  una. Mismo resultado, menos filas; el índice parcial de la 0242 es
- *  exactamente este predicado. */
+ *  exactamente este predicado.
+ *
+ *  AUDITORÍA 28, ARQ-A2 (CRÍTICO, RMF 3.3.1.7): esta consulta no paginaba —
+ *  un `.select()` sin `traerTodo`/`.order()`/`.range()` se recorta EN SILENCIO
+ *  a `max_rows` (1,000 filas) del lado de PostgREST. Con más de 1,000 líneas
+ *  ECC en la ventana (una flota grande con varios días de estado de cuenta
+ *  del monedero), el camino B de `evidenciaMonedero` dejaba de ver las líneas
+ *  que sobraban del corte y el motor las trataba como si no existieran: un
+ *  ticket de bomba cuya carga SÍ está en el estado de cuenta del monedero
+ *  (y que la gasolinera tiene prohibido facturar, RMF 3.3.1.7) podía colarse
+ *  como comprobante fiscal válido para acreditar IVA que no procede — o, en
+ *  la dirección contraria, quedar marcado "revisar" cuando la evidencia de
+ *  que NO es acreditable sí existía en la base y el corte se la comió. Se
+ *  usa `traerTodo` con el mismo patrón que el resto del archivo (`proveedores.
+ *  listarAprobadasCompletas`, `auditor_cobranza.getAuditoriaCobranza`):
+ *  `order('fecha').order('id')` desempata total sobre el cursor de `range`
+ *  (dos líneas de la misma fecha ya no pueden repetirse ni saltarse entre
+ *  páginas), y si no puede demostrar que trajo TODAS las filas, LANZA
+ *  `LecturaIncompleta` en vez de devolver una lectura parcial con cara de
+ *  completa. */
 async function lineasEccParaCuadre(tenantId: string, gastos: Gasto[]): Promise<LineaEccRef[]> {
   const fechas = gastos.map((g) => g.fecha?.slice(0, 10)).filter((f): f is string => !!f);
   if (fechas.length === 0) return [];
@@ -238,18 +258,36 @@ async function lineasEccParaCuadre(tenantId: string, gastos: Gasto[]): Promise<L
     x.setUTCDate(x.getUTCDate() + d);
     return x.toISOString().slice(0, 10);
   };
-  const { data, error } = await acotada(
-    supabaseAdmin().from('cfdi_consolidado_linea')
-      .select('fecha, monto, estacion_rfc')
-      .eq('tenant_id', tenantId)
-      .eq('fuente', 'ecc12')
-      .not('estacion_rfc', 'is', null)
-      .gte('fecha', shift(ordenadas[0], -1))
-      .lte('fecha', shift(ordenadas[ordenadas.length - 1], 1)),
+  const desde = shift(ordenadas[0], -1);
+  const hasta = shift(ordenadas[ordenadas.length - 1], 1);
+  const data = await traerTodo<Record<string, unknown>>(
+    async (d, h) => {
+      const res = await acotada(
+        supabaseAdmin().from('cfdi_consolidado_linea')
+          .select('fecha, monto, estacion_rfc', conteo(d))
+          .eq('tenant_id', tenantId)
+          .eq('fuente', 'ecc12')
+          .not('estacion_rfc', 'is', null)
+          .gte('fecha', desde)
+          .lte('fecha', hasta)
+          .order('fecha')
+          .order('id')
+          .range(d, h),
+        'desde_db.lineas_ecc',
+      );
+      // `data: null` sin `error` es un PROTOCOLO ROTO (un `.select()` sin
+      // `.single()` siempre trae arreglo del lado de PostgREST) — se convierte
+      // en error explícito ANTES de que `traerTodo` lo trague como página
+      // vacía (`exigir(...) ?? []`), para no confundir "no hay más filas" con
+      // "la respuesta no se pudo leer" en un dato fiscal.
+      if (!res.error && !Array.isArray(res.data)) {
+        return { data: null, error: { message: 'lineas ecc: respuesta inválida' } };
+      }
+      return res;
+    },
     'desde_db.lineas_ecc',
   );
-  if (error) throw new Error(`lineas ecc: ${error.message}`);
-  if (!Array.isArray(data) || data.some((r) => {
+  if (data.some((r) => {
     const fila = r as { fecha?: unknown; monto?: unknown; estacion_rfc?: unknown } | null;
     return !fila || typeof fila.fecha !== 'string'
       || typeof fila.estacion_rfc !== 'string' || !Number.isFinite(Number(fila.monto));

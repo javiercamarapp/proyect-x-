@@ -21,12 +21,27 @@ import { sinComentarios } from '@/lib/pruebas/codigo';
 // otra vez sin techo, y nada falla hasta que algo se cuelga en producción.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Los archivos por los que pasa el cierre de una liquidación. */
+/**
+ * Los archivos por los que pasa el cierre de una liquidación.
+ *
+ * AUDITORÍA 28, ARQ-M1: esta lista vigilaba solo CUATRO archivos y dejaba
+ * fuera exactamente al que orquesta el webhook completo — `processor.ts`
+ * importa `cuadrarDesdeDB` y es donde vive cada handler de mensaje entrante
+ * (incluida `registrarUbicacionChofer`, que SÍ tenía dos consultas crudas sin
+ * `acotada()` hasta esta misma auditoría — ver processor.ts:172/176). Un
+ * guardia que no mira el archivo más grande del camino caliente no vigila el
+ * camino caliente, vigila una porción arbitraria de él. `cuadre/desde_db.ts`
+ * (el cálculo del cuadre en sí, incluida la lectura de líneas ECC de
+ * ARQ-A1/ARQ-A2) entra por el mismo motivo: es el módulo que `cierreEstricto`
+ * ejecuta en el camino de escritura fiscal.
+ */
 const CAMINO_DEL_CIERRE = [
   'src/lib/likida/repo.ts',
   'src/lib/likida/conv.ts',
   'src/lib/likida/costos.ts',
   'src/lib/likida/config.ts',
+  'src/lib/likida/processor.ts',
+  'src/lib/likida/cuadre/desde_db.ts',
 ];
 
 describe('ninguna consulta del cierre se queda sin techo', () => {

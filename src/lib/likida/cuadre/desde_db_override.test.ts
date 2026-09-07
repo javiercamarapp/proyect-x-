@@ -20,9 +20,14 @@ const getAcumuladoCombustible = vi.fn();
 const getPerfilCrudo = vi.fn();
 const getConfig = vi.fn();
 const cuadrarViaje = vi.fn();
-let eccRespuesta: { data: unknown; error: null | { message: string } } = { data: [], error: null };
+// AUDITORÍA 28, ARQ-A1/ARQ-A2: `lineasEccParaCuadre` ahora pagina con
+// `traerTodo` (`.order().order().range()`), así que la cadena simulada tiene
+// que aceptar esas llamadas igual que las de siempre — si no, cualquier
+// prueba que llegue a leer ECC truena con "order is not a function" en vez
+// de ejercitar el código real.
+let eccRespuesta: { data: unknown; error: null | { message: string }; count?: number | null } = { data: [], error: null };
 const eccCadena: Record<string, unknown> = {};
-for (const metodo of ['select', 'eq', 'not', 'gte', 'lte']) {
+for (const metodo of ['select', 'eq', 'not', 'gte', 'lte', 'order', 'range']) {
   eccCadena[metodo] = () => eccCadena;
 }
 eccCadena.then = (resolve: (valor: unknown) => unknown) => Promise.resolve(eccRespuesta).then(resolve);
@@ -91,11 +96,18 @@ describe('cuadrarDesdeDB — el cierre no fabrica insumos fiscales', () => {
   });
 
   it.each([
-    ['respuesta nula', null],
-    ['monto malformado', [{ fecha: '2026-09-03', monto: 'no-numero', estacion_rfc: 'EKU9003173C9' }]],
-  ])('aborta ante ECC con %s aunque PostgREST no traiga error', async (_caso, data) => {
+    // `data: null` sin `error`: protocolo roto, `traerTodo` la convierte en
+    // error ANTES de tragársela como página vacía (ver desde_db.ts).
+    ['respuesta nula', null, undefined],
+    // Fila con forma inválida DENTRO de un arreglo por lo demás válido: la
+    // página se demuestra completa con `count` (como haría PostgREST real
+    // con `conteo(d)`) y la prueba de forma corre sobre el resultado ya
+    // paginado — sin esto la cadena simulada, que ignora `range`, repetiría
+    // la misma página para siempre.
+    ['monto malformado', [{ fecha: '2026-09-03', monto: 'no-numero', estacion_rfc: 'EKU9003173C9' }], 1],
+  ])('aborta ante ECC con %s aunque PostgREST no traiga error', async (_caso, data, count) => {
     getGastos.mockResolvedValue(gastoConFecha);
-    eccRespuesta = { data, error: null };
+    eccRespuesta = { data, error: null, count };
     await expect(cerrar()).rejects.toThrow('lineas ecc: respuesta inválida');
     expect(cuadrarViaje).not.toHaveBeenCalled();
   });

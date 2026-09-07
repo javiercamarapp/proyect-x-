@@ -49,8 +49,29 @@ import { join, relative } from 'node:path';
  * bucket de `liquidaciones` — el mismo molde que ya siguen `tools.ts` y
  * `processor.ts` (ambos fuera de la frontera, ambos suben a ese bucket
  * directo). Funcionalidad nueva, no código migrado.
+ *
+ * AUDITORÍA 28, ARQ-M1 (LA UNIDAD EQUIVOCADA): hasta aquí el techo vivía en
+ * ARCHIVOS — y con 252 archivos medidos contra un techo de 252, este guardia
+ * llevaba CERO margen: cualquier archivo nuevo con un solo `.from(`/`.rpc(`
+ * lo rompía, aunque fuera trivial, mientras que quien quisiera colar código
+ * de verdad arriesgado —cientos de consultas nuevas sin `traerTodo`/`acotada`
+ * dentro de un archivo YA listado, como `processor.ts` o `analytics.ts`—
+ * pasaba invisible: el conteo de archivos no se mueve un ápice si el bulto
+ * crece DENTRO de un archivo que ya estaba fuera de la frontera. Contar
+ * archivos mide "cuántos lugares nuevos violan la regla", no "cuánto código
+ * la viola" — y es el código, no el archivo, el que se recorta a 1,000 filas
+ * en silencio cuando le falta paginar (la misma familia de bug que ARQ-A1
+ * encontró en `lineasEccParaCuadre`, cuadre/desde_db.ts).
+ *
+ * El techo ahora es la SUMA de `.from(`/`.rpc(` en esos mismos archivos:
+ * medido hoy en 1,278 (barrido completo, mismo método, mismo commit que este
+ * cambio). El margen (50) es deliberadamente angosto por la misma razón que
+ * el de archivos lo era: un techo que absorbe crecimiento grande sin
+ * pestañear deja de medir nada — igual que el de arriba, se sube a mano, en
+ * el commit que explica por qué.
  */
 const TECHO_ARCHIVOS_FUERA_DE_LA_FRONTERA = 252;
+const TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA = 1_328;
 
 const RAIZ_SRC = new URL('../../', import.meta.url).pathname;
 
@@ -77,6 +98,14 @@ function fuentesDeProduccion(dir: string, acc: string[] = []): string[] {
 
 function tieneAccesoDirecto(ruta: string): boolean {
   return /\.(from|rpc)\(/.test(readFileSync(ruta, 'utf8'));
+}
+
+/** Cuántas llamadas `.from(`/`.rpc(` trae un archivo — la UNIDAD que de
+ *  verdad mide cuánto código bypasea `repo.ts`/`pg.ts`, no cuántos archivos
+ *  lo hacen (ver AUDITORÍA 28 arriba). */
+function llamadasDirectas(ruta: string): number {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta sale de fuentesDeProduccion()/readdirSync sobre RAIZ_SRC, un directorio fijo del repo; ninguna entrada de usuario.
+  return (readFileSync(ruta, 'utf8').match(/\.(from|rpc)\(/g) ?? []).length;
 }
 
 describe('la frontera de datos (repo.ts/pg.ts) — el número medido no puede subir en silencio', () => {
@@ -113,5 +142,35 @@ describe('la frontera de datos (repo.ts/pg.ts) — el número medido no puede su
     // debajo de TECHO_ARCHIVOS_FUERA_DE_LA_FRONTERA por varias rondas, es
     // señal de que el techo quedó obsoleto, no de que el problema mejoró.
     expect(archivos.length).toBeGreaterThan(0);
+  });
+
+  // ── AUDITORÍA 28, ARQ-M1: el techo que de verdad importa — LLAMADAS ──────
+  const totalLlamadas = archivos.reduce((n, rel) => n + llamadasDirectas(join(RAIZ_SRC, rel)), 0);
+
+  it('el barrido cuenta más llamadas que archivos (si no, esto no mide nada distinto)', () => {
+    // Si algún día coincidieran, contar llamadas dejaría de aportar sobre
+    // contar archivos — la señal de que el guardia de archivos se quedó
+    // ciego a este tipo de crecimiento (varias consultas nuevas en un mismo
+    // archivo ya listado) es precisamente que este número sea MAYOR.
+    expect(totalLlamadas).toBeGreaterThan(archivos.length);
+  });
+
+  it(`no hay más de ${TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA} llamadas .from(/.rpc( fuera de repo.ts/pg.ts`, () => {
+    const mensaje = totalLlamadas > TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA
+      ? [
+        `El conteo de LLAMADAS subió de ${TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA} a ${totalLlamadas}.`,
+        'Si el crecimiento es real y ya se revisó, sube TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA',
+        'en este archivo, en el MISMO commit que lo explica. Si no, alguien metió',
+        'consultas directas nuevas por fuera de repo.ts/pg.ts — muévelas ahí, o revisa que',
+        'las nuevas paginen con traerTodo/acotada igual que el resto del archivo.',
+      ].join('\n')
+      : `${totalLlamadas} de ${TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA} — dentro del techo.`;
+    expect(totalLlamadas, mensaje).toBeLessThanOrEqual(TECHO_LLAMADAS_FUERA_DE_LA_FRONTERA);
+  });
+
+  it('si las llamadas BAJARON (código migrado o simplificado), hay que bajar ese techo también', () => {
+    // Misma nota que la de archivos, mismo motivo: un techo que se queda muy
+    // por encima de lo medido deja de ser un techo.
+    expect(totalLlamadas).toBeGreaterThan(0);
   });
 });
