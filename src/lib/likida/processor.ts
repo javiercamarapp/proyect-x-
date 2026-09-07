@@ -169,15 +169,21 @@ async function conservarNotaCredito(tenantId: string, uuid: string, xmlText: str
 async function registrarUbicacionChofer(op: ResolvedOperador, viajeId: string, lat: number, lng: number): Promise<boolean> {
   const admin = supabaseAdmin();
   try {
-    const { data: viaje, error } = await admin.from('viaje')
-      .select('unidad_id, origen, destino').eq('id', viajeId).eq('tenant_id', op.tenantId).maybeSingle();
+    // AUDITORÍA 28, ARQ-M1: estas dos consultas hablaban con Supabase EN
+    // CRUDO — sin `acotada()` no tienen techo de tiempo, y un cuelgue aquí se
+    // come el presupuesto de la función igual que cualquier otro paso del
+    // webhook (`presupuesto.ts`). `tope_consulta.test.ts` no las veía porque
+    // solo vigilaba `repo.ts`/`conv.ts`/`costos.ts`/`config.ts`; ahora también
+    // cubre `processor.ts`.
+    const { data: viaje, error } = await acotada(admin.from('viaje')
+      .select('unidad_id, origen, destino').eq('id', viajeId).eq('tenant_id', op.tenantId).maybeSingle(), 'processor.ubicacion.viaje');
     if (error) throw new Error(error.message);
     if (viaje?.unidad_id) {
-      const { error: eIns } = await admin.from('posicion').insert({
+      const { error: eIns } = await acotada(admin.from('posicion').insert({
         tenant_id: op.tenantId, unidad_id: viaje.unidad_id, lat, lng,
         // El pin de WhatsApp se mide al mandarlo — no hay lote que reordenar.
         medida_en: new Date().toISOString(), proveedor: 'whatsapp',
-      });
+      }), 'processor.ubicacion.posicion');
       if (eIns) throw new Error(eIns.message);
     } else {
       // Sin unidad no hay dónde colgarla (la tabla la exige) — se dice en el
