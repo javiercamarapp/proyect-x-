@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger';
 import { codigoDeError } from '@/lib/observability/sentry';
 import { alertarOperador } from '@/lib/observability/alerta';
 import { registrarLatido, puertaCron } from '@/lib/admin/salud';
+import { margenUnidadAtomicaMs } from '@/lib/likida/presupuesto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,7 +35,32 @@ export const maxDuration = 300;
 // serie): cada fase deja de despachar flotas NUEVAS al vencer, la flota en
 // vuelo termina (unidad atómica), las sin turno se DICEN en el cuerpo y el
 // latido sale `parcial`. El margen deja aire para latir y responder.
-const MARGEN_RELOJ_MS = 20_000;
+//
+// ── AUDITORÍA 28, ALTO (REN-A4): 20 s era un LITERAL, no un margen ─────────
+// El reloj se consulta ANTES de despachar cada unidad atómica, así que el
+// margen tiene que cubrir el PEOR CASO de una: un evento GRAVE de cámara
+// (choque/volcadura), que corre `dispararAsistenciaPorEventoCamara` y termina
+// en `finalizarGrave` — SIN otro chequeo de reloj en medio (verificado contra
+// `asistencia_camara.ts`, `operacion.ts` y `sincronizar_eventos.ts` HOY,
+// 7-sep-2026; conteo paso por paso, camino "incidencia nueva" con
+// viaje+operador presentes, que es el más caro):
+//   1. expedienteAbierto                                   → 1 consulta
+//   2. crearIncidencia: viajePropio + unidadPropia +
+//      operadorPropio + el insert                          → 4 consultas
+//   3. anotarEventoIncidencia('abierta_por_camara')         → 1 consulta
+//   4. avisarAlJefePorCamara: telefonoJefeDe + rotuloUnidad → 2 consultas
+//   5. avisarAlJefePorCamara: encolarBotonesWhatsApp
+//      (`encolarSalidaWhatsAppDedupe`, un `rpc` de encolado, NO
+//      un envío síncrono — la entrega la hace `cron/wa-outbox`) → 1 consulta
+//   6. anotarEventoIncidencia('aviso_jefe_encolado')        → 1 consulta
+//   7. finalizarGrave (`finalizar_evento_seguridad`, RPC)   → 1 consulta
+//                                                    TOTAL: 11 consultas, 0 envíos
+// (La 27 y el prompt original de este arreglo contaban "13 consultas + 1
+// envío": el código de HOY no manda WhatsApp síncrono en esta cadena —
+// `encolarBotonesWhatsApp` solo INSERTA en `wa_outbox`, TECHO_PASO_CONSULTA_MS
+// igual que cualquier consulta, no TECHO_ENVIO_WHATSAPP_MS. Gana el código: se
+// documenta la diferencia aquí y en el PR en vez de heredar la cifra vieja.)
+const MARGEN_RELOJ_MS = margenUnidadAtomicaMs({ consultas: 11, envios: 0 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL CRON QUE HACE VERDAD «el GPS de tu flota».

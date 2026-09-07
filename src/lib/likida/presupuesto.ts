@@ -333,3 +333,69 @@ export function crearPresupuesto(totalMs: number, reloj: () => number = Date.now
     },
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EL MARGEN DE RELOJ DE UN CRON ITERATIVO (auditoría 28, REN-A4 + REN-A5).
+//
+// `crearPresupuesto` de arriba es para el WEBHOOK: un `venceEn` implícito con
+// margen de CIERRE (responder, sellar, entregar el PDF). Los crons que barren
+// una lista de trabajo (`gps`, `descarga-sat`, y sus hermanos desde el PR
+// #152) usan un patrón más simple pero con el MISMO riesgo: `venceEn` se
+// consulta ANTES de despachar cada "unidad atómica" (una flota, un evento, un
+// XML del paquete SAT) y, una vez despachada, esa unidad corre hasta el final
+// SIN que nadie vuelva a mirar el reloj — no hay forma de cortarla a medias.
+// El margen sobre `maxDuration` tiene que cubrir el PEOR CASO de una sola
+// unidad, no un número copiado de otro cron.
+//
+// `cron/gps/route.ts` (REN-A4) y `cron/descarga-sat/route.ts` (REN-A5)
+// llevaban los dos el mismo literal (`20_000`) copiado uno del otro sin
+// derivarlo de nada: 20s no cubre ni de lejos la cadena real de un evento
+// grave de cámara (verificada en `asistencia_camara.ts` — ver el comentario
+// junto a `MARGEN_RELOJ_MS` en `cron/gps/route.ts`) ni la del aviso de cierre
+// de peaje (`peaje_cierre.ts`). Un margen corto no es conservador: dispara el
+// `venceEn` DEMASIADO TARDE, deja que se despache una unidad que no le va a dar
+// tiempo, y Vercel mata la función a medio hacer — exactamente el silencio que
+// el reloj existe para evitar.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Lo que queda DESPUÉS de que la última unidad atómica termina: registrar el
+ * latido (`registrarLatido`) y devolver la respuesta HTTP. Sin este colchón el
+ * margen cubriría justo el trabajo y no la prueba de que el trabajo se hizo.
+ */
+export const COLCHON_LATIDO_CRON_MS = 5_000;
+
+export interface CostoUnidadAtomica {
+  /** Consultas a Supabase envueltas en `acotada()` — cada una cuesta, en el
+   *  peor caso, `TECHO_PASO_CONSULTA_MS`. Cuenta SOLO los viajes de red que de
+   *  verdad esperan una respuesta (un `select`/`insert`/`update`/`rpc`), no las
+   *  ramas que no se ejecutan siempre: usa el conteo del camino MÁS CARO. */
+  consultas: number;
+  /** Envíos SÍNCRONOS a la Cloud API de WhatsApp (`sendText`, `sendButtons`,
+   *  `enviarTexto`) — cada uno cuesta, en el peor caso, `TECHO_ENVIO_WHATSAPP_MS`.
+   *  NO cuenta un encolado a `wa_outbox` (`encolarBotonesWhatsApp` /
+   *  `encolarSalidaWhatsAppDedupe`): eso es una consulta MÁS (un `rpc` que
+   *  inserta en la tabla), no un envío — la entrega real la hace el worker
+   *  aparte de `cron/wa-outbox/route.ts`, fuera de esta unidad atómica. */
+  envios: number;
+  /** Costo adicional fijo, para lo que no encaja en las dos categorías de
+   *  arriba (p. ej. trabajo de CPU medido que no es red). */
+  extraMs?: number;
+}
+
+/**
+ * El margen de reloj que un cron ITERATIVO tiene que reservar sobre su
+ * `maxDuration`, derivado de los TECHOS duros de la unidad atómica más cara
+ * que puede despachar — no de un número copiado.
+ *
+ * `venceEn = Date.now() + maxDuration*1000 - margenUnidadAtomicaMs(...)`: con
+ * eso, una unidad que arranca justo antes de `venceEn` siempre tiene, como
+ * mínimo, exactamente su peor caso completo ANTES del `maxDuration`, más el
+ * colchón para latir y responder.
+ *
+ * Cambiar `LIKIDA_TOPE_CONSULTA_MS` por entorno mueve el margen de cada cron
+ * que use este helper sin tocar código (vía `TECHO_PASO_CONSULTA_MS`).
+ */
+export function margenUnidadAtomicaMs({ consultas, envios, extraMs = 0 }: CostoUnidadAtomica): number {
+  return consultas * TECHO_PASO_CONSULTA_MS + envios * TECHO_ENVIO_WHATSAPP_MS + extraMs + COLCHON_LATIDO_CRON_MS;
+}

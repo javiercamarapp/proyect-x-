@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger';
 import { codigoDeError } from '@/lib/observability/sentry';
 import { alertarOperador } from '@/lib/observability/alerta';
 import { puertaCron, registrarLatido } from '@/lib/admin/salud';
+import { margenUnidadAtomicaMs } from '@/lib/likida/presupuesto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -79,7 +80,30 @@ export async function GET(req: Request) {
   // El margen protege lo que va DESPUÉS del barrido: el latido y la respuesta.
   // Es lo último de la fila, o sea lo primero que se pierde — y es justo lo
   // único que haría visible el problema en un tablero.
-  const MARGEN_MS = 20_000;
+  //
+  // ── AUDITORÍA 28, ALTO REINCIDENTE (REN-A5): 20 s era el mismo literal
+  // copiado de `cron/gps/route.ts`, sin derivarlo de las dos cadenas que este
+  // cron de verdad despacha (ambas comparten el MISMO `venceEn`, corren en
+  // SERIE — nunca en vuelo las dos a la vez — así que el margen cubre a la MÁS
+  // CARA de las dos, no la suma). Verificado contra el código de HOY,
+  // 7-sep-2026:
+  //   • `correrDescargaSat` → `ingerir()` (sat_descarga/ciclo.ts), camino
+  //     "casado" (el más caro de sus cuatro destinos, sin `consolidado`: ese
+  //     JOIN pagina sobre TODO el mes y queda fuera de esta cuenta a
+  //     propósito — no es una unidad atómica de costo fijo, es una lectura
+  //     acotada por su propio `traerTodo`/`MAX_PAGINAS`, un riesgo aparte que
+  //     este PR no toca): sello (upsert) + ligar + saveCfdiXmlRaw + marcar
+  //     → 4 consultas, 0 envíos (~38 s).
+  //   • `avisarCierrePeaje` (sat_descarga/peaje_cierre.ts), por flota:
+  //     reservar + telefonoParaDineroDe + sendText (envío SÍNCRONO real, con
+  //     `AbortSignal.timeout(SEND_TIMEOUT_MS)`, a diferencia del encolado del
+  //     cron de gps) + soltarReserva si no se entregó
+  //     → 3 consultas + 1 envío (~38.5 s) ← la más cara de las dos.
+  // (La 27 hablaba de "4 consultas + 1 envío ≈ 48 s" para "la cadena más cara
+  // de sus dos bucles": el código de hoy da 38.5 s para `avisarCierrePeaje`,
+  // no 48 — se documenta la diferencia aquí y en el PR y se deriva el margen
+  // de la cadena real en vez de la cifra vieja.)
+  const MARGEN_MS = margenUnidadAtomicaMs({ consultas: 3, envios: 1 });
   const venceEn = Date.now() + maxDuration * 1000 - MARGEN_MS;
 
   try {
