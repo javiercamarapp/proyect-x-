@@ -458,9 +458,16 @@ async function avisarAlJefe(args: {
   return false;
 }
 
-/** Un solo mensaje corto y neutro. Nada de instrucciones, nada de preguntas:
- *  el chofer en violencia activa no debe recibir más vibraciones nuestras. */
-const RESPUESTA_MUDA = 'Recibido. Tu jefe ya lo sabe.';
+/**
+ * Dos mensajes cortos y neutros — nada de instrucciones, nada de preguntas: el
+ * chofer en violencia activa no debe recibir más vibraciones nuestras. Pero
+ * "menos vibración" no es licencia para mentir (AUDITORÍA 28, AG-M2): si el
+ * aviso al jefe no salió, el chofer no puede quedarse creyendo que sí. Cada
+ * rama que devuelve la respuesta muda elige entre las dos según si el aviso
+ * de verdad salió — nunca la de AVISADO por default.
+ */
+const RESPUESTA_MUDA_AVISADO = 'Recibido. Tu jefe ya lo sabe.';
+const RESPUESTA_MUDA_NO_AVISADO = 'Recibido. No pude avisar a tu jefe — si puedes, márcale tú.';
 
 export interface ResultadoAsistencia {
   /** Lo que se le contesta al chofer. */
@@ -499,8 +506,10 @@ export async function atenderAsistenciaChofer(args: {
     // la salida que no depende de nosotros.
     return {
       atendida: true,
+      // No hubo NINGÚN intento de avisar al jefe (ni siquiera se supo si ya
+      // había una emergencia abierta): la variante NO-AVISADO es la única verdad.
       respuesta: asistencia.modoMudo
-        ? RESPUESTA_MUDA
+        ? RESPUESTA_MUDA_NO_AVISADO
         : 'No pude registrar tu reporte ahorita 😕 — márcale DIRECTO a tu jefe, no esperes este chat. Si puedes, mándame el reporte de nuevo en un momento.',
     };
   }
@@ -542,8 +551,9 @@ export async function atenderAsistenciaChofer(args: {
     logger.error('asistencia.crear_fallo', { operador: args.operadorId, err: msj });
     return {
       atendida: true,
+      // Tampoco hubo aviso: la incidencia ni se pudo crear.
       respuesta: asistencia.modoMudo
-        ? RESPUESTA_MUDA
+        ? RESPUESTA_MUDA_NO_AVISADO
         : 'No pude registrar tu reporte ahorita 😕 — márcale DIRECTO a tu jefe, no esperes este chat.',
     };
   }
@@ -568,10 +578,11 @@ export async function atenderAsistenciaChofer(args: {
   logger.info('asistencia.abierta', { incidencia: incidenciaId, tipo, nivel: asistencia.nivel, avisado, lesionados: hayLesionados });
 
   if (asistencia.modoMudo) {
-    // La verdad de si el jefe recibió NO se le detalla al chofer en violencia
-    // activa: más texto es más vibración. Si el aviso falló, el post-mortem lo
-    // tiene en la bitácora y el escalamiento (Fase 5) lo reintenta.
-    return { atendida: true, respuesta: RESPUESTA_MUDA };
+    // El DETALLE de si el jefe recibió no se le explica al chofer en violencia
+    // activa (más texto es más vibración), pero la línea corta SÍ tiene que
+    // ser verdad — nunca "ya lo sabe" si el aviso rebotó (AUDITORÍA 28, AG-M2).
+    // El post-mortem completo vive en la bitácora y el escalamiento (Fase 5).
+    return { atendida: true, respuesta: avisado ? RESPUESTA_MUDA_AVISADO : RESPUESTA_MUDA_NO_AVISADO };
   }
   if (!avisado) {
     return {
@@ -632,12 +643,13 @@ async function atenderConExpedienteAbierto(
       .neq('estado', 'resuelta'), 'asistencia.escalar');
     if (error) {
       // No se pudo subir la severidad: se dice la verdad y se da la salida
-      // que no depende de nosotros — jamás un "ya lo sabe" sin respaldo.
+      // que no depende de nosotros — jamás un "ya lo sabe" sin respaldo. No
+      // hubo intento de avisar (la escalada ni se guardó): variante NO-AVISADO.
       logger.error('asistencia.escalada_fallo', { incidencia: abierta.id, err: error.message });
       return {
         atendida: true,
         respuesta: asistencia.modoMudo
-          ? RESPUESTA_MUDA
+          ? RESPUESTA_MUDA_NO_AVISADO
           : 'No pude actualizar tu reporte ahorita 😕 — márcale DIRECTO a tu jefe, esto suena más grave que lo anterior.',
       };
     }
@@ -658,7 +670,9 @@ async function atenderConExpedienteAbierto(
     });
     await anotarEventoIncidencia(args.tenantId, abierta.id, avisado ? 'aviso_jefe_enviado' : 'aviso_jefe_fallido');
     logger.info('asistencia.escalada', { incidencia: abierta.id, de: abierta.tipo, a: tipo, avisado });
-    if (asistencia.modoMudo) return { atendida: true, respuesta: RESPUESTA_MUDA };
+    if (asistencia.modoMudo) {
+      return { atendida: true, respuesta: avisado ? RESPUESTA_MUDA_AVISADO : RESPUESTA_MUDA_NO_AVISADO };
+    }
     return {
       atendida: true,
       respuesta: avisado
@@ -696,7 +710,9 @@ async function atenderConExpedienteAbierto(
     logger.warn('asistencia.adicional_no_reenviado', { incidencia: abierta.id, err: e instanceof Error ? e.message : String(e) });
   }
   logger.info('asistencia.mensaje_adicional', { incidencia: abierta.id, anotado, reenviado, lesionadosNuevos });
-  if (asistencia.modoMudo) return { atendida: true, respuesta: RESPUESTA_MUDA };
+  if (asistencia.modoMudo) {
+    return { atendida: true, respuesta: reenviado ? RESPUESTA_MUDA_AVISADO : RESPUESTA_MUDA_NO_AVISADO };
+  }
   return {
     atendida: true,
     respuesta: reenviado
