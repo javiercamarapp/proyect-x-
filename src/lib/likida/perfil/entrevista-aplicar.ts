@@ -79,7 +79,7 @@ export async function aplicarTurnoEntrevista(opts: {
     const leido = await getPerfilCrudo(opts.tenantId);
     const f15 = facilidad15Declarada(leido);
     if (f15) {
-      await actualizarFacilidad15(opts.tenantId, f15.dedicacionExclusivaCarga, f15.regimenElegible);
+      await actualizarFacilidad15(opts.tenantId, f15.dedicacionExclusivaCarga, f15.regimenElegible, opts.userId);
     }
     if (hechos.cobranzaVentana) {
       const actual = await leerConfigCobranza(opts.tenantId);

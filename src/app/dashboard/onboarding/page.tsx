@@ -67,7 +67,7 @@ export default async function OnboardingFlotaPage({
       await guardarPerfilPatch(ses.tenantId, patch, ses.userId);
       const f15 = facilidad15Declarada(patch);
       if (f15) {
-        await actualizarFacilidad15(ses.tenantId, f15.dedicacionExclusivaCarga, f15.regimenElegible);
+        await actualizarFacilidad15(ses.tenantId, f15.dedicacionExclusivaCarga, f15.regimenElegible, ses.userId);
       }
     } catch (e) {
       return { error: mensajeParaPantalla(e, 'guardar el perfil') };

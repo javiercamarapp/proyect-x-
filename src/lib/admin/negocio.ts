@@ -66,6 +66,7 @@ import { acotada } from '@/lib/likida/presupuesto';
 import { round2, TZ_MX, hoyMx } from '@/lib/formato';
 import { anotarBitacora } from '@/lib/likida/bitacora_escritura';
 import { DatoInvalido } from '@/lib/likida/errores';
+import { facilidad15Vigente } from '@/lib/likida/perfil/preguntas';
 // Solo TIPOS: `import type` se borra al compilar, así que esto no arrastra el
 // módulo de corridas (que carga supabaseAdmin/logger al importarse) — aquí
 // nada más se quiere el dominio del CHECK de la 0102 escrito una vez.
@@ -379,9 +380,13 @@ export async function getResumenNegocio(
   // es la misma llave que usa el guard de borrado del ejército de QA
   // (`scripts/qa-agentes/config.qa.ts`) — no una convención nueva.
   const [tenantsData, costoIa, negocio] = await Promise.all([
-    traerTodo<{ id: string; nombre: string; plan: string; config: unknown }>(
+    traerTodo<{ id: string; nombre: string; plan: string; config: unknown; perfil: unknown }>(
       (d, h) => acotada(
-        admin.from('tenant').select('id, nombre, plan, config', conteo(d)).not('nombre', 'ilike', 'ZZZ %').order('id').range(d, h),
+        // AUDITORÍA 28, FIS-A3: `perfil` viaja junto con `config` — la
+        // facilidad del 15% que se muestra/edita aquí tiene que leer la MISMA
+        // fuente única (perfil primero) que `desde_db.ts`/`fiscal.ts`/
+        // `tools.ts`, no solo el legado de `tenant.config`.
+        admin.from('tenant').select('id, nombre, plan, config, perfil', conteo(d)).not('nombre', 'ilike', 'ZZZ %').order('id').range(d, h),
         'getResumenNegocio/tenant',
       ),
       'getResumenNegocio/tenant',
@@ -444,11 +449,14 @@ export async function getResumenNegocio(
   const flotas = tenantsData.map((t) => {
     const cfg = (t.config as { facilidadCombustibleEfectivo?: { dedicacionExclusivaCarga?: boolean; regimenElegible?: boolean }; politica?: unknown } | null) ?? null;
     return {
-      ...t,
+      id: t.id, nombre: t.nombre, plan: t.plan,
       viajes: viajesPorTenant.get(t.id) ?? 0,
       costoIaUsd: round2(costoPorTenant.get(t.id) ?? 0),
-      // La declaración del 15% (RFA 2.9) viaja al panel para verse y corregirse.
-      facilidad15: cfg?.facilidadCombustibleEfectivo,
+      // La declaración del 15% (RFA 2.9) viaja al panel para verse y
+      // corregirse — AUDITORÍA 28, FIS-A3: la MISMA fuente única que
+      // `desde_db.ts`/`fiscal.ts`/`tools.ts` (perfil primero, `tenant.config`
+      // como legado), no solo el legado leído aquí solo.
+      facilidad15: facilidad15Vigente(t.perfil, cfg),
       // Sobre el override CRUDO, no sobre getConfig() — ver el comentario del tipo.
       politicaPropia: Array.isArray(cfg?.politica),
     };

@@ -84,13 +84,17 @@ async function accionCrearFlota(_previo: ResultadoAccion, fd: FormData): Promise
 // AUDITORÍA 14: la declaración del 15% (RFA 2.9) se puede VER y CORREGIR.
 async function accionFacilidad(_previo: ResultadoAccion, fd: FormData): Promise<ResultadoAccion> {
   'use server';
-  await requireSuperadmin();
+  const s = await requireSuperadmin();
   const flotaId = String(fd.get('flotaId') ?? '');
   const ded = fd.get('ded') === 'si' ? true : fd.get('ded') === 'no' ? false : undefined;
   const reg = fd.get('reg') === 'si' ? true : fd.get('reg') === 'no' ? false : undefined;
   if (!flotaId) return { error: 'Falta la flota.' };
   try {
-    await actualizarFacilidad15(flotaId, ded, reg);
+    // AUDITORÍA 28, FIS-A3: `actualizarFacilidad15` ahora escribe también
+    // `tenant.perfil` (la fuente única que lee `facilidad15Vigente`) — antes
+    // esta pantalla SOLO tocaba `tenant.config` y una corrección del
+    // superadmin podía quedar tapada por una declaración vieja del perfil.
+    await actualizarFacilidad15(flotaId, ded, reg, s.userId);
   } catch (e) {
     return { error: mensajeParaPantalla(e, 'guardar la declaración') };
   }

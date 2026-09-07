@@ -16,6 +16,7 @@ import {
   getGastosFiscales, resumirFiscal, resumirPerdidas, opcionesDe, opcionesFiscalesDelPeriodo, resolverPeriodo,
 } from '@/lib/likida/fiscal';
 import { getConfig } from '@/lib/likida/config';
+import { getPerfilCrudo } from '@/lib/likida/repo';
 import { getKpis } from '@/lib/likida/analytics';
 import { mxn, numero, porcentaje, fechaCorta, hoyMx } from '@/lib/formato';
 import { resolverViaje, rotuloViaje } from './viajes';
@@ -155,8 +156,13 @@ const esquemaFiscal = z.object({
 
 async function ejecutarFiscal(tenantId: string, args: z.infer<typeof esquemaFiscal>): Promise<ResultadoHerramienta> {
   const periodo = resolverPeriodo(args.periodo, hoyMx());
-  const cfg = await getConfig(tenantId);
-  const opciones = opcionesDe(cfg);
+  const [cfg, perfilCrudo] = await Promise.all([
+    getConfig(tenantId),
+    // AUDITORÍA 28, FIS-A3: misma fuente única que el motor y el panel —
+    // best-effort, esta tool nunca liquida (solo informa).
+    getPerfilCrudo(tenantId).catch(() => ({})),
+  ]);
+  const opciones = opcionesDe(cfg, perfilCrudo);
   const gastos = await getGastosFiscales(tenantId, periodo, hoyMx(), opciones);
   // AUDITORÍA 25, FIS-C1/FIS-C2/ARQ-C1 (CRÍTICO): esta herramienta imprime la
   // MISMA cifra que `/dashboard/contador` — necesita el acumulado del

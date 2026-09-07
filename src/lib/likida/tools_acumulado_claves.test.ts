@@ -57,6 +57,10 @@ vi.mock('./repo', () => ({
   getOperador: vi.fn(async () => null),
   saveLiquidacion: vi.fn(async () => {}),
   conteoDeGastosCambio: vi.fn(async () => false),
+  // AUDITORÍA 28, FIS-A3: sin perfil declarado, `facilidad15Vigente` cae al
+  // `facilidadCombustibleEfectivo` de la config de arriba — el mismo universo
+  // que este archivo prueba, ahora leído por la fuente única.
+  getPerfilCrudo: vi.fn(async () => ({})),
 }));
 
 await import('./tools');
