@@ -13,9 +13,19 @@ const ADMIN_KEYS = ['SUPABASE_ACCESS_TOKEN', 'SUPABASE_DB_PASSWORD', 'SUPABASE_D
 const serialize = values => KEYS.map(key => `${key}=${JSON.stringify(values[key])}`).join('\n');
 const hidden = value => value === '[SENSITIVE]';
 
+// Piso técnico (no de negocio): 8 es el mínimo realista para un secreto real
+// (JWT, service_role, token de Vercel/Supabase); valores más cortos son casi
+// siempre basura común ("true", "test", un dígito de línea ":1") que, si se
+// redactara a ciegas, rompería el log de build sin motivo. knownValues ya
+// llega desde la llamada como TODO valor de env/values/pulled — no solo los
+// nombres en KEYS — así que el piso es la única guarda que falta: no hace
+// falta enumerar nombres de variable para cubrir "cualquier secreto de
+// longitud razonable".
+const MIN_REDACTABLE_SECRET_LENGTH = 8;
+
 export function sanitizeBuildLog(text, knownValues) {
   let safe = String(text ?? '');
-  const secrets = [...new Set(knownValues.filter(value => typeof value === 'string' && value.length > 0)
+  const secrets = [...new Set(knownValues.filter(value => typeof value === 'string' && value.length >= MIN_REDACTABLE_SECRET_LENGTH)
     .flatMap(value => [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
   for (const secret of secrets) safe = safe.replaceAll(secret, '[REDACTED]');
   safe = safe.replace(/\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]')
@@ -41,12 +51,12 @@ export async function prepareBuild(target, env = process.env, deps = {}) {
     // — O_NOFOLLOW hace que un symlink falle en el propio open() (ELOOP), no
     // en un lstat separado que ya no describe el archivo real al leer.
     let fd;
-    try { fd = openSync(file, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW); } catch { throw new Error('FILE'); }
+    try { fd = openSync(file, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW); } catch { stage = 'FILE'; throw new Error('FILE'); }
     try {
-      if (!fstatSync(fd).isFile()) throw new Error('FILE');
+      if (!fstatSync(fd).isFile()) { stage = 'FILE'; throw new Error('FILE'); }
       const original = readFileSync(fd, 'utf8');
       const pulled = parseEnv(original);
-      if (ADMIN_KEYS.some(key => pulled[key] !== undefined)) throw new Error('ADMIN_IN_PULLED_ENV');
+      if (ADMIN_KEYS.some(key => pulled[key] !== undefined)) { stage = 'ADMIN_IN_PULLED_ENV'; throw new Error('ADMIN_IN_PULLED_ENV'); }
       for (const key of KEYS) {
         const assignments = original.split('\n').filter(line => new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`).test(line));
         if (assignments.length !== 1 || !pulled[key]) throw new Error('MISSING_OR_DUPLICATE');

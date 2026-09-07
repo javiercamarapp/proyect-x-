@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, statSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { prepareBuild, sanitizeBuildLog } from './prepare-build-env.mjs';
 import { PROJECT, TEAM, STAGING_REF, PRODUCTION_REF, validateSupabaseEnv } from './production-candidate.mjs';
 
+// Espejo local de ADMIN_KEYS (no exportado por prepare-build-env.mjs a propósito:
+// es una lista interna, no una superficie pública del módulo).
+const ADMIN_KEYS = ['SUPABASE_ACCESS_TOKEN', 'SUPABASE_DB_PASSWORD', 'SUPABASE_DB_URL'];
 const dirs: string[] = [];
 const jwt = (ref: string, role: string) => `header.${Buffer.from(JSON.stringify({ ref, role })).toString('base64url')}.synthetic`;
 const env: NodeJS.ProcessEnv = { NODE_ENV: 'test', CI: 'true', SUPABASE_ACCESS_TOKEN: 'synthetic-management-secret', SUPABASE_DB_PASSWORD: 'synthetic-db-secret', VERCEL_TOKEN: 'synthetic-vercel-secret' };
@@ -85,11 +88,64 @@ describe('build con credenciales autorizadas y Sensitive preservado', () => {
     await expect(prepareBuild('other', env, f)).rejects.toThrow('BUILD_ENV_INPUT');
     expect(f.fetch).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
   });
-  it.each(['missing', 'empty', 'admin'])('rechaza archivo %s antes de red/build', async kind => {
+  it.each(['missing', 'empty'])('rechaza archivo %s antes de red/build', async kind => {
     const f = fixture('preview', kind === 'missing' ? masked.split('\n').slice(1).join('\n')
-      : kind === 'empty' ? masked.replace('[SENSITIVE]', '') : `${masked}SUPABASE_ACCESS_TOKEN="synthetic-admin"\n`);
+      : masked.replace('[SENSITIVE]', ''));
     await expect(prepareBuild('preview', env, f)).rejects.toThrow('BUILD_ENV_PULLED_ENV');
     expect(f.fetch).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
+  });
+  it.each(ADMIN_KEYS)('si %s aparece en el .env pulled, aborta con ADMIN_IN_PULLED_ENV antes de red/build', async adminKey => {
+    const f = fixture('preview', `${masked}${adminKey}="synthetic-admin-leak-value"\n`);
+    await expect(prepareBuild('preview', env, f)).rejects.toThrow('BUILD_ENV_ADMIN_IN_PULLED_ENV');
+    expect(f.fetch).not.toHaveBeenCalled(); expect(f.spawn).not.toHaveBeenCalled();
+    expect(readFileSync(f.file, 'utf8')).toContain(adminKey);
+  });
+  it('un symlink en la ruta del .env no se sigue: falla con FILE y no toca el archivo real', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'build-env-test-')); dirs.push(cwd);
+    mkdirSync(join(cwd, '.vercel'));
+    writeFileSync(join(cwd, '.vercel/project.json'), JSON.stringify({ projectId: PROJECT, orgId: TEAM }));
+    const real = join(cwd, 'real-secrets-fuera-de-vercel.env');
+    writeFileSync(real, masked);
+    symlinkSync(real, join(cwd, '.vercel/.env.preview.local'));
+    const fetch = vi.fn();
+    const spawn = vi.fn();
+    await expect(prepareBuild('preview', env, { cwd, fetch, spawn })).rejects.toThrow('BUILD_ENV_FILE');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(readFileSync(real, 'utf8')).toBe(masked);
+  });
+  it('SUPABASE_DB_URL en el entorno no se hereda al proceso hijo del build', async () => {
+    const f = fixture('preview');
+    const envConDbUrl = { ...env, SUPABASE_DB_URL: 'postgres://synthetic-db-url-secret' };
+    const spawn = vi.fn((_cmd: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      expect(options.env).not.toHaveProperty('SUPABASE_DB_URL');
+      return { status: 0 };
+    });
+    await expect(prepareBuild('preview', envConDbUrl, { ...f, spawn })).resolves.toMatchObject({ build: 'passed' });
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+  it('una API key marcada disabled en la respuesta de Supabase se rechaza, no se usa', async () => {
+    const f = fixture('preview');
+    f.fetch.mockResolvedValue({ ok: true, json: async () => [
+      { name: 'anon', api_key: jwt(f.ref, 'anon') },
+      { name: 'service_role', api_key: jwt(f.ref, 'service_role'), disabled: true },
+    ] });
+    await expect(prepareBuild('preview', env, f)).rejects.toThrow('BUILD_ENV_SUPABASE_KEYS');
+    expect(f.spawn).not.toHaveBeenCalled();
+    expect(readFileSync(f.file, 'utf8')).toBe(masked);
+  });
+  it('sanitizeBuildLog no corrompe texto común corto (piso de 8 evita redactar basura sin sentido)', () => {
+    const log = "Type 'true' is not assignable to type 'never'.\n  src/app/page.tsx:1:5 - error TS2322: mensaje de compilador normal.";
+    // 'true', 'test' y '1' son valores típicos de env cortos (CI, NODE_ENV, un
+    // puerto): sin el piso de longitud, un replaceAll ciego los reventaría en
+    // cualquier parte del log, incluida esta salida de TypeScript sin secretos.
+    const safe = sanitizeBuildLog(log, ['true', 'test', '1', 'CI', 'a1b2c3d4']);
+    expect(safe).toBe(log);
+    // Pero un secreto real (>=8) en la misma llamada sí se redacta.
+    const conSecreto = sanitizeBuildLog(`${log}\nDB_URL=a1b2c3d4`, ['a1b2c3d4']);
+    expect(conSecreto).not.toContain('a1b2c3d4');
+    expect(conSecreto).toContain("Type 'true'");
+    expect(conSecreto).toContain('page.tsx:1:5');
   });
   it('diagnóstico de salida mantiene error útil, redacta valores y limita tail', async () => {
     const secret = 'canary "private" value+with/slash';
@@ -99,7 +155,10 @@ describe('build con credenciales autorizadas y Sensitive preservado', () => {
     expect(safe).toContain('Compile error');
     expect(safe).not.toContain('private'); expect(safe).not.toContain(token); expect(safe).not.toContain(unknownJwt);
     expect(sanitizeBuildLog('x'.repeat(100_000), []).length).toBe(65_536);
-    expect(sanitizeBuildLog('DB password=p4ss12', ['p4ss12'])).not.toContain('p4ss12');
+    // 'p4ss12' (6 chars) queda bajo el piso técnico de 8: valores tan cortos no
+    // se redactan por valor exacto para no arriesgar basura común del log.
+    expect(sanitizeBuildLog('DB password=p4ss12', ['p4ss12'])).toContain('p4ss12');
+    expect(sanitizeBuildLog('DB password=p4ss1234', ['p4ss1234'])).not.toContain('p4ss1234');
     const f = fixture();
     const spawn = vi.fn(() => ({ status: 2, stdout: `Build failed ${jwt(STAGING_REF, 'service_role')}`, stderr: env.SUPABASE_ACCESS_TOKEN }));
     await expect(prepareBuild('preview', env, { ...f, spawn })).rejects.toThrow('BUILD_ENV_BUILD_EXIT_2');
