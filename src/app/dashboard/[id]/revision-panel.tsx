@@ -15,8 +15,10 @@ import type { AccionRevision, RevisionDetalle } from '@/lib/likida/revision';
 //
 //   · APROBAR  — el cierre queda firmado con tu nombre y tu hora.
 //   · AJUSTAR  — corrige el monto de un comprobante mal leído (WA-3: el ticket
-//                de $8,000 que el modelo leyó $800). Mueve `gasto.monto` y el
-//                total por la delta; NO vuelve a cuadrar, y lo dice.
+//                de $8,000 que el modelo leyó $800). Mueve `gasto.monto` y
+//                el sistema RECALCULA el cuadre con los montos corregidos
+//                antes de guardar el ajuste con tu firma (`revision.ts`
+//                ~489-505, mig. 0306: también regenera el PDF).
 //   · RECHAZAR — el viaje vuelve a cuadre y al chofer le llega el motivo por
 //                WhatsApp, tal como lo escribiste.
 //

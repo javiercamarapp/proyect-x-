@@ -93,6 +93,24 @@ export function KpiTile({
   );
 }
 
+/**
+ * Blanco de toque de las flechas ‹ › de periodo (auditoría 28, FE-M5): un
+ * SOLO literal para que `kpi-periodo.tsx` y `motor-fiscal-periodo.tsx` no
+ * vuelvan a divergir (venían con la MISMA clase copiada en los dos
+ * archivos, `w-4 h-4` = 16×16 CSS px, por debajo del mínimo 24×24 de WCAG
+ * 2.5.8 — en una tablet el dedo cae en la flecha vecina). El ícono sigue
+ * chico (12-13px, se centra solo con `items-center justify-center`); la
+ * caja real crece a `w-6 h-6` (24px) y `-m-1` le resta 4px por lado al
+ * espacio que reserva en el flujo, dejando el layout EXACTO de antes
+ * (16px netos) para que las tarjetas de `MotorFiscalPeriodo` no crezcan de
+ * alto — la fila padre las estira parejas a la más alta de las tres
+ * ("Diésel elegible" incluida), así que un pixel de más aquí se contagia a
+ * las otras dos. Usa `gap-3` (12px) entre las dos flechas, no menos: con el
+ * margen negativo, un gap menor deja las dos cajas de 24px pisándose.
+ */
+export const BOTON_PERIODO =
+  'w-6 h-6 -m-1 rounded flex items-center justify-center transition-colors disabled:opacity-30 hover:bg-[color-mix(in_srgb,var(--muted)_14%,transparent)] disabled:hover:bg-transparent';
+
 // ── StatCard (12-ago-2026) ────────────────────────────
 
 /** La stat card: chip de ícono neutro + etiqueta

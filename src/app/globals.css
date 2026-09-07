@@ -385,6 +385,21 @@ html, body {
   z-index: 1;
 }
 
+/* ── Foco visible en píldoras `<label>` con radio/checkbox `sr-only`
+   (auditoría 28, FE-M3) ─────────────────────────────────────────────────
+   El patrón "input sr-only dentro de un <label> con pinta de botón" se
+   repite en el panel (firma de revisión, días de la estrategia de
+   cobranza): el navegador dibuja el anillo de foco SOBRE el input de 1px
+   invisible, así que con teclado no se ve nada — `→`/`Tab` mueve la
+   selección a ciegas y Enter firma la opción equivocada. Regla genérica y
+   aditiva (no toca ningún `outline: none` porque no hay ninguno): cuando
+   el input directo del label tiene `:focus-visible`, el anillo se pinta en
+   el label completo, mismo color y grosor que `.sb-aside` arriba. */
+label:has(> input.sr-only:focus-visible) {
+  outline: 3px solid var(--accent, var(--marca));
+  outline-offset: 2px;
+}
+
 /* ── Textura punteada (16-ago-2026, ref. shadcn-dashboard) ─────────────────
    La convención nueva de la dirección visual: los DIVISORES INTERNOS de una
    tarjeta van punteados — filas de tabla, y los pies de StatCard/KpiTile
