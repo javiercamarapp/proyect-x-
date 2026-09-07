@@ -619,12 +619,34 @@ export function armarParteSilencio(actividad: ActividadFlota[], hoy: string): st
   return lineas.join('\n');
 }
 
+// ARQ-A5 (auditoría 28): las liquidaciones que sostienen las cifras de dinero
+// de este reporte son las FIRMADAS — mismo criterio que la RPC
+// `acreditables_liquidacion_tenant` (mig. 0308) y que `ivaSostenible` en
+// fiscal.ts: `revision in ('aprobada', 'ajustada')`. Antes de este arreglo el
+// `select` de `leerValorDelMes` ni siquiera pedía `revision`, así que las
+// sumas de dinero mezclaban firmadas con pendientes y rechazadas mientras el
+// texto del reporte afirmaba «la misma columna que la RPC» — dos números
+// distintos bajo un rótulo que juraba ser el mismo. La constante vive AQUÍ
+// (no en `revision.ts`) porque este lote solo toca `exito.ts`/`comercial.ts`/
+// `soporte.ts` — si otro archivo necesita el mismo predicado, se sube a
+// `revision.ts` entonces, no antes.
+const REVISIONES_FIRMADAS = ['aprobada', 'ajustada'] as const;
+function esRevisionFirmada(revision: unknown): boolean {
+  return (REVISIONES_FIRMADAS as readonly unknown[]).includes(revision);
+}
+
 /** Las cifras del mes de UNA flota. Todo lo que se afirma se contó o se sumó;
- *  `incompleto` marca que la ventana rebasó el tope y el total NO se afirma. */
+ *  `incompleto` marca que la ventana rebasó el tope y el total NO se afirma.
+ *  Las SUMAS de dinero (`totalComprobado`, `diferencia`, `ivaAcreditable`,
+ *  `peajeAcreditable`, `litrosDiesel`) SOLO cuentan liquidaciones FIRMADAS
+ *  (`revision` aprobada|ajustada — ARQ-A5); `liquidaciones` y `porEstatus`
+ *  siguen contando TODA la población del mes (no son cifras de dinero) y
+ *  `porRevision` declara esa población para que el lector sepa qué falta. */
 export interface ValorDelMes {
   mes: string;
   liquidaciones: number;
   porEstatus: Array<{ estatus: string; n: number }>;
+  porRevision: Array<{ revision: string; n: number }>;
   totalComprobado: number;
   diferencia: number;
   ivaAcreditable: number;
@@ -647,13 +669,18 @@ export function armarReporteValor(flota: Flota, v: ValorDelMes): string {
     lineas.push('Un mes sin liquidaciones también es un reporte completo: no hay cifras de valor que presumir, y decirlo vale más que rellenarlo.');
   } else {
     const desglose = v.porEstatus.map((e) => `${e.estatus} ${numero(e.n)}`).join(' · ');
+    const desgloseRevision = v.porRevision.map((r) => `${r.revision} ${numero(r.n)}`).join(' · ');
     lineas.push(`Viajes liquidados: ${numero(v.liquidaciones)}  (conteo EN BASE de liquidacion por tenant, created_at dentro de ${v.mes})`);
     lineas.push(`  Por estatus del cuadre: ${desglose}  (liquidacion.estatus)`);
-    lineas.push(`Comprobado del mes: ${mxn(v.totalComprobado)}  (suma de liquidacion.total_comprobado)`);
-    lineas.push(`Diferencia que el cuadre observó: ${mxn(v.diferencia)}  (suma de liquidacion.diferencia — es lo que el motor detectó, no lo que se recuperó)`);
-    lineas.push(`IVA acreditable del mes: ${mxn(v.ivaAcreditable)}  (suma de liquidacion.iva_acreditable — la misma columna que la RPC acreditables_liquidacion_tenant)`);
-    lineas.push(`Peaje acreditable (50%): ${mxn(v.peajeAcreditable)}  (suma de liquidacion.peaje_acreditable)`);
-    lineas.push(`Diésel elegible: ${litros(v.litrosDiesel)}  (suma de liquidacion.litros_diesel_acreditables — el estímulo en pesos lo calcula el contador: la cuota semanal del IEPS no vive aquí)`);
+    // ARQ-A5: esta línea es la que dice QUÉ POBLACIÓN sostiene las sumas de
+    // dinero de abajo — sin ella, un lector no puede saber que "IVA
+    // acreditable" no es la suma de las `liquidaciones` de la línea anterior.
+    lineas.push(`  Por firma: ${desgloseRevision}  (liquidacion.revision — las cifras de dinero de abajo SOLO cuentan aprobada+ajustada)`);
+    lineas.push(`Comprobado del mes (solo firmadas): ${mxn(v.totalComprobado)}  (suma de liquidacion.total_comprobado donde revision es aprobada o ajustada)`);
+    lineas.push(`Diferencia que el cuadre observó (solo firmadas): ${mxn(v.diferencia)}  (suma de liquidacion.diferencia donde revision es aprobada o ajustada — es lo que el motor detectó, no lo que se recuperó)`);
+    lineas.push(`IVA acreditable del mes (solo firmadas): ${mxn(v.ivaAcreditable)}  (suma de liquidacion.iva_acreditable donde revision es aprobada o ajustada — el mismo criterio que la RPC acreditables_liquidacion_tenant)`);
+    lineas.push(`Peaje acreditable (50%, solo firmadas): ${mxn(v.peajeAcreditable)}  (suma de liquidacion.peaje_acreditable donde revision es aprobada o ajustada)`);
+    lineas.push(`Diésel elegible (solo firmadas): ${litros(v.litrosDiesel)}  (suma de liquidacion.litros_diesel_acreditables donde revision es aprobada o ajustada — el estímulo en pesos lo calcula el contador: la cuota semanal del IEPS no vive aquí)`);
     lineas.push('');
     lineas.push(v.gastosDelMes === 0
       ? 'Comprobantes del mes: 0 (conteo EN BASE de gasto por tenant y mes).'
@@ -685,7 +712,10 @@ export async function leerValorDelMes(tenantId: string, mes: string): Promise<Va
   const filas = await traerTodo<Record<string, unknown>>(
     (d, h) => acotada(supabaseAdmin()
       .from('liquidacion')
-      .select('estatus, total_comprobado, diferencia, iva_acreditable, peaje_acreditable, litros_diesel_acreditables', conteo(d))
+      // ARQ-A5: `revision` entra al select — sin ella no hay forma de aplicar
+      // el mismo predicado que la 0308 y las sumas de dinero de abajo suman
+      // TODA la población en vez de solo la firmada.
+      .select('estatus, revision, total_comprobado, diferencia, iva_acreditable, peaje_acreditable, litros_diesel_acreditables', conteo(d))
       .eq('tenant_id', tenantId)
       .gte('created_at', desde)
       .lt('created_at', hasta)
@@ -695,15 +725,24 @@ export async function leerValorDelMes(tenantId: string, mes: string): Promise<Va
   );
 
   const porEstatus = new Map<string, number>();
+  const porRevision = new Map<string, number>();
   let totalComprobado = 0, diferencia = 0, iva = 0, peaje = 0, dieselL = 0;
   for (const f of filas) {
     const est = String(f.estatus);
     porEstatus.set(est, (porEstatus.get(est) ?? 0) + 1);
-    totalComprobado += Number(f.total_comprobado ?? 0);
-    diferencia += Number(f.diferencia ?? 0);
-    iva += Number(f.iva_acreditable ?? 0);
-    peaje += Number(f.peaje_acreditable ?? 0);
-    dieselL += Number(f.litros_diesel_acreditables ?? 0);
+    const rev = String(f.revision);
+    porRevision.set(rev, (porRevision.get(rev) ?? 0) + 1);
+    // ARQ-A5: las SUMAS de dinero solo cuentan liquidaciones FIRMADAS — mismo
+    // predicado que `acreditables_liquidacion_tenant` (0308). `liquidaciones`
+    // y `porEstatus` (abajo) siguen contando TODA la población: no son cifras
+    // de dinero y su rótulo no afirma "firmadas".
+    if (esRevisionFirmada(f.revision)) {
+      totalComprobado += Number(f.total_comprobado ?? 0);
+      diferencia += Number(f.diferencia ?? 0);
+      iva += Number(f.iva_acreditable ?? 0);
+      peaje += Number(f.peaje_acreditable ?? 0);
+      dieselL += Number(f.litros_diesel_acreditables ?? 0);
+    }
   }
   // El CONTEO ya es exacto: `traerTodo` demostró que `filas` son TODAS las
   // del mes (count o página vacía) — no hace falta una consulta aparte
@@ -728,6 +767,7 @@ export async function leerValorDelMes(tenantId: string, mes: string): Promise<Va
   return {
     mes, liquidaciones,
     porEstatus: [...porEstatus.entries()].map(([estatus, n]) => ({ estatus, n })).sort((a, b) => b.n - a.n),
+    porRevision: [...porRevision.entries()].map(([revision, n]) => ({ revision, n })).sort((a, b) => b.n - a.n),
     totalComprobado: round2(totalComprobado),
     diferencia: round2(diferencia),
     ivaAcreditable: round2(iva),

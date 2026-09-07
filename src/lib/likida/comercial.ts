@@ -694,6 +694,21 @@ export async function getUltimasPosiciones(tenantId: string): Promise<UltimaPosi
 export const CATEGORIAS_TICKET = ['facturacion', 'operacion', 'tecnico', 'cuenta', 'otro'] as const;
 export const PRIORIDADES_TICKET = ['baja', 'media', 'alta', 'urgente'] as const;
 
+// AG-M1 (auditoría 28): `ticket_soporte.vence_en` no tenía escritor —
+// `abirTicket` era el único INSERT en la tabla y no escribía `sla_horas` ni
+// `vence_en`, así que `semaforoTicket` (agentes/exito.ts) devolvía SIN_SLA
+// para el 100% de los tickets y la alarma de SLA vencido era insatisfacible
+// por construcción. La 0051 declara «vence_en se calcula al abrir el ticket
+// (abierto_en + sla_horas)» con el CHECK `ticket_sla_sano` (1..720 h) — la
+// tabla de abajo es la ÚNICA fuente de esos plazos, para que cambiar uno no
+// signifique buscar el número suelto en otro archivo.
+export const SLA_HORAS_POR_PRIORIDAD: Record<(typeof PRIORIDADES_TICKET)[number], number> = {
+  urgente: 4,
+  alta: 24,
+  media: 72,
+  baja: 168,
+};
+
 export async function abrirTicket(
   tenantId: string,
   /** null = lo abre Likida (superadmin) a nombre de la flota — 0051. */
@@ -709,6 +724,14 @@ export async function abrirTicket(
     throw new DatoInvalido('Esa prioridad no existe.');
   }
   const descripcion = t.descripcion.trim();
+  const prioridad = t.prioridad as (typeof PRIORIDADES_TICKET)[number];
+  const slaHoras = SLA_HORAS_POR_PRIORIDAD[prioridad];
+  // Un solo instante para las dos columnas: `abierto_en` tiene default `now()`
+  // en la 0051, pero derivar `vence_en` contra el default de la base y
+  // escribir `abierto_en` por separado dejaría un salto de reloj entre las
+  // dos — pequeño, pero real. Se calculan aquí, del mismo `Date`.
+  const abiertoEn = new Date();
+  const venceEn = new Date(abiertoEn.getTime() + slaHoras * 3_600_000);
 
   const { data, error } = await acotada(supabaseAdmin().from('ticket_soporte').insert({
     tenant_id: tenantId,
@@ -717,6 +740,9 @@ export async function abrirTicket(
     descripcion: descripcion === '' ? null : descripcion.slice(0, 4000),
     categoria: t.categoria,
     prioridad: t.prioridad,
+    sla_horas: slaHoras,
+    abierto_en: abiertoEn.toISOString(),
+    vence_en: venceEn.toISOString(),
   }).select('id').single(), 'abrirTicket');
   if (error) throw new Error(`abrirTicket: ${error.message}`);
   const id = (data as { id?: unknown } | null)?.id;

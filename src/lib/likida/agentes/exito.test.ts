@@ -255,7 +255,7 @@ describe('éxito del cliente — el silencio y el reporte de valor', () => {
 
   it('un mes sin liquidaciones también es un reporte completo', () => {
     const cuerpo = armarReporteValor(FLOTA, {
-      mes: '2026-07', liquidaciones: 0, porEstatus: [], totalComprobado: 0, diferencia: 0,
+      mes: '2026-07', liquidaciones: 0, porEstatus: [], porRevision: [], totalComprobado: 0, diferencia: 0,
       ivaAcreditable: 0, peajeAcreditable: 0, litrosDiesel: 0,
       gastosConCfdiValido: 0, gastosDelMes: 0, incompleto: false,
     });
@@ -266,6 +266,7 @@ describe('éxito del cliente — el silencio y el reporte de valor', () => {
   it('cada cifra del reporte lleva su consulta nombrada en la MISMA línea', () => {
     const cuerpo = armarReporteValor(FLOTA, {
       mes: '2026-07', liquidaciones: 12, porEstatus: [{ estatus: 'cuadrada', n: 10 }, { estatus: 'revisar', n: 2 }],
+      porRevision: [{ revision: 'aprobada', n: 10 }, { revision: 'pendiente', n: 2 }],
       totalComprobado: 45_000, diferencia: 1_200, ivaAcreditable: 6_200, peajeAcreditable: 900,
       litrosDiesel: 3_400, gastosConCfdiValido: 30, gastosDelMes: 44, incompleto: false,
     });
@@ -276,11 +277,14 @@ describe('éxito del cliente — el silencio y el reporte de valor', () => {
     // un cliente haría mal si nadie se la aclara.
     expect(cuerpo).toContain('sin validar todavía');
     expect(cuerpo).toContain('BORRADOR');
+    // ARQ-A5: el reporte declara QUÉ POBLACIÓN sostiene las cifras de dinero.
+    expect(cuerpo).toContain('liquidacion.revision');
+    expect(cuerpo).toContain('aprobada 10');
   });
 
   it('un mes truncado NO afirma los totales', () => {
     const cuerpo = armarReporteValor(FLOTA, {
-      mes: '2026-07', liquidaciones: 5_000, porEstatus: [], totalComprobado: 1, diferencia: 0,
+      mes: '2026-07', liquidaciones: 5_000, porEstatus: [], porRevision: [], totalComprobado: 1, diferencia: 0,
       ivaAcreditable: 0, peajeAcreditable: 0, litrosDiesel: 0,
       gastosConCfdiValido: 0, gastosDelMes: 1, incompleto: true,
     });
@@ -289,7 +293,10 @@ describe('éxito del cliente — el silencio y el reporte de valor', () => {
   });
 
   it('AGB-8: leerValorDelMes ya NO tope a 2,000 — un mes con 2,500 liquidaciones (3 páginas) suma completo y no sale incompleto', async () => {
-    const fila = { estatus: 'cuadrada', total_comprobado: '10', diferencia: '0', iva_acreditable: '0', peaje_acreditable: '0', litros_diesel_acreditables: '0' };
+    const fila = {
+      estatus: 'cuadrada', revision: 'aprobada', total_comprobado: '10', diferencia: '0',
+      iva_acreditable: '0', peaje_acreditable: '0', litros_diesel_acreditables: '0',
+    };
     respuestas.set('liquidacion', [
       { data: Array.from({ length: 1_000 }, () => fila), count: 2_500, error: null }, // página 1 (con el total)
       { data: Array.from({ length: 1_000 }, () => fila), error: null },               // página 2
@@ -300,6 +307,30 @@ describe('éxito del cliente — el silencio y el reporte de valor', () => {
     expect(v.liquidaciones).toBe(2_500);
     expect(v.incompleto).toBe(false);
     expect(v.totalComprobado).toBe(25_000);
+  });
+
+  it('ARQ-A5: el IVA del reporte suma SOLO firmadas (aprobada/ajustada) — pendiente y rechazada NO entran a la suma', async () => {
+    const filas = [
+      { estatus: 'cuadrada', revision: 'aprobada', total_comprobado: '100', diferencia: '1', iva_acreditable: '16', peaje_acreditable: '2', litros_diesel_acreditables: '30' },
+      { estatus: 'cuadrada', revision: 'ajustada', total_comprobado: '200', diferencia: '2', iva_acreditable: '32', peaje_acreditable: '4', litros_diesel_acreditables: '60' },
+      { estatus: 'revisar', revision: 'pendiente', total_comprobado: '9999', diferencia: '9999', iva_acreditable: '9999', peaje_acreditable: '9999', litros_diesel_acreditables: '9999' },
+      { estatus: 'cuadrada', revision: 'rechazada', total_comprobado: '9999', diferencia: '9999', iva_acreditable: '9999', peaje_acreditable: '9999', litros_diesel_acreditables: '9999' },
+    ];
+    respuestas.set('liquidacion', [{ data: filas, count: 4, error: null }]);
+    respuestas.set('gasto', [{ data: null, count: 0, error: null }, { data: null, count: 0, error: null }]);
+    const v = await leerValorDelMes(FLOTA.id, '2026-08');
+    // El CONTEO sigue viendo las 4 — no es una cifra de dinero.
+    expect(v.liquidaciones).toBe(4);
+    // Las SUMAS de dinero solo ven las dos firmadas: 100+200, 16+32, etc.
+    expect(v.totalComprobado).toBe(300);
+    expect(v.diferencia).toBe(3);
+    expect(v.ivaAcreditable).toBe(48);
+    expect(v.peajeAcreditable).toBe(6);
+    expect(v.litrosDiesel).toBe(90);
+    expect(v.porRevision).toEqual(expect.arrayContaining([
+      { revision: 'aprobada', n: 1 }, { revision: 'ajustada', n: 1 },
+      { revision: 'pendiente', n: 1 }, { revision: 'rechazada', n: 1 },
+    ]));
   });
 
   it('sin flotas en silencio NO se encola nada: un parte que dice «nada» enseña a no leerlo', async () => {

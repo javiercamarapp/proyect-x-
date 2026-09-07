@@ -334,12 +334,34 @@ export async function tomarTicket(
 
   // 'abierto' significa "nadie lo ha tocado". Tomarlo lo vuelve falso.
   const estado = ticket.estado === 'abierto' ? 'en_proceso' : ticket.estado;
-  const { error } = await acotada(supabaseAdmin()
+  // BE-B1 (auditoría 28): antes este UPDATE no anclaba el claim en el WHERE —
+  // era el único claim del repo así (compárese `cerrarOrden` en
+  // mantenimiento.ts, que ancla con `.neq('estado','cerrada')`, y
+  // `reclamarIntentos` en facturacion/al_vuelo.ts, con `.is()`/`.or()`). Dos
+  // superadmin que pulsan «Tomar» con milisegundos de diferencia recibían
+  // AMBOS `{ asignadoA: <el suyo> }` y la base se quedaba con el segundo — la
+  // pantalla del primero mentía. Decisión conservadora (la 0268 no dice nada
+  // sobre "retomar" un ticket de OTRO): el UPDATE solo aplica si el ticket
+  // está libre o YA es del mismo actor — reintentar tu propia toma no es un
+  // error, pero quitárselo a otro en silencio si lo era.
+  const { data, error } = await acotada(supabaseAdmin()
     .from('ticket_soporte')
     .update({ asignado_a: actor.userId, estado })
     .eq('id', ticket.id)
-    .eq('tenant_id', tenantId), 'tomarTicket');
+    .eq('tenant_id', tenantId)
+    .or(`asignado_a.is.null,asignado_a.eq.${actor.userId}`)
+    .select('id, asignado_a'), 'tomarTicket');
   if (error) throw new Error(`tomarTicket: ${error.message}`);
+  const fila = (data ?? [])[0] as { id: string; asignado_a: string | null } | undefined;
+  if (!fila) {
+    // El WHERE no encontró fila: alguien más ganó la carrera entre la lectura
+    // de arriba y este UPDATE. Se relee para decir QUIÉN en vez de afirmar un
+    // éxito que no ocurrió — y la bitácora de abajo NO se anota, porque la
+    // acción no aplicó.
+    const actual = await getTicketDelTenant(ticket.id, tenantId);
+    const quien = actual?.asignadoNombre ?? (actual?.asignadoA ? 'otra persona del equipo' : 'alguien más');
+    throw new DatoInvalido(`No se pudo tomar: ya lo tiene ${quien}.`);
+  }
 
   // `anotarBitacora` NUNCA lanza: la acción ya ocurrió y tirarla por no poder
   // anotarla deja el sistema peor que sin registro. Pero DEVUELVE si quedó
