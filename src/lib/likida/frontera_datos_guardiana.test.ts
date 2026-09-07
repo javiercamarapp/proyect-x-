@@ -104,6 +104,7 @@ function tieneAccesoDirecto(ruta: string): boolean {
  *  verdad mide cuánto código bypasea `repo.ts`/`pg.ts`, no cuántos archivos
  *  lo hacen (ver AUDITORÍA 28 arriba). */
 function llamadasDirectas(ruta: string): number {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta sale de fuentesDeProduccion()/readdirSync sobre RAIZ_SRC, un directorio fijo del repo; ninguna entrada de usuario.
   return (readFileSync(ruta, 'utf8').match(/\.(from|rpc)\(/g) ?? []).length;
 }
 
