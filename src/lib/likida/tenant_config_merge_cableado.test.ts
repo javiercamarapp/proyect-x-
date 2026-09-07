@@ -39,12 +39,26 @@ beforeEach(() => {
 });
 
 describe('actualizarFacilidad15 (RFA 2026 regla 2.9)', () => {
-  it('declarada: manda SOLO su llave y no lee la config para armarla', async () => {
-    await actualizarFacilidad15('t-1', true, false);
+  // AUDITORÍA 28, FIS-A3 (fuente única): desde aquí, `actualizarFacilidad15`
+  // escribe DOS RPCs — `tenant_perfil_merge` PRIMERO (la fuente que
+  // `facilidad15Vigente` prefiere) y `tenant_config_merge` DESPUÉS (el
+  // legado) — para que una corrección en `/admin/flotas` no quede tapada por
+  // una declaración vieja del perfil en los otros lectores.
+  it('declarada: escribe el perfil (fuente) y LUEGO su llave de config (legado), sin leer nada primero', async () => {
+    await actualizarFacilidad15('t-1', true, false, 'u-1');
 
-    expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc.mock.calls[0][0]).toBe('tenant_config_merge');
-    expect(rpc.mock.calls[0][1]).toEqual({
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls[0][0]).toBe('tenant_perfil_merge');
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_tenant_id: 't-1',
+      p_patch: {
+        dedicacionExclusivaCarga: { valor: true, procedencia: 'declarado' },
+        regimenElegible: { valor: false, procedencia: 'declarado' },
+      },
+      p_actualizado_por: 'u-1',
+    });
+    expect(rpc.mock.calls[1][0]).toBe('tenant_config_merge');
+    expect(rpc.mock.calls[1][1]).toEqual({
       p_tenant: 't-1',
       p_parcial: { facilidadCombustibleEfectivo: { dedicacionExclusivaCarga: true, regimenElegible: false } },
       p_borrar: [],
@@ -52,28 +66,50 @@ describe('actualizarFacilidad15 (RFA 2026 regla 2.9)', () => {
     expect(from, 'leer la config para mezclarla aquí era la mitad de la carrera').not.toHaveBeenCalled();
   });
 
-  it('SIN declarar: borra la llave de verdad, no la pone en null', async () => {
+  it('SIN declarar: borra la llave de config de verdad (no la pone en null) y marca el perfil AUSENTE', async () => {
     // Un `null` no la quita: `fusionarConfig` lo ignora (config.ts) y el motor
     // seguiría leyendo la declaración vieja. La flota que quiso retirar su
     // declaración se quedaría declarada.
-    await actualizarFacilidad15('t-1', undefined, undefined);
-    expect(rpc.mock.calls[0][1]).toEqual({
+    await actualizarFacilidad15('t-1', undefined, undefined, null);
+    expect(rpc.mock.calls[0]).toMatchObject([
+      'tenant_perfil_merge',
+      {
+        p_patch: {
+          dedicacionExclusivaCarga: { valor: null, procedencia: 'ausente' },
+          regimenElegible: { valor: null, procedencia: 'ausente' },
+        },
+      },
+    ]);
+    expect(rpc.mock.calls[1][1]).toEqual({
       p_tenant: 't-1',
       p_parcial: {},
       p_borrar: ['facilidadCombustibleEfectivo'],
     });
   });
 
-  it('una declaración a medias (una sola condición) NO se guarda a medias: se retira', async () => {
+  it('una declaración a medias (una sola condición) NO se guarda a medias: se retira en las DOS fuentes', async () => {
     // Las DOS condiciones o ninguna — con una sola, el motor la lee como "no
     // elegible" en silencio (es la regla del CHECK desde la 0083).
-    await actualizarFacilidad15('t-1', true, undefined);
-    expect(rpc.mock.calls[0][1]).toMatchObject({ p_borrar: ['facilidadCombustibleEfectivo'] });
+    await actualizarFacilidad15('t-1', true, undefined, null);
+    expect(rpc.mock.calls[0]).toMatchObject([
+      'tenant_perfil_merge',
+      { p_patch: { dedicacionExclusivaCarga: { procedencia: 'ausente' }, regimenElegible: { procedencia: 'ausente' } } },
+    ]);
+    expect(rpc.mock.calls[1][1]).toMatchObject({ p_borrar: ['facilidadCombustibleEfectivo'] });
   });
 
-  it('si la base falla, lanza: una facilidad que no se guardó no se da por guardada', async () => {
-    rpc.mockResolvedValue({ data: null, error: { message: 'timeout' } });
-    await expect(actualizarFacilidad15('t-1', true, true)).rejects.toThrow(/actualizarFacilidad15/);
+  it('si la fuente (perfil) falla, lanza y NUNCA llega a tocar el legado', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'timeout perfil' } });
+    await expect(actualizarFacilidad15('t-1', true, true, null)).rejects.toThrow(/perfil/);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('si el legado (config) falla tras guardar la fuente, lanza: una facilidad que no se guardó del todo no se da por guardada', async () => {
+    rpc
+      .mockResolvedValueOnce({ data: {}, error: null }) // tenant_perfil_merge: ok
+      .mockResolvedValueOnce({ data: null, error: { message: 'timeout' } }); // tenant_config_merge: falla
+    await expect(actualizarFacilidad15('t-1', true, true, null)).rejects.toThrow(/actualizarFacilidad15/);
+    expect(rpc).toHaveBeenCalledTimes(2);
   });
 });
 

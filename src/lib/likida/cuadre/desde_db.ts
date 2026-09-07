@@ -6,7 +6,7 @@ import { cuadrarViaje, medioNoAdmitidoCombustible, formaPagoJuzgableDe } from '.
 import { ventanaDelViaje } from './fecha_dudosa';
 import { getViaje, getGastos, getOperador, getAcumuladoCombustible, getPerfilCrudo } from '../repo';
 import { getConfig } from '../config';
-import { calificaEstimuloPeaje, facilidad15Declarada } from '../perfil/preguntas';
+import { calificaEstimuloPeaje, facilidad15Vigente } from '../perfil/preguntas';
 import { logger } from '@/lib/logger';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
@@ -104,13 +104,14 @@ export async function cuadrarDesdeDB(
   // Paso 6: el perfil es la fuente. `tenant.config` queda como legado
   // (el alta vieja escribía ahí) — si el dueño ya declaró en el perfil,
   // esa declaración gana. No se inventa un no a partir de un config vacío.
-  const f15Perfil = facilidad15Declarada(perfilCrudo);
-  const f15 = config.facilidadCombustibleEfectivo;
-  const facilidad15 = f15Perfil
-    ? (f15Perfil.dedicacionExclusivaCarga && f15Perfil.regimenElegible)
-    : (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
-      ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)
-      : undefined;
+  // AUDITORÍA 28, FIS-A3: la precedencia vive en `facilidad15Vigente`
+  // (perfil/preguntas.ts) — fuente ÚNICA, también usada por `fiscal.ts`,
+  // `tools.ts` y `admin/negocio.ts`, que antes la reimplementaban cada uno
+  // por su lado y podían desalinearse entre sí.
+  const f15Vigente = facilidad15Vigente(perfilCrudo, config);
+  const facilidad15 = f15Vigente
+    ? (f15Vigente.dedicacionExclusivaCarga && f15Vigente.regimenElegible)
+    : undefined;
   // AUDITORÍA 14, MEDIO: el ejercicio es el de los COMPROBANTES, no el del
   // proceso — una liquidación de diciembre cerrada en enero declaraba todo el
   // diésel en efectivo NO deducible contra un tope de $0 (año equivocado).

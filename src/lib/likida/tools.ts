@@ -15,9 +15,10 @@ import { estaApagado } from './interruptores';
 import { registrarCorrida } from './agentes/corridas';
 import {
   getViaje, getOperador, saveLiquidacion, leerSnapshotInsumosCierre,
-  insumosDeCierreCambiaron,
+  insumosDeCierreCambiaron, getPerfilCrudo,
 } from './repo';
 import { getConfig } from './config';
+import { facilidad15Vigente } from './perfil/preguntas';
 import { generarLiquidacionPDF } from './liquidacion/pdf';
 import { getDatosFiscales } from '@/lib/saas/fiscal';
 import { supabaseAdmin } from '@/lib/supabase/admin';
@@ -215,9 +216,15 @@ registerTool('cuadrar_viaje', {
       const cfg = await getConfig(ctx.tenantId);
       const acum = await getAcumuladoCombustible(ctx.tenantId, ejercicio, cfg.hidrocarburos?.claves ?? []);
       const t = evaluarTope15(acum);
-      const f15 = cfg.facilidadCombustibleEfectivo;
-      const elegible = (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
-        ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)
+      // AUDITORÍA 28, FIS-A3: la MISMA fuente única que `desde_db.ts` (perfil
+      // primero, `tenant.config` como legado) — antes esta tool reimplementaba
+      // la precedencia por su cuenta y podía desalinearse con lo que el motor
+      // acaba de decidir en el `cuadrarDesdeDB` de arriba. Best-effort: sin
+      // perfil disponible, se degrada a leer solo `tenant.config`, como antes.
+      const perfilCrudo = await getPerfilCrudo(ctx.tenantId).catch(() => ({}));
+      const f15Vigente = facilidad15Vigente(perfilCrudo, cfg);
+      const elegible = f15Vigente
+        ? (f15Vigente.dedicacionExclusivaCarga && f15Vigente.regimenElegible)
         : undefined;
       periodo = { estado: t.estado, razon: Number(t.razon.toFixed(4)), margen: t.margen, excedente: t.excedente, aviso: avisoTope15(t, ejercicio, elegible) };
     } catch (e) {

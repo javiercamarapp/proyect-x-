@@ -50,8 +50,25 @@ import {
   SENAL_BAR, UMBRAL_RENGLONES_AJENOS, rfcsUtilizablesDe, normalizarRfc,
 } from './cuadre/engine';
 import { getConfig, type LikidaConfig } from './config';
-import { getAcumuladoCombustible } from './repo';
+import { getAcumuladoCombustible, getPerfilCrudo } from './repo';
+import { facilidad15Vigente } from './perfil/preguntas';
 import { logger } from '@/lib/logger';
+
+/**
+ * Lectura best-effort del perfil para las lecturas informativas de este
+ * archivo (panel del contador, tools del agente) — nunca es el camino de
+ * cierre/hash, así que un fallo de red no puede tumbar el panel: se degrada
+ * a "sin perfil" (mismo efecto que un tenant que nunca lo declaró) y
+ * `facilidad15Vigente` cae a `tenant.config` como antes.
+ */
+async function perfilBestEffort(tenantId: string): Promise<unknown> {
+  try {
+    return await getPerfilCrudo(tenantId);
+  } catch (e) {
+    logger.warn('fiscal.perfil_no_disponible', { tenantId, err: e instanceof Error ? e.message : String(e) });
+    return {};
+  }
+}
 // RE-AUDITORÍA 25, FIS-REAUD-2: `complemento_hidrocarburos` (SIN_IVA_ACREDITABLE
 // de engine.ts) solo declara no deducible con una fecha de EXIGIBILIDAD
 // respaldada por FICHA — la misma que `engine.ts` resuelve de `NORMAS`
@@ -499,7 +516,8 @@ export async function opcionesFiscalesDelPeriodo(
   periodo: Periodo,
   cfg: LikidaConfig,
 ): Promise<OpcionesFiscales> {
-  const o = opcionesDe(cfg);
+  const perfilCrudo = await perfilBestEffort(tenantId);
+  const o = opcionesDe(cfg, perfilCrudo);
   return { ...o, combustibleEjercicio: await combustibleEjercicioDe(tenantId, periodo, o.clavesCombustible) };
 }
 
@@ -540,8 +558,14 @@ function proporcionCombustible15(o: OpcionesFiscales): number {
  * necesita para su Motor fiscal — vivía en un archivo de página en vez de en
  * la capa de datos, así que borrar el panel se la hubiera llevado entre pies.
  */
-export function opcionesDe(cfg: LikidaConfig): OpcionesFiscales {
-  const f15 = cfg.facilidadCombustibleEfectivo;
+export function opcionesDe(cfg: LikidaConfig, perfilCrudo?: unknown): OpcionesFiscales {
+  // AUDITORÍA 14, ALTO: el panel ofrecía el 15% a flotas no elegibles. La
+  // declaración de la flota llega hasta aquí — AUDITORÍA 28, FIS-A3: por la
+  // MISMA fuente única que `desde_db.ts` (perfil primero, `tenant.config`
+  // como legado), no una copia de la precedencia. `perfilCrudo` es opcional y
+  // best-effort: un llamador que no lo tenga a la mano (todavía) se degrada
+  // exactamente al comportamiento de antes (solo `tenant.config`).
+  const f15Vigente = facilidad15Vigente(perfilCrudo, cfg);
   return {
     efectivoTopeMxn: cfg.estimulos.efectivoTopeMxn,
     clavesCombustible: cfg.hidrocarburos.claves,
@@ -550,11 +574,7 @@ export function opcionesDe(cfg: LikidaConfig): OpcionesFiscales {
     // motor tampoco lo aplica (lee con `!= null`) — inventar $750 aquí haría
     // que el panel prorratee un tope que la liquidación no aplicó.
     viaticosTopeFiscalDiarioMxn: cfg.estimulos.viaticosTopeFiscalDiarioMxn ?? null,
-    // AUDITORÍA 14, ALTO: el panel ofrecía el 15% a flotas no elegibles. La
-    // declaración de la flota (al registrarse) llega hasta aquí.
-    elegible15: (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined)
-      ? (f15.dedicacionExclusivaCarga === true && f15.regimenElegible === true)
-      : undefined,
+    elegible15: f15Vigente ? (f15Vigente.dedicacionExclusivaCarga && f15Vigente.regimenElegible) : undefined,
     // RE-AUDITORÍA 25, FIS-REAUD-2: el MISMO conjunto que `cuadrarViaje`
     // calcula para validar el receptor — importado, no reinventado.
     rfcsPropios: rfcsUtilizablesDe(cfg.empresa.rfc, cfg.empresa.rfcsAdicionales),
@@ -1615,7 +1635,7 @@ export async function getGastosFiscales(
   hoy: string = hoyMx(),
   opciones?: OpcionesFiscales,
 ): Promise<GastoFiscal[]> {
-  const o = opciones ?? opcionesDe(await getConfig(tenantId));
+  const o = opciones ?? opcionesDe(await getConfig(tenantId), await perfilBestEffort(tenantId));
   const cortes = cortesDePlazo(hoy);
   const { data, error } = await acotada(supabaseAdmin().rpc('gastos_fiscales_agregados_tenant', {
     p_tenant: tenantId,
@@ -1679,8 +1699,9 @@ export async function getGastosFiscalesSeries(
     d.setUTCDate(d.getUTCDate() - (n - 1));
     return d.toISOString().slice(0, 10);
   };
-  // La config se lee UNA vez para las tres ventanas.
-  const o = opcionesDe(await getConfig(tenantId));
+  // La config y el perfil se leen UNA vez para las tres ventanas.
+  const [cfgSeries, perfilSeries] = await Promise.all([getConfig(tenantId), perfilBestEffort(tenantId)]);
+  const o = opcionesDe(cfgSeries, perfilSeries);
   // `clave: 'mes'` es un relleno — `getGastosFiscales` solo lee `desde`/
   // `hasta`, y estas ventanas no son un mes calendario. Se fija a 'mes' en
   // vez de inventar un valor nuevo en `ClavePeriodo` porque esa unión la

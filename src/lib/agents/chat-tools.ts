@@ -19,6 +19,7 @@ import {
   getGastoPorSemanaSeries, getLiquidadoPorSemanaSeries, getTopRutasPorGastoSeries,
 } from '@/lib/likida/analytics';
 import { getConfig } from '@/lib/likida/config';
+import { getPerfilCrudo } from '@/lib/likida/repo';
 import { getEstadoCartaPorte } from '@/lib/likida/carta_porte_datos';
 import { NORMAS, esVinculante } from '@/lib/likida/normas/indice';
 import { TEMAS_NORMATIVOS, normasPorTema } from '@/lib/likida/normas/consulta';
@@ -141,11 +142,14 @@ registerTool('motor_fiscal', {
   },
   handler: async (_a, ctx) => {
     const periodo = resolverPeriodo(undefined, hoyIso());
-    const [cfg, gastos] = await Promise.all([
+    const [cfg, gastos, perfilCrudo] = await Promise.all([
       getConfig(ctx.tenantId),
       getGastosFiscales(ctx.tenantId, periodo),
+      // AUDITORÍA 28, FIS-A3: misma fuente única que el motor y el panel —
+      // best-effort, esta tool nunca liquida (solo informa al chat).
+      getPerfilCrudo(ctx.tenantId).catch(() => ({})),
     ]);
-    const r = resumirPerdidas(gastos, opcionesDe(cfg));
+    const r = resumirPerdidas(gastos, opcionesDe(cfg, perfilCrudo));
     return {
       periodo: periodo.etiqueta, moneda: 'MXN',
       montoPerdido: r.montoPerdido, montoEnRiesgo: r.montoEnRiesgo, montoRecuperable: r.montoRecuperable,

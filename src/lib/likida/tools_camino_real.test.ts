@@ -51,6 +51,10 @@ vi.mock('./repo', () => ({
   // que el permiso de citar viaja con las DIFERENCIAS del cuadre, no con el
   // aviso de periodo — ese tiene su propia cobertura en `periodo/*.test.ts`.
   getAcumuladoCombustible: vi.fn(async () => ({ efectivo: 0, totalCombustible: 0 })),
+  // AUDITORÍA 28, FIS-A3: sin perfil, `facilidad15Vigente` cae a
+  // `tenant.config` (DEMO_CONFIG, sin la facilidad declarada) — mismo
+  // universo "sin declarar" que este archivo ya ejercitaba antes del helper.
+  getPerfilCrudo: vi.fn(async () => ({})),
 }));
 
 // Importar `tools.ts` REGISTRA las tools (`registerTool`, al importarse).

@@ -341,6 +341,59 @@ export function facilidad15Declarada(perfilCrudo: unknown): { dedicacionExclusiv
   return { dedicacionExclusivaCarga: ded, regimenElegible: reg };
 }
 
+/**
+ * AUDITORÍA 28, FIS-A3 (fuente única) — RFA 2026 regla 2.9: la pareja
+ * VIGENTE de la facilidad del 15%, con la MISMA precedencia que antes vivía
+ * reimplementada por separado en `cuadre/desde_db.ts`, `fiscal.ts`, `tools.ts`
+ * y `admin/negocio.ts`: el perfil manda SI declara las DOS condiciones a la
+ * vez (`facilidad15Declarada`, arriba); si no, se usa
+ * `tenant.config.facilidadCombustibleEfectivo` (el alta vieja, o el
+ * dual-write de `actualizarFacilidad15` en `repo.ts`) SOLO si también trae
+ * las DOS explícitas; si ninguna fuente decide las dos juntas, no hay
+ * declaración vigente (`undefined`) — una declaración A MEDIAS nunca se
+ * guarda ni se lee como si fuera un "no" (mismo candado que arriba).
+ *
+ * Devuelve la PAREJA (no un booleano ya combinado) para que el mismo helper
+ * sirva tanto a quien solo necesita "¿aplica la facilidad?"
+ * (`dedicacionExclusivaCarga && regimenElegible`) como a quien necesita
+ * mostrar/editar cada condición por separado (el panel de superadmin en
+ * `/admin/flotas`).
+ */
+export function facilidad15Vigente(
+  perfilCrudo: unknown,
+  config: { facilidadCombustibleEfectivo?: { dedicacionExclusivaCarga?: boolean; regimenElegible?: boolean } } | null | undefined,
+): { dedicacionExclusivaCarga: boolean; regimenElegible: boolean } | undefined {
+  const f15Perfil = facilidad15Declarada(perfilCrudo);
+  if (f15Perfil) return f15Perfil;
+  const f15 = config?.facilidadCombustibleEfectivo;
+  if (f15 && f15.dedicacionExclusivaCarga !== undefined && f15.regimenElegible !== undefined) {
+    return { dedicacionExclusivaCarga: f15.dedicacionExclusivaCarga === true, regimenElegible: f15.regimenElegible === true };
+  }
+  return undefined;
+}
+
+/**
+ * El patch de `tenant.perfil` que declara la facilidad del 15% con
+ * `procedencia: 'declarado'` — lo usa `repo.ts` (`actualizarFacilidad15`)
+ * para que CUALQUIER corrección de la facilidad (onboarding, entrevista del
+ * chat, o el panel de superadmin en `/admin/flotas`) quede también en la
+ * fuente única, no solo en el `tenant.config` legado. `undefined` en ambos
+ * argumentos = "sin declarar": se marca AUSENTE (no se inventa un `false`)
+ * para que `facilidad15Declarada` dependa de una declaración de verdad.
+ */
+export function declararFacilidad15(
+  dedicacionExclusivaCarga: boolean | undefined,
+  regimenElegible: boolean | undefined,
+): Record<string, unknown> {
+  if (dedicacionExclusivaCarga === undefined || regimenElegible === undefined) {
+    return declararAusente(['dedicacionExclusivaCarga', 'regimenElegible']);
+  }
+  return {
+    dedicacionExclusivaCarga: campo(dedicacionExclusivaCarga),
+    regimenElegible: campo(regimenElegible),
+  };
+}
+
 export function ventanaCobranzaDeclarada(perfilCrudo: unknown): { horaInicio: number; horaFin: number; diasSemana: number[] } | null {
   return decidir(leerPerfil(perfilCrudo).cobranzaVentana) ?? null;
 }

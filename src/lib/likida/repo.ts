@@ -11,7 +11,7 @@ import { traerTodo, conteo } from './pg';
 import type { Gasto, Liquidacion, Viaje, Operador } from '@/types/likida';
 import type { CodigoPendiente } from './intake/emparejar';
 import { violaIndice } from './pg_errores';
-import { declararUmbralPeaje } from './perfil/preguntas';
+import { declararUmbralPeaje, declararFacilidad15 } from './perfil/preguntas';
 
 // El tope de consulta vive en `presupuesto.ts`, con `TOPE_CONSULTA_MS` y el
 // resto del presupuesto de la invocación. Estuvo aquí hasta la auditoría 8, y
@@ -1505,8 +1505,25 @@ export async function actualizarRfcOperador(tenantId: string, operadorId: string
  * Actualiza la declaración de la facilidad del 15% (RFA 2026 regla 2.9) de una
  * flota. `undefined` en ambos = sin declarar (borra la llave). AUDITORÍA 14:
  * la declaración del alta no se podía ver ni corregir.
+ *
+ * AUDITORÍA 28, FIS-A3 (fuente única): antes solo escribía `tenant.config`
+ * (el alta vieja) — si el superadmin corregía esto en `/admin/flotas`, la
+ * corrección podía quedar TAPADA por una declaración vieja en `tenant.perfil`
+ * (la fuente que `facilidad15Vigente` prefiere). Ahora escribe las DOS, y en
+ * ESE orden: `tenant.perfil` PRIMERO —la fuente que manda— y `tenant.config`
+ * DESPUÉS como legado; si algo falla a medio camino, la fuente única queda
+ * correcta aunque el legado se atrase (mejor eso que al revés). `actualizadoPor`
+ * es el mismo actor que sella `perfil_actualizado_por` (trigger de la 0169) —
+ * `null` para escrituras del sistema sin un usuario detrás.
  */
-export async function actualizarFacilidad15(tenantId: string, ded: boolean | undefined, reg: boolean | undefined): Promise<void> {
+export async function actualizarFacilidad15(
+  tenantId: string,
+  ded: boolean | undefined,
+  reg: boolean | undefined,
+  actualizadoPor: string | null,
+): Promise<void> {
+  await guardarPerfilPatch(tenantId, declararFacilidad15(ded, reg), actualizadoPor);
+
   // AUDITORÍA 15, MEDIO: sin comprobar el error, un bache de red se leía como
   // "la flota no tiene config" y se REEMPLAZABA la config entera por una sola
   // llave — perdiendo política, topes y estímulos en silencio.
