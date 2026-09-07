@@ -24,11 +24,26 @@ import { registrarExportacionProspectos } from '@/lib/admin/prospectos-mapa';
  *  segundo almacén de lo que alguien escribió. */
 const MAX_TEXTO_FILTRO = 200;
 
+// CodeQL (js/remote-property-injection, alerta 179): copiar TODAS las llaves
+// de `filtros` (controlado por el cliente) a `filtrosSanos[k]` sin más límite
+// que `Object.create(null)` evita el prototype pollution pero no acota QUÉ ni
+// CUÁNTAS llaves entran a `bitacora_auditoria.detalle` — un superadmin ya
+// autenticado podría meter miles de llaves arbitrarias. El único llamador real
+// (`cerebro.tsx:489-499`) manda exactamente estas 15 llaves de filtro más el
+// texto libre de búsqueda; cualquier otra llave (incluyendo `__proto__` o
+// `constructor` inyectadas vía JSON) se descarta.
+const LLAVES_FILTRO = new Set([
+  'giros', 'etapas', 'fuentes', 'tamanos', 'minUrgencia', 'soloTel', 'soloDecisor',
+  'orden', 'minCompletitud', 'minSimilitud', 'minNecesidad', 'sinToqueDias',
+  'soloMensajeIA', 'soloVacante', 'radioKm', 'busqueda',
+]);
+
 export async function accionRegistrarExportacion(n: number, filtros: Record<string, unknown>): Promise<void> {
   const { userId } = await requireSuperadmin();
   const nSano = Number.isFinite(n) && n >= 0 ? Math.round(n) : 0;
   const filtrosSanos: Record<string, unknown> = Object.create(null);
   for (const [k, v] of Object.entries(filtros ?? {})) {
+    if (!LLAVES_FILTRO.has(k)) continue;
     filtrosSanos[k] = typeof v === 'string' ? v.slice(0, MAX_TEXTO_FILTRO) : v;
   }
   await registrarExportacionProspectos(userId, nSano, filtrosSanos);

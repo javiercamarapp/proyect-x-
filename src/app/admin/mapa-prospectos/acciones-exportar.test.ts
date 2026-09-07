@@ -48,14 +48,23 @@ describe('accionRegistrarExportacion', () => {
     expect((llamadas[0].filtros.busqueda as string).length).toBe(200);
   });
 
-  it('conserva claves reservadas como datos propios sin alterar el prototipo del filtro', async () => {
+  it('descarta claves reservadas por no estar en el allowlist, sin alterar el prototipo del filtro (alerta CodeQL 179)', async () => {
     const entrada = JSON.parse('{"__proto__":{"administrador":true},"constructor":"filtro","busqueda":"texto"}');
     await accionRegistrarExportacion(1, entrada);
     const filtros = llamadas[0].filtros;
     expect(Object.getPrototypeOf(filtros)).toBeNull();
-    expect(Object.hasOwn(filtros, '__proto__')).toBe(true);
-    expect(JSON.parse(JSON.stringify(filtros))).toEqual(entrada);
+    // __proto__ y constructor no son llaves de filtro reales: el allowlist las
+    // descarta (antes solo se evitaba que contaminaran el prototipo, pero
+    // igual quedaban como dato propio). busqueda SÍ es una llave real y pasa.
+    expect(Object.hasOwn(filtros, '__proto__')).toBe(false);
+    expect(Object.hasOwn(filtros, 'constructor')).toBe(false);
+    expect(filtros).toEqual({ busqueda: 'texto' });
     expect(Object.getPrototypeOf({})).not.toHaveProperty('administrador');
+  });
+
+  it('descarta cualquier llave fuera del allowlist de filtros conocidos', async () => {
+    await accionRegistrarExportacion(1, { giros: ['carga'], zzz: 'ajeno', otraLlave: 123 });
+    expect(llamadas[0].filtros).toEqual({ giros: ['carga'] });
   });
 
   it('sin sesión privilegiada no registra ningún filtro', async () => {
