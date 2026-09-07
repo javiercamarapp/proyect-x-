@@ -94,17 +94,26 @@ export async function withProtection(project, request, action) {
   if (existing) return action(existing);
   // Identidad propia conocida incluso si la respuesta de creación se pierde.
   const secret = randomBytes(32).toString('hex');
+  let originalError;
+  let result;
   try {
+    // Aun si esta petición falla (p.ej. red), el bypass pudo haberse creado del lado
+    // del servidor sin que la respuesta llegara: la limpieza de abajo se intenta siempre.
     await request({ method: 'PATCH', body: JSON.stringify({ generate: { secret } }) });
-    return await action(secret);
-  } finally {
-    try {
-      await request({ method: 'PATCH', body: JSON.stringify({ revoke: { secret, regenerate: false } }) });
-    } catch {
-      console.error('::error::Falló la revocación del bypass creado por esta ejecución; requiere revisión administrativa.');
-      throw new Error('Cleanup de Deployment Protection falló');
-    }
+    result = await action(secret);
+  } catch (error) {
+    originalError = error;
   }
+  try {
+    await request({ method: 'PATCH', body: JSON.stringify({ revoke: { secret, regenerate: false } }) });
+  } catch {
+    console.error('::error::Falló la revocación del bypass creado por esta ejecución; requiere revisión administrativa.');
+    // La causa real (generar o el smoke) no debe perderse detrás del fallo de limpieza.
+    if (originalError) throw originalError;
+    throw new Error('Cleanup de Deployment Protection falló');
+  }
+  if (originalError) throw originalError;
+  return result;
 }
 
 export async function main(mode, reference, sha, extra, env = process.env) {
@@ -177,5 +186,8 @@ export async function main(mode, reference, sha, extra, env = process.env) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(...process.argv.slice(2)).catch(() => { console.error('Gate del candidato Vercel falló; no promover.'); process.exitCode = 1; });
+  main(...process.argv.slice(2)).catch((error) => {
+    console.error('::error::Gate del candidato Vercel falló; no promover.', error?.message ?? error);
+    process.exitCode = 1;
+  });
 }
