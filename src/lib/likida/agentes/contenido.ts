@@ -390,7 +390,13 @@ export async function correrContenidoFiscal(
       if (r.noMedido) {
         costoUsd = null;
         logger.warn('contenido.costo_no_medido', { tema: candidato.tema });
-      } else if (costoUsd !== null) {
+      } else {
+        // `costoUsd !== null` aquí siempre es cierto: esta función hace UNA
+        // sola llamada al modelo (no hay loop), así que en esta rama todavía
+        // vale su inicial (0). El chequeo se deja fuera a propósito — si algún
+        // día `correrContenidoFiscal` llama al modelo más de una vez, `null`
+        // vuelve a ser posible aquí y este `else` necesita el guard de vuelta.
+        //
         // Sin `round2` a propósito: el costo de una llamada al modelo vive en
         // la cuarta cifra decimal ($0.0002 la corrida medida del 28-ago), y
         // redondear a centavos aquí lo convertiría en cero. `round2` es para
