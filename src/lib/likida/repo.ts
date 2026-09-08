@@ -1778,9 +1778,21 @@ export async function ejecutarCancelacionArco(
   if (!telefono) return { ok: true, avisada: false, errorAviso: 'sin teléfono del titular' };
   try {
     const { enviarRespuestaArco } = await import('@/lib/meta/client');
+    // AUDITORÍA 28, LEG-A6 [ALTO]: esta lista era CERRADA y le faltaban tres
+    // categorías que `ejecutar_arco_cancelacion` (0286/0290, texto 0340) SÍ
+    // deja intactas: los eventos de cámara/telemetría ligados al operador
+    // (`evento_seguridad_flota`, 0324 le añadió `operador_id`; se purga sola
+    // a 180/365 días — `purgar_evento_seguridad_flota`, mig. 0335), su
+    // contacto de emergencia (`contacto_emergencia`, 0198 — cascada solo si
+    // se BORRA al operador, y la cancelación lo ANONIMIZA, así que la fila
+    // sobrevive con nombre y teléfono del familiar) y su registro de jornada
+    // (`jornada_dia`/`jornada_asiento`, 0241 — `operador_id not null`, texto
+    // libre en `detalle`). La 0340 solo corrigió el texto por defecto de la
+    // RPC, que repite la misma lista incompleta — eso queda para la serie de
+    // migraciones, no para este lote.
     const aviso = await enviarRespuestaArco(
       telefono,
-      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud y la documentación fiscal. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
+      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan: tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud, la documentación fiscal, los eventos de cámara y telemetría ligados a tu persona (se borran solos a los 180 días, o 365 si fueron graves), tu contacto de emergencia y tu registro de jornada laboral. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
     );
     return aviso.ok ? { ok: true, avisada: true } : { ok: true, avisada: false, errorAviso: aviso.error };
   } catch (e) {
