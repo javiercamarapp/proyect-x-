@@ -285,7 +285,11 @@ describe('REN-7 · las listas que viajan en la URL van en tandas', () => {
     conAvisoTodos(1);
     errorSello = { message: '414 URI Too Long' };
     const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, httpQue(lecturas(1)), ahora);
-    expect(r.error).toMatch(/no se pudo sellar gps_visto_en/);
+    // FE-M4 (aud. 28): el `error` que sale al panel ya no repite el nombre de
+    // la columna (`gps_visto_en`) ni el detalle crudo del rechazo — la frase
+    // es nuestra; el detalle real (`414 URI Too Long`) solo va al logger.
+    expect(r.error).toMatch(/no se pudo sellar la unidad/);
+    expect(r.error).not.toMatch(/gps_visto_en/);
     // Las posiciones sí se guardaron: el resultado no lo niega.
     expect(r.guardadas).toBe(1);
   });

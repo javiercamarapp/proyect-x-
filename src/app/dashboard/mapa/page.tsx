@@ -126,9 +126,16 @@ async function rastreoDe(tenantId: string, ahora: number): Promise<Rastreo> {
       }),
     };
   } catch (e) {
+    // AUDITORÍA 28, FE-M4: `err` es el mensaje de PostgREST tal cual salió de
+    // `getEstadoRastreo`/`getUltimasPosiciones` (comercial.ts) — puede traer
+    // «permission denied for table…». Al logger le sirve completo; a la
+    // pantalla del cliente NO: `vista.tsx` pinta este `Rastreo.error` sin
+    // saber su origen, así que la frase que sale de aquí tiene que ser
+    // NUESTRA siempre. Si se quiere correlación, el `logger.warn` ya lleva
+    // el `tenantId`.
     const err = e instanceof Error ? e.message : String(e);
     logger.warn('mapa.rastreo', { tenantId, err });
-    return { error: err, unidadesConPosicion: null, ultimaPosicion: null, proveedores: [], polls: [], pines: [] };
+    return { error: 'no se pudo leer el rastreo de la flota', unidadesConPosicion: null, ultimaPosicion: null, proveedores: [], polls: [], pines: [] };
   }
 }
 
