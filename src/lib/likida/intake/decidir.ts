@@ -37,7 +37,15 @@ export type AccionFoto =
   /** La foto de verdad no se lee: reenviarla con mejor luz sirve. */
   | { accion: 'pedir_reenvio' }
   /** Falló nuestro lado: reenviar la misma foto falla igual. */
-  | { accion: 'avisar_falla' };
+  | { accion: 'avisar_falla' }
+  /**
+   * El techo diario de IA de la flota se agotó ANTES de llamar al proveedor
+   * (AUDITORÍA 28, REN-A2). Reenviar HOY falla igual —el corte es a
+   * medianoche MX—; NO es lo mismo que `avisar_falla` (eso sí puede entrar en
+   * minutos si el proveedor se recupera) ni un motivo genérico que caiga a
+   * `pedir_reenvio` ("con buena luz" sería mentirle al chofer sobre su foto).
+   */
+  | { accion: 'avisar_sin_presupuesto' };
 
 export function decidirFoto(
   r: ExtraerResultado,
@@ -66,6 +74,10 @@ export function decidirFoto(
     }
     return { accion: 'alta' };
   }
+  // AUDITORÍA 28, REN-A2: antes de `fallo_tecnico` — un motivo desconocido cae
+  // a `pedir_reenvio` (:83), y ese "con buena luz" es falso para un techo de
+  // IA agotado.
+  if (r.motivo === 'sin_presupuesto') return { accion: 'avisar_sin_presupuesto' };
   if (r.motivo === 'fallo_tecnico') return { accion: 'avisar_falla' };
   // Acercamiento y VOUCHER se resuelven igual, y por la misma razón: los dos
   // valen el mismo dinero que el ticket que les corresponde, así que sumarlos

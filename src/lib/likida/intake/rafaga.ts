@@ -53,7 +53,14 @@ export type TipoIncidencia =
    * «de tus 5 fotos… llevo 4 comprobantes», la reenvía, y vuelve el mismo
    * silencio. No pide nada: no hay nada que hacer con ella.
    */
-  | 'repetida';
+  | 'repetida'
+  /**
+   * AUDITORÍA 28, REN-A2. El techo diario de IA de la flota se agotó ANTES de
+   * llamar al proveedor: reenviar HOY falla igual —el corte es a medianoche
+   * MX—, así que la coletilla NO puede pedir "con buena luz" ni "en un rato"
+   * como si fuera una foto o un fallo nuestro transitorio.
+   */
+  | 'sin_presupuesto';
 
 export interface Incidencia {
   tipo: TipoIncidencia;
@@ -266,6 +273,7 @@ export function lineaIncidencias(vistas: number, incidencias: Incidencia[]): str
   const ilegibles = cuenta('ilegible');
   const dudosas = cuenta('fecha_dudosa');
   const repetidas = cuenta('repetida');
+  const sinPresupuesto = cuenta('sin_presupuesto');
 
   // OJO: `duda` NO tiene frase propia aquí. Su renglón lo escribe
   // `mensajeDemasiadasDudas` (acuse_ticket.ts), que además lleva el saldo del
@@ -291,6 +299,10 @@ export function lineaIncidencias(vistas: number, incidencias: Incidencia[]): str
     const montos = montosDe(incidencias, 'repetida');
     const detalle = montos.length ? `: ${montos.length === 1 ? 'la de' : 'las de'} ${enumerar(montos)}` : '';
     frases.push(`*${repetidas}* ${repetidas === 1 ? 'venía repetida (ya la tenía)' : 'venían repetidas (ya las tenía)'}${detalle}`);
+  }
+  if (sinPresupuesto) {
+    frases.push(`*${sinPresupuesto}* ${sinPresupuesto === 1 ? 'no la pude leer' : 'no las pude leer'} porque hoy tu flota ya agotó su cupo de IA 💤 ` +
+      `(${sinPresupuesto === 1 ? 'la guardé y no se pierde' : 'las guardé y no se pierden'})`);
   }
 
   // Solo había dudas de lectura: las dice `mensajeDemasiadasDudas` y aquí no
@@ -323,25 +335,39 @@ export function lineaIncidencias(vistas: number, incidencias: Incidencia[]): str
   // su mensaje individual (`huerfanos_flujo.test.ts`), viva todavía aquí.
   const uno = (n: number) => n === 1;
   let pide = '';
-  if (ilegibles && !tecnicos && !dudosas) {
+  if (ilegibles && !tecnicos && !dudosas && !sinPresupuesto) {
     pide = uno(ilegibles)
       ? '\n\nReenvíamela con buena luz y la dejo bien. 📸'
       : '\n\nReenvíamelas con buena luz y las dejo bien. 📸';
-  } else if (tecnicos && !ilegibles && !dudosas) {
+  } else if (tecnicos && !ilegibles && !dudosas && !sinPresupuesto) {
     pide = uno(tecnicos)
       ? '\n\nReenvíamela en un rato —el problema fue mío, no tu foto— y la dejo bien. 📸'
       : '\n\nReenvíamelas en un rato —el problema fue mío, no tus fotos— y las dejo bien. 📸';
-  } else if (dudosas && !ilegibles && !tecnicos) {
+  } else if (dudosas && !ilegibles && !tecnicos && !sinPresupuesto) {
     pide = uno(dudosas)
       ? '\n\nMándame otra foto de ese ticket donde se alcance a ver la fecha. 📸'
       : '\n\nMándame otra foto de esos tickets donde se alcance a ver la fecha. 📸';
+  } else if (sinPresupuesto && !ilegibles && !tecnicos && !dudosas) {
+    // AUDITORÍA 28, REN-A2: el ÚNICO tipo presente es el cupo de IA agotado.
+    // Reenviar HOY falla igual —el corte es a medianoche MX—, así que aquí NO
+    // va "en un rato" ni "con buena luz": los dos serían mentira.
+    pide = uno(sinPresupuesto)
+      ? '\n\nReenvíamela mañana —o cuando tu contralor suba el tope— y la dejo bien. 📸'
+      : '\n\nReenvíamelas mañana —o cuando tu contralor suba el tope— y las dejo bien. 📸';
+  } else if (sinPresupuesto) {
+    // Mezclado con cualquier otro tipo: ni "en un rato" (falso para el cupo
+    // agotado, que solo se resuelve mañana) ni "mañana" (falso para las demás,
+    // que sí pueden entrar hoy) valen para TODAS. Coletilla sin plazo, para no
+    // afirmar uno equivocado sobre ninguna.
+    pide = '\n\nReenvíame esas fotos cuando puedas y las dejo bien. 📸';
   } else if (ilegibles) {
-    // Mezcla CON ilegibles: la luz solo aplica a ésas, y se dice así. Atribuirla
-    // a todas volvería a echarle la culpa de un 429 nuestro.
+    // Mezcla CON ilegibles (sin sin_presupuesto): la luz solo aplica a ésas, y
+    // se dice así. Atribuirla a todas volvería a echarle la culpa de un 429
+    // nuestro.
     pide = '\n\nReenvíame esas fotos —las que salieron oscuras, con buena luz— y las dejo bien. 📸';
   } else if (tecnicos || dudosas) {
-    // Mezcla SIN ilegibles: ninguna falló por la foto, así que no se menciona
-    // la luz por ningún lado.
+    // Mezcla SIN ilegibles ni sin_presupuesto: ninguna falló por la foto, así
+    // que no se menciona la luz por ningún lado.
     pide = '\n\nReenvíame esas fotos y las dejo bien. 📸';
   }
   return `${encabezado}${cuerpo}.${pide}`;

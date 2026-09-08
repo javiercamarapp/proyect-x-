@@ -14,15 +14,25 @@ vi.mock('@/lib/llm/openrouter', async (orig) => {
   return { ...actual, generateStructured: (...a: unknown[]) => generateStructured(...a) };
 });
 
-// AUDITORÍA 25 (REND-A9): `extraerComprobante` ahora redimensiona la foto
-// principal antes de mandarla a visión (ver `cfdi_imagen.test.ts` para la
-// prueba de ESE comportamiento con `sharp` real). Aquí se sustituye por una
-// identidad para que las pruebas de ESTE archivo —qué foto se ELIGE como
-// principal— sigan comparando por igualdad de bytes sin acoplarse a la
+// AUDITORÍA 25 (REND-A9) / 28 (REN-B1): `extraerComprobante` ahora reusa la
+// reducida que `decodificarCodigosYReducir` calcula al buscar códigos, en vez
+// de redimensionar la foto principal por separado (ver `cfdi_imagen.test.ts`
+// para la prueba de ESE comportamiento con `sharp` real). Aquí se conserva la
+// detección de códigos REAL (CERCA sí trae código de verdad, y varias pruebas
+// de este archivo dependen de leerlo) pero se sustituye la `reducida` por el
+// buffer TAL CUAL, para que las pruebas de ESTE archivo —qué foto se ELIGE
+// como principal— sigan comparando por igualdad de bytes sin acoplarse a la
 // codificación jpeg que produce un resize real.
 vi.mock('./cfdi_imagen', async (orig) => {
-  const actual = (await orig()) as Record<string, unknown>;
-  return { ...actual, redimensionarParaVision: async (buf: Buffer) => buf };
+  const actual = (await orig()) as typeof import('./cfdi_imagen');
+  return {
+    ...actual,
+    decodificarCodigosYReducir: async (buf: Buffer) => {
+      const { codigos } = await actual.decodificarCodigosYReducir(buf);
+      return { codigos, reducida: buf };
+    },
+    redimensionarParaVision: async (buf: Buffer) => buf,
+  };
 });
 
 const { extraerComprobante } = await import('./ocr');

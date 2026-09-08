@@ -10,7 +10,7 @@ vi.mock('@/lib/llm/openrouter', async (orig) => {
   return { ...actual, generateStructured: (...a: unknown[]) => generateStructured(...a) };
 });
 
-const { extraerComprobante } = await import('./ocr');
+const { extraerComprobante, MOTIVOS_FALLO } = await import('./ocr');
 const { TruncatedError, StructuredError } = await import('@/lib/llm/openrouter');
 
 // 1x1 PNG: data-URL válida, sin QR que decodificar.
@@ -87,6 +87,14 @@ describe('extraerComprobante — motivo del fallo', () => {
     generateStructured.mockResolvedValue(respuesta({ forma_pago: 'efectivo' }));
     const r = await extraerComprobante(IMG);
     expect(r.gasto.formaPago).toBe('01');
+  });
+
+  // AUDITORÍA 28, REN-A2: `arnes_ticket_real.test.ts:119` fija `MOTIVOS_FALLO`
+  // como lista cerrada contra la que compara CUALQUIER motivo real; un motivo
+  // nuevo que solo viva en el TIPO (y no en esta constante) rompería ese
+  // guardián en cuanto una corrida real lo produjera.
+  it('MOTIVOS_FALLO incluye "sin_presupuesto" (no solo el tipo)', () => {
+    expect([...MOTIVOS_FALLO]).toContain('sin_presupuesto');
   });
 });
 

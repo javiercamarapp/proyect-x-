@@ -167,6 +167,33 @@ describe('lineaIncidencias — la instrucción no puede contradecir al diagnóst
     expect(t).toMatch(/no tu foto/);
     expect(t).not.toMatch(/no tus fotos/);
   });
+
+  // AUDITORÍA 28, REN-A2: el techo diario de IA agotado no es "con buena luz"
+  // (no es la foto) ni "en un rato" (el corte es a medianoche MX, no en
+  // minutos) — es "mañana", y solo mañana.
+  it('el cupo de IA agotado pide reenviar MAÑANA, no "con buena luz" ni "en un rato"', () => {
+    const t = lineaIncidencias(3, [{ tipo: 'sin_presupuesto' }, { tipo: 'sin_presupuesto' }])!;
+    expect(t).toMatch(/cupo de ia/i);
+    expect(t).toMatch(/mañana/i);
+    expect(t).not.toMatch(/buena luz/i);
+    expect(t).not.toMatch(/en un rato/i);
+    expect(t).toMatch(/\*2\*/);
+  });
+
+  it('mezclado con ilegible no contradice: ni "mañana" para todas ni "con buena luz" para todas', () => {
+    const t = lineaIncidencias(3, [{ tipo: 'sin_presupuesto' }, { tipo: 'sin_presupuesto' }, { tipo: 'ilegible' }])!;
+    expect(t).toMatch(/cupo de ia/i);
+    expect(t).toMatch(/no la pude leer/i);
+    // Ninguna promesa de plazo que sea falsa para el otro tipo.
+    expect(t).not.toMatch(/en un rato/i);
+  });
+
+  it('las frases existentes (ilegible, fallo_tecnico, fecha_dudosa) no cambiaron', () => {
+    // Ancla de no-regresión: agregar sin_presupuesto no puede tocar ni un
+    // carácter de las frases que ya fijan otras pruebas de este archivo.
+    const t = lineaIncidencias(6, Array.from({ length: 6 }, () => ({ tipo: 'ilegible' as const })))!;
+    expect(t).toBe('De las fotos que me mandaste, *6* no las pude leer 🔍.\n\nReenvíamelas con buena luz y las dejo bien. 📸');
+  });
 });
 
 describe('los acuses: se anotan, y solo salen si la foto vino sola', () => {

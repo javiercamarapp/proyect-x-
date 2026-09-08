@@ -53,4 +53,18 @@ describe('decidirFoto', () => {
     const r = resultado({ legible: false, motivo: 'fallo_tecnico' });
     expect(decidirFoto(r, []).accion).toBe('avisar_falla');
   });
+
+  // AUDITORÍA 28, REN-A2: el techo diario de IA agotado NO es lo mismo que un
+  // fallo técnico —reenviar HOY falla igual, mañana entra— así que necesita su
+  // propia acción y no puede caer al `pedir_reenvio` genérico (:83), que le
+  // diría "con buena luz" a una foto que nunca tuvo problema de luz.
+  it('el techo de IA agotado avisa "sin presupuesto", no "falla" ni "reenvío"', () => {
+    const r = resultado({ legible: false, motivo: 'sin_presupuesto' });
+    expect(decidirFoto(r, []).accion).toBe('avisar_sin_presupuesto');
+  });
+
+  it('"fallo_tecnico" sigue yendo a "avisar_falla" (no se movió al agregar sin_presupuesto)', () => {
+    const r = resultado({ legible: false, motivo: 'fallo_tecnico' });
+    expect(decidirFoto(r, []).accion).toBe('avisar_falla');
+  });
 });

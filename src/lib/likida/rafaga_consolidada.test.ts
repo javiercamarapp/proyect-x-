@@ -115,6 +115,15 @@ const ILEGIBLE = {
   legible: false, motivo: 'ilegible',
   costo: { modelo: 'ocr', tokensIn: 1, tokensOut: 1, costoUsd: 0 },
 };
+/** AUDITORÍA 28, REN-A2 — el techo diario de IA de la flota se agotó ANTES de
+ *  llamar al proveedor. Es GEMELA de `FALLO_TECNICO` para efectos de ráfaga
+ *  (también sistémico: si se agotó, se agotó para las 22), pero el mensaje NO
+ *  puede ser el mismo. */
+const SIN_PRESUPUESTO = {
+  gasto: { id: 'g0', concepto: 'otro', monto: 0, ocrConfianza: 0 },
+  legible: false, motivo: 'sin_presupuesto',
+  costo: { modelo: 'ocr:sin_presupuesto', tokensIn: 0, tokensOut: 0, costoUsd: 0 },
+};
 const bueno = (monto: number, confianza = 0.99) => ({
   gasto: { id: `g${monto}`, concepto: 'diesel', monto, fecha: '2026-08-03', ocrConfianza: confianza, ocrExtra: {} },
   legible: true,
@@ -310,6 +319,20 @@ describe('22 fotos que fallan NO son 22 mensajes', () => {
     expect(salientes.length, JSON.stringify(salientes)).toBe(1);
   });
 
+  it('AUDITORÍA 28, REN-A2: el techo de IA agotado en toda la ráfaga se resume, no se repite, y no es "se me trabó"', async () => {
+    extraerComprobante.mockResolvedValue(SIN_PRESUPUESTO);
+    await rafaga(22);
+
+    expect(salientes.length, `el chofer recibió ${salientes.length} mensajes: ${JSON.stringify(salientes)}`).toBe(1);
+    const todo = salientes.join('\n');
+    expect(todo).toContain('De las fotos que me mandaste,');
+    expect(todo).toMatch(/\*22\*/);
+    expect(todo).toMatch(/cupo de ia/i);
+    expect(todo).not.toMatch(/de mi lado/i);
+    expect(todo).not.toMatch(/buena luz|en un rato/i);
+    expect(todo).toMatch(/mañana/i);
+  });
+
   it('CONTROL — una ráfaga que sale bien no inventa incidencias', async () => {
     let n = 0;
     extraerComprobante.mockImplementation(async () => bueno(100 * (n += 1)));
@@ -459,6 +482,44 @@ describe('un fallo técnico de OCR ya no pierde el comprobante', () => {
 
   it('si tampoco se puede guardar, se le dice la verdad', async () => {
     extraerComprobante.mockResolvedValue(FALLO_TECNICO);
+    guardarHuerfano.mockResolvedValueOnce(false);
+    await processInbound({ from: '5219993700779', type: 'image', mediaId: 'm1', waMessageId: 'wa1' });
+
+    expect(salientes.join('\n')).toMatch(/tampoco lo pude guardar/i);
+  });
+});
+
+describe('AUDITORÍA 28, REN-A2: el techo de IA agotado tampoco pierde el comprobante', () => {
+  it('guarda huérfano fallo_ocr CON la marca sinPresupuesto, esperando la subida', async () => {
+    extraerComprobante.mockResolvedValue(SIN_PRESUPUESTO);
+    await processInbound({ from: '5219993700779', type: 'image', mediaId: 'm1', waMessageId: 'wa1' });
+
+    expect(guardarHuerfano).toHaveBeenCalledTimes(1);
+    const [, , h] = guardarHuerfano.mock.calls[0] as unknown as [string, string, {
+      rutaImagen?: string; motivo: string; gasto: { imagenUrl?: string; ocrExtra?: Record<string, unknown> };
+    }];
+    expect(h.rutaImagen).toBe('t1/v1/foto.jpg');
+    expect(h.gasto.imagenUrl).toBe('t1/v1/foto.jpg');
+    // `fallo_ocr` porque el CHECK 0073 no admite otro motivo: la marca de POR
+    // QUÉ vive en `ocrExtra`, no en `motivo`.
+    expect(h.motivo).toBe('fallo_ocr');
+    expect(h.gasto.ocrExtra?.sinPresupuesto).toBe(true);
+  });
+
+  it('el mensaje dice cupo de IA y "mañana", no "se me trabó" ni "en un rato"', async () => {
+    extraerComprobante.mockResolvedValue(SIN_PRESUPUESTO);
+    await processInbound({ from: '5219993700779', type: 'image', mediaId: 'm1', waMessageId: 'wa1' });
+
+    const dicho = salientes.join('\n');
+    expect(dicho).toMatch(/cupo de ia/i);
+    expect(dicho).toMatch(/mañana/i);
+    expect(dicho).not.toMatch(/se me trabó/i);
+    expect(dicho).not.toMatch(/en un rato/i);
+    expect(dicho).toMatch(/no se pierde/i);
+  });
+
+  it('si tampoco se puede guardar, se le dice la verdad', async () => {
+    extraerComprobante.mockResolvedValue(SIN_PRESUPUESTO);
     guardarHuerfano.mockResolvedValueOnce(false);
     await processInbound({ from: '5219993700779', type: 'image', mediaId: 'm1', waMessageId: 'wa1' });
 

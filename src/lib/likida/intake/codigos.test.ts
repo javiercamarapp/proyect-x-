@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { clasificarQr } from './cfdi';
-import { decodeCodigosFromImage, decodeQrFromImage } from './cfdi_imagen';
+import { decodeCodigosFromImage, decodeQrFromImage, decodificarCodigosYReducir, ANCHO_PRINCIPAL_PX } from './cfdi_imagen';
 
 // FOTO REAL DE CAMPO (27-jul-2026): acercamiento al ticket de Office Depot que
 // Javier tomó a propósito para probar el protocolo de dos fotos. Trae DOS
@@ -39,6 +39,33 @@ describe('decodeCodigosFromImage — códigos de barras, no solo QR', () => {
     expect(r.urlFacturacion).toBe('https://factura.lagas.com.mx/autofactura/consulta');
     expect(r.folioPortal).toBeUndefined();
     expect(r.totalPortal).toBeUndefined();
+  });
+});
+
+// AUDITORÍA 28, REN-B1: `decodificarCodigosYReducir` reemplaza el cuerpo de
+// `decodeCodigosFromImage` (que ahora es una envoltura sobre ella) y ADEMÁS
+// devuelve la reducida de `ANCHO_PRINCIPAL_PX` — la misma pasada de `sharp`
+// que ya se hizo para buscar códigos, para que `extraerComprobante` (ocr.ts)
+// no la vuelva a calcular para mandarla a visión.
+describe('decodificarCodigosYReducir — los MISMOS códigos, y además la reducida', () => {
+  it('devuelve los mismos códigos que decodeCodigosFromImage sobre el mismo ticket', async () => {
+    const { codigos } = await decodificarCodigosYReducir(TICKET);
+    const referencia = await decodeCodigosFromImage(TICKET);
+    expect(codigos).toEqual(referencia);
+    expect(codigos.find((c) => c.formato === 'Code93')?.texto).toBe('T1131KH1131GQH74C1QJ3');
+  });
+
+  it('la reducida tiene ancho ≤ ANCHO_PRINCIPAL_PX y es una foto real (no null)', async () => {
+    const { reducida } = await decodificarCodigosYReducir(TICKET);
+    expect(reducida).not.toBeNull();
+    const meta = await sharp(reducida as Buffer).metadata();
+    expect(meta.width).toBeLessThanOrEqual(ANCHO_PRINCIPAL_PX);
+  });
+
+  it('ante un fallo de decodificación, reducida sale null (misma semántica que codigos: [])', async () => {
+    const basura = Buffer.from('no-es-una-imagen-de-verdad');
+    const r = await decodificarCodigosYReducir(basura);
+    expect(r).toEqual({ codigos: [], reducida: null });
   });
 });
 

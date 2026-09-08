@@ -172,3 +172,76 @@ describe('RES-4 — un abort es NUESTRO presupuesto, no el proveedor', () => {
     expect(r.costo.noMedido).toBeUndefined();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, REN-A2 — el freno de PRESUPUESTO (techo diario de IA de la
+// flota) no es un fallo del proveedor ni de la foto.
+//
+// `reserveLlmBudget` corre FUERA del try que envuelve al proveedor
+// (openrouter.ts:712-731), así que `LlmBudgetExceededError` llega DESNUDA al
+// catch de `extraerComprobante`. Antes de este cambio caía en el resto del
+// catch como cualquier `fallo_tecnico`: 'ocr.caido' al 5.º seguido y un
+// reenvío que falla IDÉNTICO hasta la medianoche de México (el corte del día
+// de la RPC de presupuesto).
+// ═══════════════════════════════════════════════════════════════════════════
+describe('RES-4 sigue vivo: un AbortError NO se confunde con presupuesto', () => {
+  it('un abort sigue siendo fallo_tecnico + noMedido (no sin_presupuesto)', async () => {
+    const { extraerComprobante } = await cargar();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    generateStructured.mockImplementation(() => { throw Object.assign(new Error('Request was aborted.'), { name: 'AbortError' }); });
+    const r = await extraerComprobante(IMG, ctrl.signal);
+    expect(r.motivo).toBe('fallo_tecnico');
+    expect(r.costo.noMedido).toBe(true);
+  });
+});
+
+describe('AUDITORÍA 28, REN-A2 — el techo de IA agotado NO es "OCR caído"', () => {
+  it('LlmBudgetExceededError desnuda → motivo "sin_presupuesto", costo 0 SIN noMedido, y warn (no error)', async () => {
+    const { extraerComprobante } = await cargar();
+    const { LlmBudgetExceededError } = await import('@/lib/llm/budget');
+    generateStructured.mockImplementation(() => { throw new LlmBudgetExceededError('tenant', 0.05, 5); });
+    const r = await extraerComprobante(IMG);
+    expect(r.legible).toBe(false);
+    expect(r.motivo).toBe('sin_presupuesto');
+    expect(r.costo.costoUsd).toBe(0);
+    expect(r.costo.noMedido).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith('ocr.sin_presupuesto', expect.objectContaining({ scope: 'tenant', requestedUsd: 0.05, limitUsd: 5 }));
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('el mismo error ENVUELTO (cause) da lo mismo', async () => {
+    const { extraerComprobante } = await cargar();
+    const { LlmBudgetExceededError } = await import('@/lib/llm/budget');
+    const envuelto = Object.assign(new Error('agent.fail'), { cause: new LlmBudgetExceededError('proposito', 0.02, 2) });
+    generateStructured.mockImplementation(() => { throw envuelto; });
+    const r = await extraerComprobante(IMG);
+    expect(r.motivo).toBe('sin_presupuesto');
+    expect(logger.warn).toHaveBeenCalledWith('ocr.sin_presupuesto', expect.objectContaining({ scope: 'proposito', requestedUsd: 0.02, limitUsd: 2 }));
+  });
+
+  it('NO cuenta como fallo del proveedor: ni vigilante.fallo, ni ocr.caido, ni ocr.credencial', async () => {
+    const { extraerComprobante } = await cargar();
+    const { LlmBudgetExceededError } = await import('@/lib/llm/budget');
+    generateStructured.mockImplementation(() => { throw new LlmBudgetExceededError('tenant', 0.05, 5); });
+    for (let i = 0; i < UMBRAL_OCR_CAIDO + 2; i++) await extraerComprobante(IMG);
+    expect(alertarOperador).not.toHaveBeenCalled();
+  });
+
+  it('no acumula con fallos técnicos: tres sin_presupuesto no cuentan hacia el umbral de ocr.caido', async () => {
+    const { extraerComprobante } = await cargar();
+    const { LlmBudgetExceededError } = await import('@/lib/llm/budget');
+    generateStructured.mockImplementation(() => { throw new LlmBudgetExceededError('tenant', 0.05, 5); });
+    for (let i = 0; i < 3; i++) await extraerComprobante(IMG);
+    expect(alertarOperador).not.toHaveBeenCalled();
+
+    // El contador de fallos SEGUIDOS del proveedor sigue en cero: hacen falta
+    // los UMBRAL_OCR_CAIDO fallos técnicos completos para disparar la alerta,
+    // no menos porque antes hubo sin_presupuesto.
+    generateStructured.mockImplementation(() => { throw fallo(503); });
+    for (let i = 0; i < UMBRAL_OCR_CAIDO - 1; i++) await extraerComprobante(IMG);
+    expect(alertarOperador).not.toHaveBeenCalled();
+    await extraerComprobante(IMG);
+    expect(alertarOperador).toHaveBeenCalledWith('ocr.caido', expect.objectContaining({ fallosSeguidos: UMBRAL_OCR_CAIDO }));
+  });
+});
