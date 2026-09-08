@@ -4,7 +4,8 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { round2 } from '@/lib/formato';
-import type { DatosIntegral, SenalGps } from './privacidad';
+import { appUrl } from '@/lib/env';
+import { revisarAvisoIntegral, type DatosIntegral, type SenalGps } from './privacidad';
 import { CONECTORES_GPS } from './conectores/gps';
 import { acotada } from './presupuesto';
 import { traerTodo, conteo } from './pg';
@@ -1294,10 +1295,31 @@ export async function getDatosResponsable(
     .maybeSingle(), 'getDatosResponsable');
   if (error) throw new Error(`getDatosResponsable: ${error.message}`);
   if (!data) return null;
+  // AUDITORÍA 28, LEG-A2 [ALTO]: `url_aviso_privacidad` no tiene un solo
+  // escritor (ninguna pantalla de /admin ni /dashboard la captura), así que
+  // con la columna vacía el simplificado cerraba en "la empresa aún no lo
+  // publica" y ARCO caía a "no tengo a dónde mandarte" — mientras
+  // `/aviso/<tenantId>` (src/app/aviso/[tenant]/page.tsx) YA renderiza el
+  // integral para cualquier flota con razón social. El puntero se seguía
+  // leyendo de una columna pensada para la URL PROPIA de la flota y nadie
+  // cerró el círculo con la URL calculable que ya existe.
+  //
+  // Si la flota capturó una liga y pasa la revisión de forma, gana la suya
+  // (el responsable puede alojar su propio aviso). Si no —vacía o
+  // `inservible`— se usa la página que Likida ya aloja por encargo. En
+  // desarrollo `appUrl()` puede resolver a `localhost`, que
+  // `revisarAvisoIntegral` marca `inservible` (no tiene TLD): el simplificado
+  // cae entonces a su texto degradado, que sigue siendo honesto — no hay
+  // integral público en un entorno local, y decirlo es mejor que fingir una
+  // liga que nadie puede abrir desde WhatsApp.
+  const columna = (data.url_aviso_privacidad as string) ?? '';
+  const urlAvisoIntegral = revisarAvisoIntegral(columna) === 'ok'
+    ? columna
+    : `${appUrl()}/aviso/${tenantId}`;
   const r = {
     razonSocial: (data.razon_social as string) ?? '',
     domicilio: (data.domicilio_fiscal as string) ?? '',
-    urlAvisoIntegral: (data.url_aviso_privacidad as string) ?? '',
+    urlAvisoIntegral,
     contactoPrivacidad: (data.contacto_privacidad as string | null) ?? null,
     // Nunca lanza: sus fallos ya son `no_medible` (caso amplio) adentro.
     gps: await gpsPromise,
