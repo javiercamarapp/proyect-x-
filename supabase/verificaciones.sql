@@ -8465,16 +8465,17 @@ begin
     caza_la_fuga;
 end $$;
 
--- ── 144. ARCO separa oposición/cancelación y conserva evidencia fiscal (migs. 0173 + 0178) ──
+-- ── 144. ARCO separa oposición/cancelación y conserva evidencia fiscal (migs. 0173 + 0178 + 0356) ──
 --
 -- P0-6 de la auditoría externa: `solicitud_arco` sólo registraba. Ahora
--- `ejecutar_arco_cancelacion` anonimiza al titular y borra sólo lo conversacional.
--- La 0178 corrige el comportamiento previo: una imagen de gasto/CFDI NO se manda
--- a Storage; queda retenida por CFF art. 30. Además, oposición no es cancelación:
--- la primera exige revisión humana y no toca identidad ni evidencia fiscal.
+-- `ejecutar_arco_cancelacion` anonimiza al titular y borra lo conversacional
+-- y el contacto de emergencia de un tercero (LEG-M5, 0356). La 0178 corrige
+-- el comportamiento previo: una imagen de gasto/CFDI NO se manda a Storage;
+-- queda retenida por CFF art. 30. Además, oposición no es cancelación: la
+-- primera exige revisión humana y no toca identidad ni evidencia fiscal.
 --
 -- Esperado: ARCO_0178  ok=t  seudonimo=t  tel_fuera=t  wa_fuera=0  foto_en_cola=0
---                      gasto_vive=1  cfdi_vive=t  evidencia=t  cerrada=t
+--                      gasto_vive=1  cfdi_vive=t  familia_fuera=0  evidencia=t  cerrada=t
 --                      otra_flota_rebota=t  acceso_rebota=t  oposicion_no_cancela=t
 --                      oposicion_revision=t  retencion_fiscal=t
 do $$
@@ -8483,7 +8484,7 @@ declare
   conv uuid; g_id uuid;
   r jsonb;
   ok boolean; seudonimo_ok boolean; tel_fuera boolean;
-  wa_quedan int; foto_en_cola int; gasto_vive int; cfdi_vive boolean;
+  wa_quedan int; foto_en_cola int; gasto_vive int; cfdi_vive boolean; familia_quedan int;
   evidencia_ok boolean; cerrada boolean;
   otra_flota_rebota boolean; acceso_rebota boolean; oposicion_no_cancela boolean;
   oposicion_revision boolean; retencion_fiscal boolean;
@@ -8509,6 +8510,10 @@ begin
   -- Conversación de WhatsApp: es sólo suya, se va.
   insert into wa_conversacion (tenant_id, operador_id, telefono) values (ta, oa,'+520000017301') returning id into conv;
 
+  -- LEG-M5 (0356): un familiar sin fundamento fiscal que lo retenga, se va también.
+  insert into contacto_emergencia (tenant_id, operador_id, nombre, telefono, parentesco)
+    values (ta, oa, 'Familiar ARCO', '+520000017399', 'esposa');
+
   insert into solicitud_arco (tenant_id, operador_id, tipo, canal, vence_en)
     values (ta, oa,'cancelacion','whatsapp', current_date + 15) returning id into sa;
   insert into solicitud_arco (tenant_id, operador_id, tipo, canal, vence_en)
@@ -8526,13 +8531,14 @@ begin
   select count(*) into wa_quedan from wa_conversacion where operador_id = oa;
   select count(*) into foto_en_cola from storage_huerfano_candidato
     where motivo = 'arco' and nombre like '%foto-arco.jpg';
+  select count(*) into familia_quedan from contacto_emergencia where operador_id = oa;
 
   -- LA CONTABILIDAD SIGUE AHÍ: el gasto y su CFDI no son datos del chofer.
   select count(*) into gasto_vive from gasto where id = g_id;
   select cfdi_uuid = 'zzz-arco-cfdi-1' into cfdi_vive from gasto where id = g_id;
 
   select evidencia is not null and evidencia ? 'operador_anonimizado'
-         and evidencia ? 'evidencia_fiscal_retenida',
+         and evidencia ? 'evidencia_fiscal_retenida' and evidencia ? 'contacto_emergencia',
          estado = 'resuelta' and resuelta_en is not null and ejecutada_en is not null
     into evidencia_ok, cerrada
     from solicitud_arco where id = sa;
@@ -8549,8 +8555,8 @@ begin
     into oposicion_revision
     from solicitud_arco where id = s_opp;
 
-  raise exception E'ARCO_0178  ok=%  seudonimo=%  tel_fuera=%  wa_fuera=%  foto_en_cola=%  gasto_vive=%  cfdi_vive=%  evidencia=%  cerrada=%  otra_flota_rebota=%  acceso_rebota=%  oposicion_no_cancela=%  oposicion_revision=%  retencion_fiscal=%   (esperado t / t / t / 0 / 0 / 1 / t / t / t / t / t / t / t / t)',
-    ok, seudonimo_ok, tel_fuera, wa_quedan, foto_en_cola, gasto_vive, cfdi_vive,
+  raise exception E'ARCO_0178  ok=%  seudonimo=%  tel_fuera=%  wa_fuera=%  foto_en_cola=%  gasto_vive=%  cfdi_vive=%  familia_fuera=%  evidencia=%  cerrada=%  otra_flota_rebota=%  acceso_rebota=%  oposicion_no_cancela=%  oposicion_revision=%  retencion_fiscal=%   (esperado t / t / t / 0 / 0 / 1 / t / 0 / t / t / t / t / t / t / t)',
+    ok, seudonimo_ok, tel_fuera, wa_quedan, foto_en_cola, gasto_vive, cfdi_vive, familia_quedan,
     evidencia_ok, cerrada, otra_flota_rebota, acceso_rebota, oposicion_no_cancela,
     oposicion_revision, retencion_fiscal;
 end $$;
