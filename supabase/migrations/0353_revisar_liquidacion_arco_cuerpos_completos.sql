@@ -230,7 +230,7 @@ comment on function public.revisar_liquidacion(uuid, uuid, text, text, jsonb, uu
 CREATE OR REPLACE FUNCTION public.ejecutar_arco_cancelacion(p_tenant uuid, p_solicitud uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
- SET search_path TO 'public', 'extensions', 'pg_catalog'
+ SET search_path = public, extensions, pg_catalog
 AS $function$
 declare
   v_operador uuid;
