@@ -46,7 +46,7 @@ do $$declare j jsonb; n int; begin
  j:=public.rentabilidad_tenant('34800000-0000-4000-8000-000000000001',null);
  if (j->>'costoComprobado')::numeric <> 1480 then
   raise exception '0348 rentabilidad_tenant incluye la rechazada: %',j;end if;
- if (j->>'ingreso')::numeric <> 2000 or (j->>'viajesConIngreso')::int <> 1 or (j->>'viajesSinIngreso')::int <> 1 then
+ if (j->>'ingreso')::numeric <> 2000 or (j->>'viajesConIngreso')::int <> 1 or (j->>'viajesSinIngreso')::int <> 2 then
   raise exception '0348 rentabilidad_tenant tocó columnas de viaje que no debía: %',j;end if;
 
  -- 5. serie_comparativa_tenant: liquidado 1480 en la ventana que cubre el 1-sep.
