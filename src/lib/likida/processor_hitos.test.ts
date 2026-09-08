@@ -24,7 +24,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   resolveOperador: (...a: unknown[]) => resolveOperador(...a),
   viajeAbiertoDesdeMs: vi.fn(async () => null),
-  fotoAnteriorSinProcesar: vi.fn(async () => false),
+  fotoAnteriorSinProcesar: vi.fn(async () => ({ vivas: 0, muertas: [] })),
   getOpenViaje: vi.fn(async () => 'v1'),
   getTenantContext: vi.fn(async () => ({ nombre: 'Flota' })),
   loadConversation: vi.fn(async () => ({ id: 'c1', turns: [] })),

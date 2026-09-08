@@ -50,7 +50,7 @@ import { atenderInformeOficina } from '@/lib/likida/informes_wa';
 import { pideInformePdf, mandarInformePdf, atenderPreguntaLibre, RESPUESTA_OFICINA_SIN_TIEMPO } from '@/lib/likida/oficina_wa';
 import { atenderAsignacionOficina } from '@/lib/likida/asignar_wa';
 import { violaIndice, llegoTarde } from '@/lib/likida/pg_errores';
-import { mxn, fechaMx } from '@/lib/formato';
+import { mxn, fechaMx, fechaHoraMx } from '@/lib/formato';
 import { guardiaFundamento, normasDeToolCalls } from '@/lib/likida/normas/fundamento';
 import { guardiaEstado } from '@/lib/likida/cuadre/estado_afirmado';
 import { crearPresupuesto, PRESUPUESTO_WEBHOOK_MS, MARGEN_CIERRE_CRITICO_MS, acotada, type Presupuesto } from '@/lib/likida/presupuesto';
@@ -79,7 +79,8 @@ import {
   iniciarRenovacionMessageClaim,
 } from '@/lib/likida/conv';
 import { registrarCosto, registrarCostoWhatsApp, faseDeModelo, vincularCostosALiquidacion } from '@/lib/likida/costos';
-import { sendText, sendButtons, sendDocument, downloadMediaAsDataUrl, downloadMediaAsText, metadatosMedia, MAX_XML_BYTES, ImagenDemasiadoPesadaError } from '@/lib/meta/client';
+import { descartarCartaMuerta } from '@/lib/likida/wa_pendientes';
+import { sendText, sendButtons, sendDocument, downloadMediaAsDataUrl, downloadMediaAsText, metadatosMedia, MAX_XML_BYTES, ImagenDemasiadoPesadaError, destinatarioEnmascarado } from '@/lib/meta/client';
 import { avisarOficina, parametrosAvisoOficina } from '@/lib/meta/aviso_oficina';
 import {
   decidirAcuse, mensajeConfirmar, mensajeAcuse, mensajeRefoto, esPeticionDeFoto,
@@ -134,6 +135,19 @@ export interface InboundMessage {
    * local, que es el comportamiento de siempre.
    */
   timestampMs?: number;
+  /**
+   * AUDITORÍA 28 · BE-A4 (ALTO): cuándo lo recibió NUESTRO webhook (epoch en
+   * ms). Se pone SOLO cuando `timestampMs` no se pudo leer (Meta no lo mandó,
+   * o vino ilegible) — es una COTA SUPERIOR honesta de la hora real: Meta lo
+   * emitió antes o al mismo tiempo, nunca después.
+   *
+   * NUNCA es sustituto de `timestampMs` para lo que se le ASIENTA AL VIAJE
+   * con hora (hitos, bitácora del cliente): para eso sigue haciendo falta la
+   * hora real de Meta. Es el último recurso, solo para que un "listo" sin
+   * hora no se aplace para siempre (ver el bloque de cierre en este mismo
+   * archivo) — sin él, el aplazamiento no tenía presupuesto que agotar.
+   */
+  recibidoMs?: number;
   /** SOLO lo fija el motor de QA (scripts/qa-agentes/ y /api/admin/qa/*): un
    *  data-URL ya resuelto que SUSTITUYE la descarga real de Meta — el arnés
    *  no tiene un mediaId real de WhatsApp (es el número de prueba; un chofer
@@ -3884,31 +3898,66 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     // y el cierre se aplaza sin consumir el intento.
     //
     const cierreSolicitado = pidioCerrar(msg.text);
-    const timestampCierreMs = typeof msg.timestampMs === 'number'
+    const timestampMetaMs = typeof msg.timestampMs === 'number'
       && Number.isFinite(msg.timestampMs) && msg.timestampMs > 0
       ? msg.timestampMs
       : null;
+    const recibidoMs = typeof msg.recibidoMs === 'number'
+      && Number.isFinite(msg.recibidoMs) && msg.recibidoMs > 0
+      ? msg.recibidoMs
+      : null;
 
-    // Sin una hora válida de Meta no se puede demostrar qué fotos precedían al
-    // «listo». Es incertidumbre causal, no permiso para cerrar: se conserva la
-    // fila durable y el cron vuelve a intentar sin consumir el intento.
+    // ── AUDITORÍA 28 · BE-A4 (ALTO): LA HORA QUE USAN LAS GUARDIAS DE ABAJO ──
+    //
+    // `timestampMetaMs` primero — es la hora REAL del mensaje. Si Meta no la
+    // mandó o llegó ilegible, `recibidoMs` (cuándo la recibió NUESTRO
+    // webhook) es una COTA SUPERIOR honesta: Meta lo emitió antes o al mismo
+    // tiempo, nunca después. Es fail-closed para las dos guardias que la usan:
+    //   · `fotoAnteriorSinProcesar` pregunta `evento->timestampMs < mensajeMs`:
+    //     una cota superior sólo puede INCLUIR más fotos como «anteriores»,
+    //     nunca menos — nunca deja pasar un cierre que debía aplazarse.
+    //   · `viajeAbiertoDesdeMs` (abajo) compara `mensajeMs < abiertoDesde`: si
+    //     `recibidoMs < abiertoDesde`, la hora real también lo era (Meta no
+    //     entrega del futuro), así que descartar sigue siendo seguro. El caso
+    //     que esto NO resuelve —un mensaje viejo que la bandeja durable
+    //     entrega DESPUÉS de abrirse el viaje nuevo, con `recibidoMs >=
+    //     abiertoDesde`— es exactamente el que hoy tampoco se distingue sin
+    //     la hora de Meta: no es una regresión de este cambio.
+    const timestampCierreMs = timestampMetaMs ?? recibidoMs;
+
+    // Ni la hora real de Meta ni la de recepción: filas de antes de este
+    // deploy, o un llamador interno (QA, simulador) que no puso ninguna de
+    // las dos. Antes esto aplazaba PARA SIEMPRE (`soltarClaim(true)`, sin
+    // consumir intento) y el cron reintentaba cada minuto sin tope — la
+    // cadena entera de ese chofer se congelaba. Ya no: se consume el intento
+    // (tope en `MAX_INTENTOS_PENDIENTE`, wa_pendientes.ts) y se deja rastro
+    // con `error`, no `warn` — esta situación no debería ocurrir con tráfico
+    // real del webhook.
     if (cierreSolicitado && timestampCierreMs === null) {
-      logger.warn('cierre.timestamp_indeterminado', {
-        viaje: viajeId, tenant: op.tenantId, timestamp: msg.timestampMs ?? null,
+      logger.error('cierre.timestamp_indeterminado', {
+        viaje: viajeId, tenant: op.tenantId, waMessageId: msg.waMessageId ?? null,
       });
-      await soltarClaim(true);
+      await soltarClaim();
       return;
     }
+    if (cierreSolicitado && timestampMetaMs === null) {
+      logger.warn('cierre.timestamp_por_recepcion', {
+        viaje: viajeId, tenant: op.tenantId, recibidoMs: timestampCierreMs,
+      });
+    }
 
-    // La consulta corre SÓLO en este caso —texto que parece cierre y con hora
-    // de Meta—, no en cada mensaje. Esta guardia distingue un cierre atrasado;
-    // las barreras posteriores siguen siendo fail-closed ante lecturas dudosas.
-    if (msg.timestampMs && pareceCierre(msg.text)) {
+    // La consulta corre SÓLO en este caso —texto que parece cierre y con
+    // alguna hora—, no en cada mensaje. `pareceCierre` implica `cierreSolicitado`
+    // (pidioCerrar la incluye), así que si llegamos aquí con ella en true,
+    // `timestampCierreMs` ya quedó validado arriba. Esta guardia distingue un
+    // cierre atrasado; las barreras posteriores siguen siendo fail-closed
+    // ante lecturas dudosas.
+    if (pareceCierre(msg.text) && timestampCierreMs !== null) {
       const abiertoDesde = await viajeAbiertoDesdeMs(op.tenantId, viajeId);
-      if (abiertoDesde != null && msg.timestampMs < abiertoDesde) {
+      if (abiertoDesde != null && timestampCierreMs < abiertoDesde) {
         logger.warn('cierre.mensaje_de_viaje_anterior', {
           viaje: viajeId, tenant: op.tenantId,
-          mensajeMs: msg.timestampMs, viajeDesdeMs: abiertoDesde,
+          mensajeMs: timestampCierreMs, viajeDesdeMs: abiertoDesde,
         });
         await say('Ese *listo* era de tu viaje anterior, que ya quedó cerrado 👍. Éste es un viaje nuevo: mándame sus comprobantes y escribe *listo* cuando termines con él.');
         return;
@@ -3940,15 +3989,72 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
     //
     // Se pregunta aquí y no antes a propósito: después de la barrera la foto
     // ya tuvo su ventana para llegar a la tabla. Y solo para un «listo» con
-    // hora de Meta — sin ella no se adivina, igual que la guardia de arriba.
+    // alguna hora — sin ella no se adivina, igual que la guardia de arriba.
     if (cierreSolicitado) {
       const fotoAnterior = await fotoAnteriorSinProcesar(msg.from, timestampCierreMs!);
-      if (fotoAnterior !== false) {
-        logger.warn(fotoAnterior
-          ? 'cierre.foto_anterior_pendiente'
-          : 'cierre.foto_anterior_indeterminada', {
+      if (fotoAnterior === null) {
+        logger.warn('cierre.foto_anterior_indeterminada', {
           viaje: viajeId, tenant: op.tenantId, mensajeMs: timestampCierreMs,
         });
+        await soltarClaim(true);
+        return;
+      }
+      if (fotoAnterior.vivas > 0) {
+        logger.warn('cierre.foto_anterior_pendiente', {
+          viaje: viajeId, tenant: op.tenantId, mensajeMs: timestampCierreMs, vivas: fotoAnterior.vivas,
+        });
+        await soltarClaim(true);
+        return;
+      }
+      // ── AUDITORÍA 28 · BE-A3 (ALTO): LA CARTA MUERTA YA NO BLOQUEA EN
+      // SILENCIO PARA SIEMPRE ──────────────────────────────────────────────
+      //
+      // `vivas === 0` pero SÍ hay fotos que agotaron sus `MAX_INTENTOS_
+      // PENDIENTE` intentos (`wa_pendientes.ts`): esas nunca van a terminar
+      // de procesarse solas — son INVISIBLES para el cron (`listar_wa_
+      // pendientes`/`reclamar_wa_pendiente` filtran `intentos < MAX`) y no
+      // existe RPC que las reviva. Antes de este cambio, `fotoAnteriorSin
+      // Procesar` las contaba igual que una viva: el "listo" se aplazaba
+      // PARA SIEMPRE, el cron lo reintentaba cada minuto sin consumir
+      // intento, y todo lo que venía después de él (fotos nuevas, viajes
+      // nuevos) nunca avanzaba — sin una palabra al chofer ni al operador.
+      //
+      // Se avisa UNA VEZ por carta muerta y se sella como descartada para
+      // que ese aviso no se repita en cada vuelta del cron (idempotencia sin
+      // migración: `procesado_en`/`ultimo_error` ya existen en la 0119). El
+      // sello va PRIMERO: si falla, no se manda nada al chofer (se evita
+      // martillarlo) y el turno se aplaza como indeterminado.
+      if (fotoAnterior.muertas.length > 0) {
+        const destinatario = destinatarioEnmascarado(msg.from);
+        for (const muerta of fotoAnterior.muertas) {
+          const sellada = await descartarCartaMuerta(
+            muerta.id,
+            `descartada en el cierre: carta muerta avisada al chofer y al operador (${msg.waMessageId ?? 'sin-wamid'})`,
+          );
+          if (!sellada) {
+            logger.error('cierre.carta_muerta_no_sellada', {
+              viaje: viajeId, tenant: op.tenantId, fotoId: muerta.id,
+            });
+            await soltarClaim(true);
+            return;
+          }
+          const horaMs = muerta.timestampMs ?? muerta.recibidoMs;
+          const horaTxt = horaMs != null ? ` (la mandaste el ${fechaHoraMx(new Date(horaMs).toISOString())})` : '';
+          await say(`Una foto que mandaste${horaTxt} no se pudo procesar después de varios intentos y NO va a entrar en tu liquidación 😕. Si era un comprobante, mándalo otra vez AHORA, antes de volver a escribir *listo*.`);
+          logger.error('cierre.carta_muerta', {
+            viaje: viajeId, tenant: op.tenantId, fotoId: muerta.id,
+            waMessageId: msg.waMessageId ?? null, destinatario,
+          });
+          await alertarOperador('cierre.carta_muerta', {
+            tenant: op.tenantId, viaje: viajeId, fotoId: muerta.id,
+            waMessageId: msg.waMessageId ?? null, destinatario,
+          });
+        }
+        // Se aplaza UNA vuelta más: si el chofer reenvía la foto de
+        // inmediato, la 0280 la ordena antes del siguiente intento del
+        // "listo" y la barrera de arriba la espera como foto viva. Si no
+        // reenvía nada, en la vuelta siguiente ya no hay carta muerta que
+        // bloquee (se selló) y el cierre sigue su camino normal.
         await soltarClaim(true);
         return;
       }

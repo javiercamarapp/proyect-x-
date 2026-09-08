@@ -146,7 +146,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
-  fotoAnteriorSinProcesar: vi.fn(async () => false),
+  fotoAnteriorSinProcesar: vi.fn(async () => ({ vivas: 0, muertas: [] })),
 }));
 const registrarCosto = vi.fn();
 const registrarCostoWhatsApp = vi.fn();

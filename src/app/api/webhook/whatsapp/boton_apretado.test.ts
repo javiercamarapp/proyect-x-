@@ -275,6 +275,9 @@ describe('el botón convive con lo que ya entraba', () => {
     await postear(cuerpo);
     expect(processInbound).toHaveBeenCalledWith({
       from: '5219990001021', waMessageId: 'w9', type: 'text', text: 'ya no tengo más tickets',
+      // BE-A4: sin `timestamp` en el payload, `timestampMs` sale undefined y
+      // `recibidoMs` (la hora de recepción) lo suple — ver route_timestamp_ilegible.test.ts.
+      recibidoMs: expect.any(Number),
     });
   });
 });

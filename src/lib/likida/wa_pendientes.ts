@@ -323,3 +323,39 @@ export async function cartasMuertas(): Promise<number> {
   if (typeof count !== 'number') throw new Error('cartasMuertas: la base no devolvió el conteo');
   return count;
 }
+
+/**
+ * Sella UNA carta muerta como descartada, tras avisar al chofer y al
+ * operador (BE-A3, auditoría 28): `procesado_en = now()` la saca de
+ * `consultarFotoAnterior` (conv.ts), de `cartasMuertas()` (arriba) y de la
+ * alarma global del cron — así el aviso sale UNA sola vez, no en cada vuelta.
+ *
+ * `.update` DIRECTO, sin RPC, y no es "segundo escritor peligroso": la fila
+ * ya es TERMINAL para todo lo demás que la toca — el cron no la ve (0325
+ * filtra `intentos < MAX_INTENTOS_PENDIENTE`) y la purga a 90 días (0155) la
+ * borraría con el mismo resultado (evidencia descartada). El propio filtro
+ * del `.update` (`procesado_en is null and intentos >= MAX`) es lo que
+ * impide sellar por accidente una fila viva si el llamador se equivocó de id.
+ *
+ * Devuelve si SÍ selló (una fila afectada). El llamador NO debe avisar al
+ * chofer si esto devuelve `false`: evita martillarlo con el mismo aviso en
+ * cada vuelta del cron mientras la escritura no se pueda confirmar.
+ */
+export async function descartarCartaMuerta(id: string, motivo: string): Promise<boolean> {
+  try {
+    const { data, error } = await acotada(supabaseAdmin()
+      .from('wa_evento_pendiente')
+      .update({ procesado_en: new Date().toISOString(), ultimo_error: motivo.slice(0, 500) })
+      .eq('id', id)
+      .is('procesado_en', null)
+      .gte('intentos', MAX_INTENTOS_PENDIENTE)
+      .select('id'), 'descartarCartaMuerta');
+    if (error) throw error;
+    const sellada = Array.isArray(data) && data.length > 0;
+    if (!sellada) logger.warn('wa.carta_muerta_no_sellada', { id });
+    return sellada;
+  } catch (e) {
+    logger.error('wa.carta_muerta_sello_fallo', { id, err: e instanceof Error ? e.message : String(e) });
+    return false;
+  }
+}

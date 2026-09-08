@@ -216,6 +216,9 @@ describe('el webhook entrega al procesador lo que Meta manda', () => {
     expect(res.status).toBe(200);
     expect(processInbound).toHaveBeenCalledWith({
       from: '5219990000010', waMessageId: 'wamid.F1', type: 'image', mediaId: 'MEDIA-777',
+      // BE-A4: el payload de esta prueba no trae `timestamp` de Meta;
+      // `recibidoMs` lo suple (ver route_timestamp_ilegible.test.ts).
+      recibidoMs: expect.any(Number),
     });
   });
 
@@ -241,6 +244,7 @@ describe('el webhook entrega al procesador lo que Meta manda', () => {
     await postear(c, firmar(c));
     expect(processInbound).toHaveBeenCalledWith({
       from: '5219990000012', waMessageId: 'wamid.D1', type: 'document', mediaId: 'MEDIA-XML',
+      recibidoMs: expect.any(Number),
     });
   });
 
@@ -249,6 +253,7 @@ describe('el webhook entrega al procesador lo que Meta manda', () => {
     await postear(c, firmar(c));
     expect(processInbound).toHaveBeenCalledWith({
       from: '5219990000013', waMessageId: 'wamid.T1', type: 'text', text: 'ya no tengo más tickets',
+      recibidoMs: expect.any(Number),
     });
   });
 
@@ -271,6 +276,7 @@ describe('el webhook entrega al procesador lo que Meta manda', () => {
     await postear(c, firmar(c));
     expect(processInbound).toHaveBeenCalledWith({
       from: '5219990000014', waMessageId: 'wamid.S1', type: 'other', subtipo: 'sticker',
+      recibidoMs: expect.any(Number),
     });
   });
 

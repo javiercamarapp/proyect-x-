@@ -683,7 +683,18 @@ function extractMessages(p: WaWebhook): InboundMessage[] {
         // razonable no puede sustituir a un reloj que sí funciona.
         const ts = Number(m.timestamp);
         const timestampMs = Number.isFinite(ts) && ts > 0 ? ts * 1000 : undefined;
-        const base = { from: m.from, waMessageId: m.id, timestampMs };
+        // AUDITORÍA 28 · BE-A4 (ALTO): sin `timestampMs` el motor no tenía
+        // NINGUNA hora del mensaje y aplazaba un "listo" para siempre (ver
+        // processor.ts, cierre) — y esto era silencio total: ni un log decía
+        // que Meta mandó un timestamp ilegible. `recibidoMs` (la hora de
+        // NUESTRO servidor, cota superior honesta de la real) llena el hueco
+        // SOLO cuando la de Meta falta.
+        let recibidoMs: number | undefined;
+        if (timestampMs === undefined) {
+          recibidoMs = Date.now();
+          logger.warn('webhook.timestamp_ilegible', { waMessageId: m.id, crudo: m.timestamp });
+        }
+        const base = { from: m.from, waMessageId: m.id, timestampMs, recibidoMs };
         if (m.type === 'text' && m.text) out.push({ ...base, type: 'text', text: m.text.body });
         // El caption viaja como `text` del mensaje de imagen: `InboundMessage`
         // ya tiene el campo y el processor decide con él (POD/talacha, F4).

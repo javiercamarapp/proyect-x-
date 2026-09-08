@@ -76,7 +76,7 @@ vi.mock('@/lib/likida/conv', async (original) => ({
   claimMessage: (...a: unknown[]) => claimMessage(...(a as [string])),
   acquireViajeLock: vi.fn(async () => true), intentarLockViaje: vi.fn(async () => 'obtenido' as const),
   releaseViajeLock: vi.fn(), releaseMessageClaim: vi.fn(),
-  fotoAnteriorSinProcesar: vi.fn(async () => false),
+  fotoAnteriorSinProcesar: vi.fn(async () => ({ vivas: 0, muertas: [] })),
   intakeDelta: vi.fn(async () => 0), esperarIntake: vi.fn(async () => true),
 }));
 vi.mock('@/lib/likida/repo', () => ({
