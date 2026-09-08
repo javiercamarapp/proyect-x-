@@ -95,8 +95,9 @@ vi.mock('@/lib/likida/consulta_chofer', () => ({
   estadoDelViaje: vi.fn(async () => ({ anticipo: 6000, comprobado: 100, comprobantes: 1 })),
   responderConsulta: vi.fn(async () => null),
 }));
+const registrarCostoWhatsApp = vi.fn();
 vi.mock('@/lib/likida/costos', () => ({
-  registrarCosto: vi.fn(), registrarCostoWhatsApp: vi.fn(),
+  registrarCosto: vi.fn(), registrarCostoWhatsApp: (...a: unknown[]) => registrarCostoWhatsApp(...a),
   faseDeModelo: vi.fn(() => 'cuadre'), vincularCostosALiquidacion: vi.fn(),
 }));
 vi.mock('@/lib/agents/run', () => ({ runAgent: vi.fn() }));
@@ -175,6 +176,7 @@ const cadenaMixta = async (tipos: Array<'image' | 'other'>) => {
 beforeEach(() => {
   salientes.length = 0; botones.length = 0; contador = 0;
   olvidarRafagas();
+  registrarCostoWhatsApp.mockClear();
   extraerComprobante.mockReset(); getGastos.mockReset(); addGasto.mockReset();
   guardarHuerfano.mockClear(); subirComprobante.mockClear();
   ventanaDesdeDB.mockReset(); ventanaDesdeDB.mockResolvedValue(undefined);
@@ -568,5 +570,26 @@ describe('AUDITORÍA 25 · el resumen de la ráfaga no cuenta las copias dos vec
     expect(todo).toContain('$8,340.50');
     expect(todo).not.toMatch(/\*2 comprobantes\*/);
     expect(todo).not.toContain('$16,681.00');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28 · AG-B1 (BAJO, 5ª ronda, agentico.md:38) — el resumen «Ya
+// revisé tus fotos» mandaba el WhatsApp con `sendText` directo en vez del
+// wrapper `say` (definido más arriba en `processInbound`, ya con
+// `registrarCostoWhatsApp`), así que ese mensaje nunca entraba al costo por
+// flota/viaje que ve /admin: el costo real por liquidación salía subestimado.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AG-B1 · el resumen consolidado de la ráfaga SÍ registra su costo de WhatsApp', () => {
+  it('el «Ya revisé tus fotos» de una ráfaga registra registrarCostoWhatsApp una vez', async () => {
+    let n = 0;
+    extraerComprobante.mockImplementation(async () => bueno(100 * (n += 1)));
+
+    await rafaga(3);
+
+    const todo = salientes.join('\n');
+    expect(todo).toContain('Ya revisé tus fotos');
+    expect(registrarCostoWhatsApp).toHaveBeenCalledTimes(1);
+    expect(registrarCostoWhatsApp).toHaveBeenCalledWith('t1', 'v1');
   });
 });

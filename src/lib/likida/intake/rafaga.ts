@@ -94,6 +94,14 @@ interface Bandeja {
    *  AGEN-A2). Se guarda al anotar la foto para no pagar una consulta justo
    *  cuando el corte ocurre por falta de presupuesto. */
   telefono: string | null;
+  /**
+   * AG-B1 (auditoría 28, agentico.md:38) — el tenant de esta ráfaga, para que
+   * `cerrarRafagasPorCorte` (processor.ts) pueda registrar el costo del
+   * WhatsApp del cierre por corte. `cerrarRafagasPorCorte` es función de
+   * módulo y no tiene `op.tenantId` a la mano; la bandeja sí lo sabe porque
+   * `anotarFoto` corre dentro de `processInbound`, con `op` resuelto.
+   */
+  tenantId: string | null;
 }
 
 /**
@@ -122,7 +130,7 @@ function abrir(viajeId: string): Bandeja {
       const vieja = bandejas.keys().next();
       if (!vieja.done) bandejas.delete(vieja.value);
     }
-    b = { vistas: 0, incidencias: [], confirmaciones: 0, acuses: [], telefono: null };
+    b = { vistas: 0, incidencias: [], confirmaciones: 0, acuses: [], telefono: null, tenantId: null };
     bandejas.set(viajeId, b);
   }
   return b;
@@ -140,7 +148,7 @@ function abrir(viajeId: string): Bandeja {
  * fotos» a quien mandó tres. Una cifra inventada, que es la regla que no se
  * rompe en este repo.
  */
-export function anotarFoto(viajeId: string, empiezaRafaga = false, telefono?: string): void {
+export function anotarFoto(viajeId: string, empiezaRafaga = false, telefono?: string, tenantId?: string | null): void {
   if (empiezaRafaga) bandejas.delete(viajeId);
   const b = abrir(viajeId);
   b.vistas += 1;
@@ -148,6 +156,10 @@ export function anotarFoto(viajeId: string, empiezaRafaga = false, telefono?: st
   // corte pueda hablarle al chofer sin pagar una consulta — y el corte ocurre
   // justamente cuando ya no queda presupuesto para consultas.
   if (telefono) b.telefono = telefono;
+  // AG-B1: mismo criterio que el teléfono — se guarda AQUÍ (con `op.tenantId`
+  // en mano) para que el cierre por corte pueda registrar el costo real del
+  // WhatsApp sin pagar una consulta.
+  if (tenantId) b.tenantId = tenantId;
 }
 
 /**
@@ -165,8 +177,8 @@ export function anotarFoto(viajeId: string, empiezaRafaga = false, telefono?: st
  * leyeron. El cron levanta el resto en OTRA invocación, con libreta nueva, así
  * que nadie va a decirlo después: se perdió con el proceso.
  */
-export function bandejasAbiertas(): Array<{ viajeId: string; telefono: string | null }> {
-  return [...bandejas.entries()].map(([viajeId, b]) => ({ viajeId, telefono: b.telefono ?? null }));
+export function bandejasAbiertas(): Array<{ viajeId: string; telefono: string | null; tenantId: string | null }> {
+  return [...bandejas.entries()].map(([viajeId, b]) => ({ viajeId, telefono: b.telefono ?? null, tenantId: b.tenantId ?? null }));
 }
 
 /**

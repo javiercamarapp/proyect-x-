@@ -1407,7 +1407,7 @@ function replyDeCierreRecuperado(registro: ToolCallRecord): string {
  * cierre.
  */
 async function cerrarRafagasPorCorte(telefono: string): Promise<void> {
-  for (const { viajeId, telefono: tel } of bandejasAbiertas()) {
+  for (const { viajeId, telefono: tel, tenantId } of bandejasAbiertas()) {
     if (tel !== telefono) continue;
     const b = cerrarRafaga(viajeId);
     if (!telefono || b.vistas === 0) continue;
@@ -1416,7 +1416,13 @@ async function cerrarRafagasPorCorte(telefono: string): Promise<void> {
     const texto = linea
       ?? `Van ${b.vistas} comprobante${b.vistas === 1 ? '' : 's'} anotado${b.vistas === 1 ? '' : 's'}. Sigo con el resto en un momento.`;
     try {
-      await sendText(telefono, texto);
+      // AG-B1 (auditoría 28, agentico.md:38): mismo criterio que `say` —
+      // solo cuenta el costo si Meta ACEPTÓ el mensaje (`sendText` devolvió
+      // un id). Sin `tenantId` (una bandeja abierta antes de este cambio, o
+      // un llamador viejo que no lo pasó a `anotarFoto`) no hay a quién
+      // cargarle el costo: se manda el texto igual, pero no se registra.
+      const id = await sendText(telefono, texto);
+      if (id && tenantId) await registrarCostoWhatsApp(tenantId, viajeId);
     } catch (e) {
       logger.error('rafaga.cierre_por_corte_no_enviado', { viaje: viajeId, err: e instanceof Error ? e.message : String(e) });
     }
@@ -2361,7 +2367,7 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       // esa primera foto SÍ se tratara como "siguiente", perdiendo el reset
       // que le tocaba: ver la nota de `OpcionesInbound` arriba.)
       const siguienteDeLaMismaCadena = opts.hayFotoAntesEnCadena === true;
-      anotarFoto(viajeId, incrementado === 1 && !siguienteDeLaMismaCadena, msg.from);
+      anotarFoto(viajeId, incrementado === 1 && !siguienteDeLaMismaCadena, msg.from, op.tenantId);
       // AQUÍ VIVÍA `llegoSola = incrementado === 1`, y era falso justo cuando
       // más importaba. `1` no significa «llegó sola»: significa «es la primera
       // en vuelo», y toda ráfaga tiene una primera. El incremento es atómico,
@@ -3214,7 +3220,11 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
               viaje: viajeId, gastos: puestos.length, comprobantes, copias: copias.size,
               vistas: rafaga.vistas, incidencias: rafaga.incidencias.length,
             });
-            await sendText(msg.from,
+            // AG-B1 (auditoría 28, agentico.md:38): iba por `sendText`
+            // directo, aunque `say` (que SÍ cuenta el costo) ya estaba
+            // definido arriba — este resumen nunca entraba al costo por
+            // flota/viaje que ve /admin.
+            await say(
               `📸 Ya revisé tus fotos. En este viaje llevo *${comprobantes} ${comprobantes === 1 ? 'comprobante' : 'comprobantes'}* por *${mxn(total)}*.\n\n` +
               (incidencias ? `${incidencias}\n\n` : '') +
               `Si te falta alguno, mándalo otra vez. Cuando termines, escribe *listo*. 👍${cola}`);
