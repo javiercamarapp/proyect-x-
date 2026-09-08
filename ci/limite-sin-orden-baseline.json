@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "total": 189,
+  "total": 188,
   "porArchivo": {
     "src/app/admin/agentes/contenido.tsx": 1,
     "src/app/admin/evals/page.tsx": 1,
