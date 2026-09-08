@@ -1,51 +1,37 @@
-fecha_corrida: 2026-09-07 (lunes, sesión de nube programada)
-ultimo_dia_barrido: 2026-09-05 (sin avance — ver bloqueo abajo)
-rango_pendiente: 2026-09-06 (domingo) sin barrer, 3 ediciones
+fecha_corrida: 2026-09-08 (martes, sesión de nube programada)
+ultimo_dia_barrido: 2026-09-05 (sin avance — mismo bloqueo que las corridas previas)
+rango_pendiente: 2026-09-06 (domingo) y 2026-09-07 (lunes) sin barrer, 3 ediciones c/u
 notas_revisadas: 0 — bloqueo de red total antes de cualquier petición
 anti_silencio: no_aplicable — no se pudo intentar ni la petición a
   notas/{fecha} ni el cruce contra diarios/porFecha
 bloqueo: >
-  curl contra https://sidofqa.segob.gob.mx/dof/sidof/notas/06-09-2026 y
-  contra .../diarios/porFecha/06-09-2026 → "CONNECT tunnel failed, response
-  403" en ambos. El status del proxy ($HTTPS_PROXY/__agentproxy/status)
-  confirma connect_rejected / "gateway answered 403 to CONNECT (policy
-  denial or upstream failure)" para sidofqa.segob.gob.mx:443, sin relay
-  caído — es rechazo de política, no falla intermitente. Confirmado también
-  con WebFetch (ruta de red distinta a curl): error_type EGRESS_BLOCKED
-  para el mismo host.
-etag_sat: bloqueado — hoy era la ventana de lunes para el HEAD a
-  www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/normatividad_rmf_rgce2026.html,
-  pero el mismo host devolvió CONNECT 403. No se pudo comparar el ETag.
-  Ventana perdida; próxima: lunes 14-sep-2026 (la ventana ciega de la
-  anticipada del SAT sigue sin cerrarse desde el 5-sep).
+  curl contra https://sidofqa.segob.gob.mx/dof/sidof/notas/06-09-2026 →
+  "CONNECT tunnel failed, response 403". El status del proxy
+  ($HTTPS_PROXY/__agentproxy/status) muestra recentRelayFailures vacío
+  (no es una caída de relay) y el README del proxy confirma que 403/407
+  es rechazo de política de egress de la organización, no falla
+  intermitente — instruye explícitamente no reintentar ni rodear, solo
+  reportar el host bloqueado. Eso se hizo: una sola petición de prueba,
+  sin reintentos.
+etag_sat: no_aplica_hoy — hoy es MARTES 08-sep, no lunes (verificado con
+  `date -d 2026-09-08 +%A`). La ventana semanal del ETag del SAT no
+  corresponde a esta corrida. La corrida anterior (07-sep, que si era
+  lunes) ya reportó ese mismo bloqueo de red para www.sat.gob.mx; sigue
+  sin cerrarse. Próxima ventana: lunes 14-sep-2026.
 deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
-fichas_disparadas: 0 — no se pudo revisar ninguna de las 18 fichas de
+fichas_disparadas: 0 — no se pudo revisar ninguna de las 38 fichas de
   normas/*.yaml en esta corrida
 patron_sistemico: >
-  Sexta corrida consecutiva de esta rutina en sesión de nube que cae por el
-  mismo bloqueo de egress a nivel de proxy de organización (31-ago, 02-sep,
-  03-sep, 04-sep, 05-sep, y ahora 07-sep). Las únicas corridas que cerraron
-  con datos reales fueron manuales desde sesiones locales con egress
-  abierto (02-sep tarde, 05-sep sábado 21:30 — ver rango_barrido de esa
-  corrida en el latido anterior). El atraso de DOF sin barrer por esta vía
-  ya no crece indefinido porque las corridas locales lo van cerrando, pero
-  el cron programado en la nube no ha logrado completar un barrido por sí
-  solo en ninguna de estas seis corridas.
-hallazgo_colateral_fuera_de_alcance: >
-  Al revisar los PRs que el latido anterior dejaba para triage (#324, #327,
-  #328, #329, #330), los cinco aparecen CERRADOS SIN MERGEAR desde hoy
-  07-sep ~03:51 UTC. Entre ellos, #329 ("dof-diario: 2026-09-04") traía el
-  dato de la cuota semanal de IEPS diésel para 05-11-sep (codNota 5798037,
-  cuota disminuida $0.6787/litro), verificado de forma independiente dos
-  veces por dos sesiones distintas. Al cerrarse sin mergear junto con los
-  demás, ese dato NUNCA entró a normas/datos/cuota-ieps-diesel.yaml: la fila
-  más reciente en master sigue siendo 2026-08-29 a 2026-09-04, vencida
-  desde hace tres días. Esto es de las rutinas dof-diario/cuota-diesel, no
-  de vigilancia-normativa, pero se anota aquí porque se detectó de paso
-  revisando el triage pendiente. No se tocó ese PR ni se reabrió — reabrir
-  o mergear un PR de otra rutina/sesión no es parte de este mandato.
+  SÉPTIMA corrida consecutiva de esta rutina en sesión de nube que cae por
+  el mismo bloqueo de egress a nivel de proxy de organización hacia
+  sidofqa.segob.gob.mx y www.sat.gob.mx (31-ago, 02-sep, 03-sep, 04-sep,
+  05-sep, 07-sep, y ahora 08-sep). Nunca ha habido una corrida programada
+  en la nube que complete un barrido por sí sola desde que empezó este
+  patrón. El atraso real del DOF (06 y 07 de septiembre, y lo que se
+  acumule hasta que el egress se abra o alguien corra esto localmente) NO
+  se está cerrando por esta vía — depende por completo de sesiones locales
+  manuales con egress abierto, que no están garantizadas con ninguna
+  cadencia.
 estado: "INFRA <egress bloqueado — sidofqa.segob.gob.mx y www.sat.gob.mx,
-  ambos CONNECT 403 vía curl y EGRESS_BLOCKED vía WebFetch>. Sexta corrida
-  consecutiva con este patrón; ver patron_sistemico. Además, ver
-  hallazgo_colateral_fuera_de_alcance: gap de datos vivo en cuota diésel,
-  sin relación con esta rutina, detectado de paso."
+  CONNECT 403 confirmado como rechazo de política, no falla intermitente>.
+  Séptima corrida consecutiva con este patrón exacto; ver patron_sistemico."
