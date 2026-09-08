@@ -6,6 +6,7 @@ import { BotonSidebar } from '../boton-sidebar';
 import AvisoRol from './aviso-rol';
 import { Logo } from '../logo';
 import { EnlaceCuenta } from './enlace-cuenta';
+import { ROL_BADGE, type RolAppUser } from '@/lib/auth/provisionar';
 
 /**
  * El marco visual de /dashboard — fondo shader, sidebar glass con el logo,
@@ -17,22 +18,13 @@ import { EnlaceCuenta } from './enlace-cuenta';
  * marco DE VERDAD en un render de prueba (screenshot headless) en vez de
  * verificar una copia del marco que podría haber divergido del real. Un
  * layout con `redirect()` adentro no se puede renderizar sin sesión.
+ *
+ * AUDITORÍA 28, ARQ-B5 (BAJO, reincidente 26/27): el badge de rol del
+ * sidebar ERA una quinta copia del dominio de roles, declarada aquí sin
+ * tipar. Ahora se importa `ROL_BADGE` de `@/lib/auth/provisionar` — la misma
+ * fuente de `ROL_LABEL` (0044/0086/0105) — para que un rol nuevo ponga
+ * `tsc` en rojo en un solo lugar, no en ninguno.
  */
-/** Cómo se lee cada rol en el badge del sidebar. Las cinco claves son el
- *  dominio REAL de `app_user.rol` (constraint `app_user_rol_dominio`:
- *  0044_rol_encargado.sql lo abrió, 0086_retirar_rol_operador.sql retiró
- *  `operador` —el chofer ya no tiene login, solo WhatsApp— y
- *  0105_zona_vendedores.sql agregó `vendedor`) — no una etiqueta de adorno:
- *  decía "FLOTA" fijo para todos, y quien entra es un `flota_admin`, un
- *  contador o un encargado, que no ven lo mismo. Un rol nuevo cae al `??` y
- *  sale con su clave cruda, nunca vacío. */
-const ROL_BADGE: Record<string, string> = {
-  flota_admin: 'ADMIN FLOTA',
-  encargado: 'ENCARGADO',
-  contador: 'CONTADOR',
-  vendedor: 'VENDEDOR',
-  superadmin: 'SUPERADMIN',
-};
 
 export default function DashboardChrome({
   nombre, rol, cerrarSesion, usoIa, children,
@@ -104,7 +96,7 @@ export default function DashboardChrome({
                 <EnlaceCuenta rol={rol} className="block text-[13px] font-medium hover:opacity-70 transition-opacity truncate leading-tight">
                   {nombre ?? 'Mi cuenta'}
                 </EnlaceCuenta>
-                <div className="text-[10px] truncate" style={{ color: 'var(--faint)' }}>{ROL_BADGE[rol] ?? rol.toUpperCase()}</div>
+                <div className="text-[10px] truncate" style={{ color: 'var(--faint)' }}>{ROL_BADGE[rol as RolAppUser] ?? rol.toUpperCase()}</div>
               </div>
               {cerrarSesion && (
                 <form action={cerrarSesion} className="shrink-0">

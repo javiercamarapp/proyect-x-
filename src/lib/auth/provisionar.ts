@@ -42,6 +42,35 @@ export const ROL_LABEL: Record<RolAppUser, string> = {
 };
 
 /**
+ * LA ÚNICA forma corta —en mayúsculas, para el badge del sidebar— de
+ * `RolAppUser`. Antes vivía como `ROL_BADGE` en `dashboard/chrome.tsx`.
+ *
+ * AUDITORÍA 28, ARQ-B5 (BAJO, reincidente 26/27). Era la QUINTA copia del
+ * dominio de roles (después de las cuatro de `ROL_LABEL` arriba), y el
+ * barrido que debía verla —`rol_label_unico.test.ts`— casa por NOMBRE
+ * (`grep … '(const|let) ROL_LABEL'`), así que `ROL_BADGE` le era invisible.
+ * Estaba sin tipar (`Record<string, string>`): un sexto rol pone `tsc` en
+ * rojo aquí (falta la clave en `Record<RolAppUser, string>`, exhaustivo) y
+ * NUNCA en `chrome.tsx` — el sidebar habría impreso la clave cruda, lo que
+ * ya le pasó a `vendedor` antes de la 0105.
+ *
+ * Las cinco claves son el dominio REAL de `app_user.rol` (constraint
+ * `app_user_rol_dominio`: 0044_rol_encargado.sql lo abrió,
+ * 0086_retirar_rol_operador.sql retiró `operador` —el chofer ya no tiene
+ * login, solo WhatsApp— y 0105_zona_vendedores.sql agregó `vendedor`) — no
+ * una etiqueta de adorno: decía "FLOTA" fijo para todos, y quien entra es
+ * un `flota_admin`, un contador o un encargado, que no ven lo mismo. Un rol
+ * nuevo cae al `??` de `chrome.tsx` y sale con su clave cruda, nunca vacío.
+ */
+export const ROL_BADGE: Record<RolAppUser, string> = {
+  flota_admin: 'ADMIN FLOTA',
+  encargado: 'ENCARGADO',
+  contador: 'CONTADOR',
+  vendedor: 'VENDEDOR',
+  superadmin: 'SUPERADMIN',
+};
+
+/**
  * Normaliza el teléfono de oficina EXACTAMENTE como el del operador
  * (`administracion.ts:registrarOperador`): solo dígitos, lada 52 si vienen 10,
  * y la forma canónica de `destinatarioWhatsApp` — que es la que
