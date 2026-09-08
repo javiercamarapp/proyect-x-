@@ -78,6 +78,7 @@ const FACTURA = {
   fecha: '2026-08-14',
   subtotal: 10000,
   iva: 1600,
+  retencion: 0,
   total: 11600,
   serie: null,
   folio: 'F-1',

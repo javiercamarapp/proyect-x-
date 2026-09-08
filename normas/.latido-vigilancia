@@ -1,37 +1,75 @@
-fecha_corrida: 2026-09-08 (martes, sesión de nube programada)
-ultimo_dia_barrido: 2026-09-05 (sin avance — mismo bloqueo que las corridas previas)
-rango_pendiente: 2026-09-06 (domingo) y 2026-09-07 (lunes) sin barrer, 3 ediciones c/u
-notas_revisadas: 0 — bloqueo de red total antes de cualquier petición
-anti_silencio: no_aplicable — no se pudo intentar ni la petición a
-  notas/{fecha} ni el cruce contra diarios/porFecha
-bloqueo: >
-  curl contra https://sidofqa.segob.gob.mx/dof/sidof/notas/06-09-2026 →
-  "CONNECT tunnel failed, response 403". El status del proxy
-  ($HTTPS_PROXY/__agentproxy/status) muestra recentRelayFailures vacío
-  (no es una caída de relay) y el README del proxy confirma que 403/407
-  es rechazo de política de egress de la organización, no falla
-  intermitente — instruye explícitamente no reintentar ni rodear, solo
-  reportar el host bloqueado. Eso se hizo: una sola petición de prueba,
-  sin reintentos.
-etag_sat: no_aplica_hoy — hoy es MARTES 08-sep, no lunes (verificado con
-  `date -d 2026-09-08 +%A`). La ventana semanal del ETag del SAT no
-  corresponde a esta corrida. La corrida anterior (07-sep, que si era
-  lunes) ya reportó ese mismo bloqueo de red para www.sat.gob.mx; sigue
-  sin cerrarse. Próxima ventana: lunes 14-sep-2026.
+---
+fecha_corrida: 2026-09-07 21:31 CST (lunes, sesión local con egress abierto)
+ultimo_dia_barrido: 2026-09-07
+rango_barrido: 2026-09-06 (domingo) y 2026-09-07 (lunes) — cierra el hueco del
+  domingo que el latido anterior dejaba pendiente.
+notas_revisadas: 59 — todas de la matutina del 07-sep (38 con título + 21
+  encabezados de sección / "Aviso REF" sin título). El domingo 06-sep las tres
+  ediciones vinieron vacías (0 notas), confirmado con notas/06-09-2026.
+ediciones_07_sep: >
+  Matutina: publicada (codDiario 329505, 348 páginas). Vespertina y
+  extraordinaria: NO publicadas a las 21:31 CST según notas/07-09-2026 y
+  diarios/porFecha/07-09-2026 (Vespertina: null). Si el DOF sube una
+  vespertina tardía hoy, este barrido no la vio: la corrida de mañana debe
+  repetir 07-sep además de 08-sep.
+anti_silencio: ok — el cruce diarios/porFecha coincide con notas/{fecha}
+  (solo MAT en ambos).
+disparadores_evaluados: >
+  Ningún título de la matutina toca IEPS, ISR, IVA, CFF, LIF, RMF, carta
+  porte, CFDI, RFA, UMA/salarios ni LFPDPPP. Casos cercanos revisados a
+  fondo y descartados: (1) codNota 5798079, aviso de CAPUFE sobre los
+  Lineamientos de Línea Exprés (LINEXP) — es un aviso de publicación de un
+  instrumento administrativo interno, no mueve tarifas ni la red; no toca
+  red-nacional-autopistas.yaml. (2) codNota 5798063, PROY-NOM-030-ASEA-2026
+  sobre distribución de gas LP por autotanque — proyecto en consulta, fuera
+  del dominio (diésel/flota de carga). (3) codNota 5798065, Plan de
+  Desarrollo del Sector Hidrocarburos de SENER — planeación, sin cifra ni
+  regla que el producto use.
+fichas_disparadas: 0 de las fichas de normas/*.yaml.
+rezago_cerrado_cuota_diesel: >
+  El acuerdo semanal de cuotas IEPS del viernes 04-sep (vespertina, codNota
+  5798037, ACUERDO 134/2026, periodo 05 al 11 de septiembre de 2026) NUNCA
+  había entrado al repo: el PR #329 que lo traía se cerró sin mergear el
+  07-sep ~03:51 UTC (ver latido anterior). Leído hoy de nuevo desde SIDOF:
+  diésel 90.78 %, reducción SHCP $6.6847/L, cuota disminuida $0.6787/L;
+  6.6847 + 0.6787 = 7.3634 exacto, y 6.6847 / 7.3634 = 90.78 %. Fila añadida
+  a normas/datos/cuota-ieps-diesel.yaml; cuota_diesel.test.ts (18 pruebas)
+  en verde. Código tocado por depender de esa fila: CUOTA_DOF en
+  src/lib/likida/marketing/calculadora.ts (1.3622 → 0.6787, registradaEl
+  2026-09-05; calculadora.test.ts lo cruza contra la tabla) y el corpus
+  generado src/lib/likida/normas/corpus_texto.ts (regenerado con
+  scripts/generar-corpus-contador.mjs). Vigente hasta el viernes 11-sep;
+  el acuerdo de la semana 12-18 sep sale el viernes 11-sep en vespertina.
+etag_sat: >
+  Ventana de lunes cumplida. HEAD a
+  www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/normatividad_rmf_rgce2026.html
+  → 200, ETag "6a9a26fc-3e6d0", Last-Modified Fri 04 Sep 2026 02:03:40 GMT.
+  No había ETag previo registrado en el repo (las corridas anteriores
+  cayeron por egress), así que este es la LÍNEA BASE para comparar el lunes
+  14-sep. Lo que cambió esa fecha: entró la "10a Versión Anticipada de la 2a
+  RM RMF 2026" (2aRM_RMF2026-Decima_version_anticipada_03092026.pdf, 2
+  páginas). Leída completa: reforma la regla 9.4.4 (ISR de jugadores
+  residentes en el extranjero, FIFA) y adiciona las fracciones XIV a XXII
+  de la 11.7.3 (precio base del diésel: restas semanales del 9-jul al
+  3-sep), más la Segunda Modificación al Anexo 2 (fichas de trámite).
+  NINGUNA de las reglas de las fichas de normas/ (2.7.1.21, 2.7.1.29,
+  2.7.1.48, 2.7.7, 3.3.1.7, 9.1.7, 9.1.8) aparece. La 11.7.3 es insumo de
+  la SHCP para fijar la cuota semanal, que el producto ya toma del acuerdo
+  del DOF, no de esa regla. Las versiones 7a a 9a de esta anticipada
+  (20-ago a 27-ago) no constan como revisadas en latidos anteriores; la
+  10a las acumula (encabezado "primera a décima versión anticipada") y no
+  trae más reglas que las dos citadas.
 deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
-fichas_disparadas: 0 — no se pudo revisar ninguna de las 38 fichas de
-  normas/*.yaml en esta corrida
-patron_sistemico: >
-  SÉPTIMA corrida consecutiva de esta rutina en sesión de nube que cae por
-  el mismo bloqueo de egress a nivel de proxy de organización hacia
-  sidofqa.segob.gob.mx y www.sat.gob.mx (31-ago, 02-sep, 03-sep, 04-sep,
-  05-sep, 07-sep, y ahora 08-sep). Nunca ha habido una corrida programada
-  en la nube que complete un barrido por sí sola desde que empezó este
-  patrón. El atraso real del DOF (06 y 07 de septiembre, y lo que se
-  acumule hasta que el egress se abra o alguien corra esto localmente) NO
-  se está cerrando por esta vía — depende por completo de sesiones locales
-  manuales con egress abierto, que no están garantizadas con ninguna
-  cadencia.
-estado: "INFRA <egress bloqueado — sidofqa.segob.gob.mx y www.sat.gob.mx,
-  CONNECT 403 confirmado como rechazo de política, no falla intermitente>.
-  Séptima corrida consecutiva con este patrón exacto; ver patron_sistemico."
+verificacion_codigo: >
+  npx tsc --noEmit limpio; eslint limpio en los dos archivos tocados;
+  vitest sobre cuadre/cuota_diesel, marketing, normas y agentes/crecimiento:
+  247 pruebas en verde. Nota honesta: la primera corrida de esa selección
+  falló 2 pruebas de fundamento.test.ts que miden tiempo (guardia ReDoS
+  < 500 ms y "fracción de milisegundo") mientras tsc y eslint corrían en
+  paralelo en la misma máquina; sin carga pasan tres veces seguidas. No
+  dependen de nada tocado hoy.
+estado: "OK — 59 títulos revisados (matutina 07-sep) + domingo vacío; sin
+  cambios del dominio en el DOF de hoy. Rezago del 04-sep cerrado: cuota
+  IEPS diésel 05-11 sep (codNota 5798037) capturada y proyectada al código.
+  SAT: 10a anticipada leída, sin ficha disparada; ETag base registrado."
+---

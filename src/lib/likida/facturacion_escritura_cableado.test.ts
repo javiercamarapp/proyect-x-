@@ -325,7 +325,7 @@ describe('cancelarFactura — la decisión la toma la base; aquí se traduce (BE
 
 const CLIENTE = '11111111-2222-3333-4444-555555555555';
 const factura = (over: Record<string, unknown> = {}) => ({
-  clienteId: CLIENTE, fecha: '2026-01-02', subtotal: 10000, iva: 1600, total: 11600,
+  clienteId: CLIENTE, fecha: '2026-01-02', subtotal: 10000, iva: 1600, retencion: 0, total: 11600,
   serie: 'A' as string | null, folio: '1' as string | null, cfdiUuid: null,
   estatus: 'borrador' as const, viajeIds: [] as string[], ...over,
 });

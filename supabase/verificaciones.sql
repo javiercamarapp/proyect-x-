@@ -8465,16 +8465,17 @@ begin
     caza_la_fuga;
 end $$;
 
--- ── 144. ARCO separa oposición/cancelación y conserva evidencia fiscal (migs. 0173 + 0178) ──
+-- ── 144. ARCO separa oposición/cancelación y conserva evidencia fiscal (migs. 0173 + 0178 + 0356) ──
 --
 -- P0-6 de la auditoría externa: `solicitud_arco` sólo registraba. Ahora
--- `ejecutar_arco_cancelacion` anonimiza al titular y borra sólo lo conversacional.
--- La 0178 corrige el comportamiento previo: una imagen de gasto/CFDI NO se manda
--- a Storage; queda retenida por CFF art. 30. Además, oposición no es cancelación:
--- la primera exige revisión humana y no toca identidad ni evidencia fiscal.
+-- `ejecutar_arco_cancelacion` anonimiza al titular y borra lo conversacional
+-- y el contacto de emergencia de un tercero (LEG-M5, 0356). La 0178 corrige
+-- el comportamiento previo: una imagen de gasto/CFDI NO se manda a Storage;
+-- queda retenida por CFF art. 30. Además, oposición no es cancelación: la
+-- primera exige revisión humana y no toca identidad ni evidencia fiscal.
 --
 -- Esperado: ARCO_0178  ok=t  seudonimo=t  tel_fuera=t  wa_fuera=0  foto_en_cola=0
---                      gasto_vive=1  cfdi_vive=t  evidencia=t  cerrada=t
+--                      gasto_vive=1  cfdi_vive=t  familia_fuera=0  evidencia=t  cerrada=t
 --                      otra_flota_rebota=t  acceso_rebota=t  oposicion_no_cancela=t
 --                      oposicion_revision=t  retencion_fiscal=t
 do $$
@@ -8483,7 +8484,7 @@ declare
   conv uuid; g_id uuid;
   r jsonb;
   ok boolean; seudonimo_ok boolean; tel_fuera boolean;
-  wa_quedan int; foto_en_cola int; gasto_vive int; cfdi_vive boolean;
+  wa_quedan int; foto_en_cola int; gasto_vive int; cfdi_vive boolean; familia_quedan int;
   evidencia_ok boolean; cerrada boolean;
   otra_flota_rebota boolean; acceso_rebota boolean; oposicion_no_cancela boolean;
   oposicion_revision boolean; retencion_fiscal boolean;
@@ -8509,6 +8510,10 @@ begin
   -- Conversación de WhatsApp: es sólo suya, se va.
   insert into wa_conversacion (tenant_id, operador_id, telefono) values (ta, oa,'+520000017301') returning id into conv;
 
+  -- LEG-M5 (0356): un familiar sin fundamento fiscal que lo retenga, se va también.
+  insert into contacto_emergencia (tenant_id, operador_id, nombre, telefono, parentesco)
+    values (ta, oa, 'Familiar ARCO', '+520000017399', 'esposa');
+
   insert into solicitud_arco (tenant_id, operador_id, tipo, canal, vence_en)
     values (ta, oa,'cancelacion','whatsapp', current_date + 15) returning id into sa;
   insert into solicitud_arco (tenant_id, operador_id, tipo, canal, vence_en)
@@ -8526,13 +8531,14 @@ begin
   select count(*) into wa_quedan from wa_conversacion where operador_id = oa;
   select count(*) into foto_en_cola from storage_huerfano_candidato
     where motivo = 'arco' and nombre like '%foto-arco.jpg';
+  select count(*) into familia_quedan from contacto_emergencia where operador_id = oa;
 
   -- LA CONTABILIDAD SIGUE AHÍ: el gasto y su CFDI no son datos del chofer.
   select count(*) into gasto_vive from gasto where id = g_id;
   select cfdi_uuid = 'zzz-arco-cfdi-1' into cfdi_vive from gasto where id = g_id;
 
   select evidencia is not null and evidencia ? 'operador_anonimizado'
-         and evidencia ? 'evidencia_fiscal_retenida',
+         and evidencia ? 'evidencia_fiscal_retenida' and evidencia ? 'contacto_emergencia',
          estado = 'resuelta' and resuelta_en is not null and ejecutada_en is not null
     into evidencia_ok, cerrada
     from solicitud_arco where id = sa;
@@ -8549,8 +8555,8 @@ begin
     into oposicion_revision
     from solicitud_arco where id = s_opp;
 
-  raise exception E'ARCO_0178  ok=%  seudonimo=%  tel_fuera=%  wa_fuera=%  foto_en_cola=%  gasto_vive=%  cfdi_vive=%  evidencia=%  cerrada=%  otra_flota_rebota=%  acceso_rebota=%  oposicion_no_cancela=%  oposicion_revision=%  retencion_fiscal=%   (esperado t / t / t / 0 / 0 / 1 / t / t / t / t / t / t / t / t)',
-    ok, seudonimo_ok, tel_fuera, wa_quedan, foto_en_cola, gasto_vive, cfdi_vive,
+  raise exception E'ARCO_0178  ok=%  seudonimo=%  tel_fuera=%  wa_fuera=%  foto_en_cola=%  gasto_vive=%  cfdi_vive=%  familia_fuera=%  evidencia=%  cerrada=%  otra_flota_rebota=%  acceso_rebota=%  oposicion_no_cancela=%  oposicion_revision=%  retencion_fiscal=%   (esperado t / t / t / 0 / 0 / 1 / t / 0 / t / t / t / t / t / t / t)',
+    ok, seudonimo_ok, tel_fuera, wa_quedan, foto_en_cola, gasto_vive, cfdi_vive, familia_quedan,
     evidencia_ok, cerrada, otra_flota_rebota, acceso_rebota, oposicion_no_cancela,
     oposicion_revision, retencion_fiscal;
 end $$;
@@ -17925,6 +17931,9 @@ end $$;
 -- Toma un snapshot con UN gasto y conserva exactamente una fila mientras
 -- cambia, por separado, monto, IVA y UUID; después prueba DELETE+INSERT con el
 -- mismo conteo. Las cuatro llamadas deben abortar con CU006/snapshot_changed.
+-- version=2 desde la 0354 (DAT-B1, auditoría 28): guardar_liquidacion_tx
+-- exige esa versión desde entonces; el gasto de este bloque no toca REP '99',
+-- así que el hash no cambia de VALOR por la 0354, solo de version rotulada.
 -- Finalmente toma el hash vigente y el cierre feliz debe guardar ese mismo
 -- sello v1. Todo el DO termina con RAISE, así que no deja datos de verificación.
 -- Esperado: CIERRE_SNAPSHOT_0321 monto=t iva=t uuid=t reemplazo=t feliz=t sello=t
@@ -17962,7 +17971,7 @@ begin
   update public.gasto set monto = 900 where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 900, 1000, 100, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 900, 1000, 100, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then monto_bloqueado := true;
   end;
@@ -17972,7 +17981,7 @@ begin
   update public.gasto set iva_traslado = 99 where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 99, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 99, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then iva_bloqueado := true;
   end;
@@ -17982,7 +17991,7 @@ begin
   update public.gasto set cfdi_uuid = '22222222-2222-4222-8222-222222222222' where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then uuid_bloqueado := true;
   end;
@@ -17998,17 +18007,17 @@ begin
   );
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then reemplazo_bloqueado := true;
   end;
 
   h := public.cierre_insumos_hash(ta, vi);
   li := public.guardar_liquidacion_tx(
-    ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+    ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
   );
   select estatus = 'liquidado' into feliz from public.viaje where id = vi;
-  select insumos_hash = h and insumos_hash_version = 1 into sello
+  select insumos_hash = h and insumos_hash_version = 2 into sello
     from public.liquidacion where id = li;
 
   raise exception E'CIERRE_SNAPSHOT_0321 monto=% iva=% uuid=% reemplazo=% feliz=% sello=%   (esperado t / t / t / t / t / t)',
@@ -18074,4 +18083,67 @@ begin
 
   raise exception E'HUERFANO_VINCULO_0322 mismo=% vinculado=% secuestro=% permisos=%   (esperado t / t / t / t)',
     mismo, vinculado, secuestro_bloqueado, permisos;
+end $$;
+
+-- ── 267. El agregado fiscal no cuenta copias del mismo comprobante (mig. 0355) ──
+--
+-- FIS-A3 (auditoría 28): dos fotos del MISMO ticket (mismo folio, mismo
+-- monto, sin CFDI) coincidían en las 26 dimensiones de agrupación y se
+-- sumaban como si fueran dos comprobantes reales. Mismo criterio que
+-- copiasDeComprobante (engine.ts) y sumar_combustible_ejercicio (0349):
+-- folio_norm/monto para el camino sin CFDI, (cfdi_uuid, cfdi_orden) para el
+-- camino con CFDI — el segundo NO se puede sembrar con una copia real porque
+-- uq_gasto_cfdi_uuid ya la prohíbe a nivel de índice único (mismo límite que
+-- documentó 0349), así que aquí solo se ejercita el camino por folio.
+-- Esperado: FISCAL_SIN_COPIAS_0355 n=t monto=t iva=t distingue-distinto=t
+do $$
+declare
+  ta uuid; oa uuid; va uuid;
+  j jsonb; n_celda int; monto_celda numeric; iva_celda numeric;
+  n_ok boolean; monto_ok boolean; iva_ok boolean; distingue boolean;
+begin
+  insert into tenant (nombre) values ('ZZZ VERIF 0355') returning id into ta;
+  insert into operador (tenant_id, nombre, telefono) values (ta, 'ZZZ 0355', '5215559990355') returning id into oa;
+  insert into viaje (tenant_id, operador_id, folio, estatus, fecha_inicio, anticipo)
+    values (ta, oa, 'ZZZ-0355', 'abierto', current_date - 3, 1000) returning id into va;
+
+  -- Misma foto, tomada dos veces: mismo folio, mismo monto, mismo IVA.
+  insert into gasto (tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm, iva_traslado)
+  values
+    (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F1', 'ZZZ-0355-F1', 48),
+    (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F1', 'ZZZ-0355-F1', 48);
+
+  j := gastos_fiscales_agregados_tenant(ta, null, null, 2000, 750,
+         array['alimentacion','viaticos'], '{}'::date[],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
+
+  select (x->>'n')::int, (x->>'monto')::numeric, (x->>'iva')::numeric
+    into n_celda, monto_celda, iva_celda
+    from jsonb_array_elements(j) x where x->>'concepto' = 'caseta';
+
+  n_ok     := n_celda = 1;
+  monto_ok := monto_celda = 348;
+  iva_ok   := iva_celda = 48;
+
+  -- Un folio DISTINTO, mismo monto: no es copia, debe sumar aparte.
+  insert into gasto (tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm, iva_traslado)
+  values (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F2', 'ZZZ-0355-F2', 48);
+
+  j := gastos_fiscales_agregados_tenant(ta, null, null, 2000, 750,
+         array['alimentacion','viaticos'], '{}'::date[],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
+
+  select (x->>'n')::int into n_celda from jsonb_array_elements(j) x where x->>'concepto' = 'caseta';
+  distingue := n_celda = 2;
+
+  raise exception E'FISCAL_SIN_COPIAS_0355 n=% monto=% iva=% distingue-distinto=%   (esperado t / t / t / t)',
+    n_ok, monto_ok, iva_ok, distingue;
 end $$;

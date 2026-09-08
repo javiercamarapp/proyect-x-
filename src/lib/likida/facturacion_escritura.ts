@@ -54,6 +54,9 @@ export interface FacturaCruda {
   fecha: string;
   subtotal: string;
   iva: string;
+  /** Retención del 4% de IVA (FIS-M3, mig. 0351). Vacía = sin retención (el
+   *  caso común hoy: ningún formulario la teclea todavía). */
+  retencion?: string;
   /** La SERIE del CFDI (0166, RES-22). Vacía = la flota no usa series. */
   serie: string;
   folio: string;
@@ -66,6 +69,7 @@ export interface FacturaValida {
   fecha: string;
   subtotal: number;
   iva: number;
+  retencion: number;
   total: number;
   serie: string | null;
   folio: string | null;
@@ -149,9 +153,12 @@ export function validarFactura(c: FacturaCruda): FacturaValida {
   // siempre declara su IVA, aunque sea $0 (tasa 0% o exento) — y ese $0
   // tecleado es una medición, no un relleno.
   const iva = montoTecleado(c.iva, 'El IVA', { obligatorio: true }) as number;
+  // FIS-M3 (mig. 0351): retención del 4% de IVA, opcional — sin ella (el
+  // caso de hoy) el cálculo es idéntico al de siempre.
+  const retencion = montoTecleado(c.retencion ?? '', 'La retención', { obligatorio: false }) ?? 0;
   // Redondeo a centavos ANTES de sumar: 0.1 + 0.2 en binario no es 0.30, y el
   // constraint `factura_total_cuadra` tolera un centavo, no una cola binaria.
-  const total = Math.round((subtotal + iva) * 100) / 100;
+  const total = Math.round((subtotal + iva - retencion) * 100) / 100;
 
   const folio = c.folio.trim() === '' ? null : c.folio.trim();
   if (folio !== null && folio.length > 40) throw new DatoInvalido('El folio no puede pasar de 40 caracteres.');
@@ -177,7 +184,7 @@ export function validarFactura(c: FacturaCruda): FacturaValida {
     if (!viajeIds.includes(id)) viajeIds.push(id);
   }
 
-  return { clienteId: c.clienteId, fecha, subtotal, iva, total, serie, folio, cfdiUuid, estatus: cfdiUuid ? 'emitida' : 'borrador', viajeIds };
+  return { clienteId: c.clienteId, fecha, subtotal, iva, retencion, total, serie, folio, cfdiUuid, estatus: cfdiUuid ? 'emitida' : 'borrador', viajeIds };
 }
 
 export interface PagoCrudo {
@@ -384,6 +391,7 @@ export async function crearFactura(
     fecha: f.fecha,
     subtotal: f.subtotal,
     iva: f.iva,
+    retencion_iva: f.retencion,
     total: f.total,
     moneda: 'MXN',
     estatus: f.estatus,

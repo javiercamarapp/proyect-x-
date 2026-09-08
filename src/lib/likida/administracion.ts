@@ -23,6 +23,7 @@ import { validarDatosFiscales } from '@/lib/saas/fiscal';
 import { variantesTelefono, acquireViajeLock, releaseViajeLock } from './conv';
 import { destinatarioWhatsApp } from '@/lib/meta/client';
 import { getConfig } from './config';
+import { regimenElegiblePorClave } from './perfil/preguntas';
 import type { PoliticaGasto } from './cuadre/engine';
 import { logger } from '@/lib/logger';
 import { DatoInvalido } from './errores';
@@ -197,8 +198,11 @@ export async function crearFlota(
   //
   // 624 entra en `REGIMENES` y en el CHECK (mig. 0170). Un coordinado ya puede
   // declararse; la facilidad del 15% deja de ser solo para PF 612.
-  const REGIMENES_ELEGIBLES = ['624', '612'];
-  const regimenElegible = f.regimenFiscal ? REGIMENES_ELEGIBLES.includes(f.regimenFiscal) : undefined;
+  // AUDITORÍA 29, FIS-C1: la lista vivía como literal local aquí, y por eso el
+  // ESCRITOR de `/admin/flotas` podía contradecirla sin que nada lo notara.
+  // Ahora la derivación es una sola (`perfil/preguntas.ts`) y la comparten el
+  // alta —que deriva— y `actualizarFacilidad15` —que coteja—.
+  const regimenElegible = regimenElegiblePorClave(f.regimenFiscal);
   const facilidad15 = (typeof f.dedicacionExclusivaCarga === 'boolean' && regimenElegible !== undefined)
     ? {
         facilidadCombustibleEfectivo: {

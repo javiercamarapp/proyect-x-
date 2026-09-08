@@ -38,7 +38,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { acotada } from './presupuesto';
 
-export type FaseCosto = 'ocr' | 'cuadre' | 'escalacion' | 'chat' | 'router' | 'whatsapp' | 'transcripcion';
+export type FaseCosto = 'ocr' | 'cuadre' | 'escalacion' | 'chat' | 'router' | 'whatsapp' | 'transcripcion' | 'copiloto' | 'runner';
 
 // Costo por mensaje SALIENTE de WhatsApp (los entrantes son GRATIS).
 // Dentro de la ventana de servicio de 24h son gratis hasta el 1-oct-2026; después

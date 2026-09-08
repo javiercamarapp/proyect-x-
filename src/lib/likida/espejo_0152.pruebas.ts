@@ -24,7 +24,7 @@ export interface BaseSintetica {
   operador: Array<{ id: string; tenant_id: string; nombre: string; telefono?: string | null; activo?: boolean }>;
   unidad: Array<{ id: string; tenant_id: string; numero_economico: string; estado: string; activo?: boolean }>;
   viaje: Array<{ id: string; tenant_id: string; operador_id: string | null; unidad_id?: string | null; cliente_id?: string | null; folio?: string | null; origen?: string | null; destino?: string | null; estatus: string; ingreso_flete?: number | null; fecha_fin?: string | null; created_at?: string }>;
-  liquidacion: Array<{ tenant_id: string; viaje_id: string; total_comprobado: number; created_at: string }>;
+  liquidacion: Array<{ tenant_id: string; viaje_id: string; total_comprobado: number; created_at: string; revision?: string | null }>;
   factura_emitida: Array<{ id: string; tenant_id: string; cliente_id: string; viaje_id?: string | null; folio?: string | null; fecha: string; total: number; estatus: string; vence_en?: string | null }>;
   pago_recibido: Array<{ factura_id: string; monto: number }>;
   factura_viaje: Array<{ factura_id: string; viaje_id: string }>;
@@ -72,7 +72,8 @@ export function saldoFactura(b: BaseSintetica, f: BaseSintetica['factura_emitida
 // ── 1. rentabilidad_tenant ─────────────────────────────────────────────────
 export function rentabilidadSql(b: BaseSintetica, tenant: string, desde: string | null) {
   const v = b.viaje.filter((x) => x.tenant_id === tenant && (!desde || creado(x) >= desde));
-  const l = b.liquidacion.filter((x) => x.tenant_id === tenant && (!desde || x.created_at >= desde));
+  // 0348 (BE-A2/DAT-M1): una liquidación rechazada no cuenta como costo comprobado.
+  const l = b.liquidacion.filter((x) => x.tenant_id === tenant && (!desde || x.created_at >= desde) && x.revision !== 'rechazada');
   return {
     ingreso: v.reduce((s, x) => s + (x.ingreso_flete ?? 0), 0),
     viajesConIngreso: v.filter((x) => x.ingreso_flete != null).length,

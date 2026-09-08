@@ -12,7 +12,11 @@ import { traerTodo, conteo } from './pg';
 import type { Gasto, Liquidacion, Viaje, Operador, Diferencia } from '@/types/likida';
 import type { CodigoPendiente } from './intake/emparejar';
 import { violaIndice } from './pg_errores';
-import { declararUmbralPeaje, declararFacilidad15 } from './perfil/preguntas';
+import {
+  declararUmbralPeaje, declararFacilidad15,
+  regimenElegiblePorClave, REGIMENES_ELEGIBLES_15,
+} from './perfil/preguntas';
+import { DatoInvalido } from './errores';
 import type { CuadreParaResumen } from './cuadre/resumen';
 
 // El tope de consulta vive en `presupuesto.ts`, con `TOPE_CONSULTA_MS` y el
@@ -1050,7 +1054,7 @@ export const CIERRE_CONTEO_CAMBIO = 'CU003';
 export const CIERRE_SNAPSHOT_CAMBIO = 'CU006';
 
 export interface SnapshotInsumosCierre {
-  version: 1;
+  version: 2;
   hash: string;
 }
 
@@ -1080,10 +1084,10 @@ export async function leerSnapshotInsumosCierre(
   }), 'leerSnapshotInsumosCierre');
   if (error) throw new Error(`leerSnapshotInsumosCierre: ${error.message}`);
   const snapshot = data as Partial<SnapshotInsumosCierre> | null;
-  if (snapshot?.version !== 1 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
+  if (snapshot?.version !== 2 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
     throw new Error('leerSnapshotInsumosCierre: respuesta inválida de cierre_insumos_snapshot');
   }
-  return { version: 1, hash: snapshot.hash };
+  return { version: 2, hash: snapshot.hash };
 }
 
 /**
@@ -1596,6 +1600,37 @@ export async function actualizarFacilidad15(
   reg: boolean | undefined,
   actualizadoPor: string | null,
 ): Promise<void> {
+  // AUDITORÍA 29, FIS-C1 (CRÍTICO): el `<select>` sí/no de `/admin/flotas`
+  // escribe por aquí, y desde FIS-A3 escribe la fuente que MANDA
+  // (`tenant.perfil`, `procedencia: 'declarado'`). Sin cotejo, un «Régimen: Sí»
+  // sobre una S.A. de C.V. clave 601 le ganaba a la derivación correcta desde
+  // la clave del SAT y el motor imprimía —citando la RFA 2026 regla 2.9— una
+  // deducción que la norma le niega: sobre un CFDI de diésel en efectivo de
+  // $11,600 pasaba de $0.00 a $11,600.00 deducibles y de $0.00 a $1,600.00 de
+  // IVA acreditable. Es la misma regla que `administracion.ts` ya aplicaba al
+  // dar de alta (comentario FISC-C2-1) y que este camino se saltaba.
+  //
+  // Se coteja SOLO la dirección peligrosa: conceder de más contra una clave
+  // que lo niega se rechaza; negar de más (o declarar sin clave registrada)
+  // pasa, porque fallar cerrado nunca imprime una deducción de más.
+  if (reg === true) {
+    const { data: fila, error: errClave } = await acotada(supabaseAdmin()
+      .from('tenant')
+      .select('regimen_fiscal')
+      .eq('id', tenantId)
+      .maybeSingle(), 'actualizarFacilidad15.clave');
+    // Sin comprobar el error, una base caída se leería como "esta flota no
+    // tiene clave" y la concesión pasaría justo cuando menos se puede verificar.
+    if (errClave) throw new Error(`actualizarFacilidad15: no se pudo leer el régimen fiscal: ${errClave.message}`);
+    const clave = (fila as { regimen_fiscal?: string | null } | null)?.regimen_fiscal ?? null;
+    if (regimenElegiblePorClave(clave) === false) {
+      throw new DatoInvalido(
+        `La flota está registrada con el régimen fiscal ${clave} ante el SAT, y la facilidad del 15% de la RFA 2026 regla 2.9 solo aplica a los regímenes ${REGIMENES_ELEGIBLES_15.join(' y ')}. `
+        + 'Si la flota cambió de régimen, corrige primero su régimen fiscal; si no, esta declaración imprimiría en el PDF una deducción que la norma le niega.',
+      );
+    }
+  }
+
   await guardarPerfilPatch(tenantId, declararFacilidad15(ded, reg), actualizadoPor);
 
   // AUDITORÍA 15, MEDIO: sin comprobar el error, un bache de red se leía como
@@ -1782,17 +1817,15 @@ export async function ejecutarCancelacionArco(
     // categorías que `ejecutar_arco_cancelacion` (0286/0290, texto 0340) SÍ
     // deja intactas: los eventos de cámara/telemetría ligados al operador
     // (`evento_seguridad_flota`, 0324 le añadió `operador_id`; se purga sola
-    // a 180/365 días — `purgar_evento_seguridad_flota`, mig. 0335), su
-    // contacto de emergencia (`contacto_emergencia`, 0198 — cascada solo si
-    // se BORRA al operador, y la cancelación lo ANONIMIZA, así que la fila
-    // sobrevive con nombre y teléfono del familiar) y su registro de jornada
-    // (`jornada_dia`/`jornada_asiento`, 0241 — `operador_id not null`, texto
-    // libre en `detalle`). La 0340 solo corrigió el texto por defecto de la
-    // RPC, que repite la misma lista incompleta — eso queda para la serie de
-    // migraciones, no para este lote.
+    // a 180/365 días — `purgar_evento_seguridad_flota`, mig. 0335) y su
+    // registro de jornada (`jornada_dia`/`jornada_asiento`, 0241 —
+    // `operador_id not null`, texto libre en `detalle`). LEG-M5 (0356) cerró
+    // la tercera: `contacto_emergencia` (0198) es dato de un TERCERO sin
+    // fundamento fiscal que lo retenga — la cancelación ahora lo BORRA, ya
+    // no sobrevive a la anonimización del operador.
     const aviso = await enviarRespuestaArco(
       telefono,
-      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan: tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud, la documentación fiscal, los eventos de cámara y telemetría ligados a tu persona (se borran solos a los 180 días, o 365 si fueron graves), tu contacto de emergencia y tu registro de jornada laboral. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
+      'Se sustituyeron tu nombre y tu teléfono en el registro operativo, se eliminaron tus conversaciones y el contacto de emergencia registrado sobre tu persona. Se conservan: tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud, la documentación fiscal, y los eventos de cámara, telemetría (se borran solos a los 180 días, o 365 si fueron graves) y jornada laboral ligados a tu persona. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
     );
     return aviso.ok ? { ok: true, avisada: true } : { ok: true, avisada: false, errorAviso: aviso.error };
   } catch (e) {

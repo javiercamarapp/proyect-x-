@@ -166,11 +166,11 @@ describe('saveLiquidacion — el cierre', () => {
   });
 
   it('manda hash y versión del snapshot económico/fiscal', async () => {
-    const snapshot = { version: 1 as const, hash: 'a'.repeat(64) };
+    const snapshot = { version: 2 as const, hash: 'a'.repeat(64) };
     await saveLiquidacion('t1', liq, 'tenant-1/v1.pdf', 6, snapshot);
     expect(rpc.mock.calls[0][1]).toMatchObject({
       p_insumos_hash: snapshot.hash,
-      p_insumos_hash_version: 1,
+      p_insumos_hash_version: 2,
     });
   });
 
@@ -192,20 +192,20 @@ describe('saveLiquidacion — el cierre', () => {
   it('CU006 snapshot_changed también conserva el código y habilita un solo recálculo', async () => {
     rpc.mockResolvedValue({ data: null, error: { code: 'CU006', message: 'snapshot_changed' } });
     const e = await saveLiquidacion('t1', liq, undefined, 1, {
-      version: 1, hash: 'b'.repeat(64),
+      version: 2, hash: 'b'.repeat(64),
     }).catch((x) => x);
     expect(insumosDeCierreCambiaron(e)).toBe(true);
     expect(insumosDeCierreCambiaron(new Error('otro'))).toBe(false);
   });
 
   it('valida la forma del snapshot antes de confiar en el RPC', async () => {
-    rpc.mockResolvedValueOnce({ data: { version: 1, hash: 'c'.repeat(64) }, error: null });
+    rpc.mockResolvedValueOnce({ data: { version: 2, hash: 'c'.repeat(64) }, error: null });
     await expect(leerSnapshotInsumosCierre('t1', 'v1')).resolves.toEqual({
-      version: 1, hash: 'c'.repeat(64),
+      version: 2, hash: 'c'.repeat(64),
     });
     expect(rpc).toHaveBeenCalledWith('cierre_insumos_snapshot', { p_tenant: 't1', p_viaje: 'v1' });
 
-    rpc.mockResolvedValueOnce({ data: { version: 1, hash: 'roto' }, error: null });
+    rpc.mockResolvedValueOnce({ data: { version: 2, hash: 'roto' }, error: null });
     await expect(leerSnapshotInsumosCierre('t1', 'v1')).rejects.toThrow(/respuesta inválida/);
   });
 
