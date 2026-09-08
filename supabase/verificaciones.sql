@@ -2754,13 +2754,22 @@ end $$;
 -- es la cifra engañosa que se quiere evitar), que la consolidación es
 -- IDEMPOTENTE, y que un plazo demasiado corto falla CERRADO con SQLSTATE PU001.
 --
--- Corrida REAL, salida copiada tal cual:
+-- Corrida REAL (antes de la reescritura de PRU-A3), salida copiada tal cual —
+-- los VALORES son los medidos contra Postgres; las CLAVES y la posición del
+-- `(esperado …)` se actualizaron abajo para que el calificador los lea
+-- (auditoría 28, PRU-A3: la forma vieja ponía `(esperado …)` a la mitad del
+-- mensaje y las 8 mediciones de después nunca se calificaban — ver la nota
+-- junto al `raise`). Esta forma nueva se validó con el calificador sobre un
+-- mensaje sintético con estos mismos valores (no hay Postgres en este
+-- entorno); pendiente que `ci-postgres.yml` la confirme contra la base real:
 --
 --   47  wa: viejos-antes=100  purgados=100  quedan=10
---       llm_costo INTACTA=87  consolidado=2.000000 == crudo-de-meses-cerrados=2.000000
---       mes-en-curso-NO-consolidado=t  idempotente=t
---       plazo-minimo-falla-cerrado=t sqlstate=PU001
+--       llm_costo-intacta=87  consolidado=2.000000  crudo=2.000000
+--       mes-en-curso-no-consolidado=t  idempotente=t
+--       plazo-minimo-falla-cerrado=t  sqlstate=PU001
 --       json={"diasWa":30,"waPurgados":100,"iaConsolidados":2,"llmCostoPurgado":false}
+--       (esperado 100 / 100 / 10 / 87 / 2.000000 / 2.000000 / t / t / t / PU001 /
+--        sin valor fijo — se reporta tal cual)
 --
 -- SOBRE `idx_wa_msg_created`: la auditoría lo dio por muerto. Su forma es
 -- exactamente la de un `delete where created_at < …` — era el índice de ESTA
@@ -2812,7 +2821,22 @@ begin
   exception when others then guarda_minimo := true; sqlst := sqlstate;
   end;
 
-  raise exception E'47  wa: viejos-antes=%  purgados=%  quedan=%  (esperado 100 / 100 / 10)\n    llm_costo INTACTA=%  (87, no se purga)   consolidado=% == crudo-de-meses-cerrados=%\n    mes-en-curso-NO-consolidado=%  idempotente=%\n    plazo-minimo-falla-cerrado=% sqlstate=%\n    json=%',
+  -- (auditoría 28, PRU-A3) Reescrito a la forma de los demás bloques: UN solo
+  -- `(esperado …)` AL FINAL con sus 11 valores alineados a sus 11 claves. La
+  -- forma vieja ponía `(esperado 100 / 100 / 10)` A LA MITAD del mensaje y
+  -- dejaba OCHO mediciones más después de ese `)` — el calificador solo lee
+  -- hasta el PRIMER `(esperado`, así que esas ocho (incluida `llm_costo
+  -- INTACTA`, la más importante: la prueba de que la purga NO se llevó
+  -- costo real) se tragaban como si fueran parte del tercer valor esperado
+  -- ("10) llm_costo INTACTA=…"), un string con espacios → comodín de prosa →
+  -- `ok:true` sin importar lo que esas ocho dijeran. `llm_intactas` podía
+  -- salir en 0 y el bloque igual calificaba `✓ ok`.
+  -- `json`: no lleva un valor esperado literal (la forma cambia con cada
+  -- migración que toca `mantenimiento_de_datos`); se declara como el ÚLTIMO
+  -- valor, con espacios, a propósito — el calificador lo trata como prosa del
+  -- autor (comodín, siempre pasa) y el texto real queda en el reporte para
+  -- que un humano lo mire, no para que la compuerta lo compare.
+  raise exception E'47  wa: viejos-antes=%  purgados=%  quedan=%\n    llm_costo-intacta=%  consolidado=%  crudo=%\n    mes-en-curso-no-consolidado=%  idempotente=%\n    plazo-minimo-falla-cerrado=%  sqlstate=%\n    json=%\n    (esperado 100 / 100 / 10 / 87 / 2.000000 / 2.000000 / t / t / t / PU001 / sin valor fijo — se reporta tal cual)',
     viejos_antes, (j->>'waPurgados'), quedan_wa,
     llm_intactas, consol_suma, cruda_suma, (mes_curso=0), idempotente,
     guarda_minimo, sqlst, j::text;
