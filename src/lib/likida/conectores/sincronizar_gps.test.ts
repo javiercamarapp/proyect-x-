@@ -217,8 +217,11 @@ describe('los fallos se declaran, no se tragan', () => {
   });
 
   it('una credencial que no descifra no revienta la corrida', async () => {
+    // FE-M4 (aud. 28): el `error` que sale al panel ya no lleva el mensaje
+    // crudo de `descifrar` (podía traer detalle del cifrado) — es una frase
+    // nuestra fija; el detalle real se verifica por separado, vía logger.
     const r = await sincronizarGpsDeFlota('t-1', 'samsara', 'ROTO', httpQue(200, '{}'));
-    expect(r.error).toContain('descifrar');
+    expect(r.error).toContain('credencial del conector no se pudo leer');
     expect(escrituras).toHaveLength(0);
   });
 
@@ -244,6 +247,41 @@ describe('los fallos se declaran, no se tragan', () => {
     expect(r.error).toContain('guardar');
     expect(sellos).toHaveLength(0);
   });
+
+  // AUDITORÍA 28, FE-M4 — el mensaje crudo de PostgREST (con el nombre de la
+  // tabla) llegaba hasta `conector_poll_estado.ultimo_error` y de ahí al
+  // panel del Mapa. Ahora el `error:` que sale de aquí es SIEMPRE una frase
+  // nuestra; el mensaje real solo va al `logger.error`, con la etapa y el
+  // `conectorId`.
+  it('un "permission denied" de Postgres al leer unidades NO llega al panel, solo al logger', async () => {
+    errorUnidades = { message: 'permission denied for table unidad' };
+    const http = httpQue(200, cuerpoSamsara([{ id: '1234', lat: 20.9, lng: -89.5, t: '2026-08-23T18:00:00Z' }]));
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, http);
+    expect(r.error).not.toMatch(/permission denied/);
+    expect(r.error).not.toMatch(/table unidad/);
+    expect(logger.error).toHaveBeenCalledWith('gps.unidades_no_leidas', expect.objectContaining({
+      tenantId: 't-1', proveedor: 'samsara', err: 'permission denied for table unidad',
+    }));
+  });
+
+  it('un error de Postgres al guardar posiciones NO llega al panel, solo al logger', async () => {
+    errorInsert = { message: 'permission denied for table posicion' };
+    const http = httpQue(200, cuerpoSamsara([{ id: '1234', lat: 20.9, lng: -89.5, t: '2026-08-23T18:00:00Z' }]));
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', CRED, http);
+    expect(r.error).not.toMatch(/permission denied/);
+    expect(r.error).not.toMatch(/table posicion/);
+    expect(logger.error).toHaveBeenCalledWith('gps.posiciones_no_guardadas', expect.objectContaining({
+      tenantId: 't-1', proveedor: 'samsara', err: 'permission denied for table posicion',
+    }));
+  });
+
+  it('una credencial ilegible NO manda su detalle al panel, solo al logger', async () => {
+    const r = await sincronizarGpsDeFlota('t-1', 'samsara', 'ROTO', httpQue(200, '{}'));
+    expect(r.error).not.toMatch(/llave equivocada/);
+    expect(logger.error).toHaveBeenCalledWith('gps.credencial_no_descifrada', expect.objectContaining({
+      tenantId: 't-1', proveedor: 'samsara', err: 'llave equivocada',
+    }));
+  });
 });
 
 describe('la corrida de todas las flotas', () => {
@@ -260,7 +298,7 @@ describe('la corrida de todas las flotas', () => {
     const http = httpQue(200, cuerpoSamsara([{ id: '1234', lat: 20.9, lng: -89.5, t: '2026-08-23T18:00:00Z' }]));
     const r = await sincronizarGpsTodas(http);
     expect(r).toHaveLength(2);
-    expect(r[0].error).toContain('descifrar');
+    expect(r[0].error).toContain('credencial del conector no se pudo leer');
     expect(r[1].error).toBeUndefined();
     expect(r[1].guardadas).toBe(1);
   });

@@ -110,6 +110,34 @@ function enTandas<T>(items: readonly T[], tamano: number): T[][] {
   return salida;
 }
 
+// ── AUDITORÍA 28, FE-M4: EL PANEL NO LEE POSTGRES ────────────────────────
+// `error:` viaja hasta `conector_poll_estado.ultimo_error` → `estado_rastreo_
+// tenant` → el Mapa (`vista.tsx`). Antes cada etapa concatenaba el mensaje
+// crudo de PostgREST (y a veces el nombre de la tabla) directamente en esa
+// cadena; el contralor la veía en pantalla. `motivoParaPanel` es la ÚNICA
+// frase que sale hacia el panel por etapa — el detalle real (con el
+// `conectorId` y el `tenantId`) va SOLO al logger, en el mismo punto donde
+// antes se armaba el string. La regla ya existía para las credenciales
+// (`conectores/tipos.ts:498-500`); esto la extiende al poll de posiciones.
+type EtapaSyncGps =
+  | 'descifrar'
+  | 'leer_unidades'
+  | 'compuerta_privacidad'
+  | 'guardar_posiciones'
+  | 'sellar_visto'
+  | 'finalizar_durable';
+
+function motivoParaPanel(etapa: EtapaSyncGps): string {
+  switch (etapa) {
+    case 'descifrar': return 'la credencial del conector no se pudo leer';
+    case 'leer_unidades': return 'no se pudieron leer las unidades de la flota';
+    case 'compuerta_privacidad': return 'no se guardó ninguna posición: no se pudo comprobar el aviso de privacidad';
+    case 'guardar_posiciones': return 'no se pudieron guardar las posiciones';
+    case 'sellar_visto': return 'las posiciones se guardaron pero no se pudo sellar la unidad';
+    case 'finalizar_durable': return 'no se pudo finalizar el estado durable del conector';
+  }
+}
+
 /** El `Http` real. Se inyecta para poder probar sin red. */
 export const httpReal: Http = crearHttpReal();
 
@@ -141,7 +169,9 @@ export async function sincronizarGpsDeFlota(
   try {
     valores = descifrar(valoresCifrados);
   } catch (e) {
-    return { ...base, error: `no se pudo descifrar la credencial: ${e instanceof Error ? e.message : String(e)}` };
+    const detalle = e instanceof Error ? e.message : String(e);
+    logger.error('gps.credencial_no_descifrada', { tenantId, proveedor: conectorId, err: detalle });
+    return { ...base, error: motivoParaPanel('descifrar') };
   }
 
   const r = await lector(valores, http, { venceEn: opciones.venceEn, ahora: opciones.reloj ?? ahora, dormir: opciones.dormir });
@@ -179,7 +209,10 @@ export async function sincronizarGpsDeFlota(
         .in('gps_device_id', tanda),
       'gps.unidades',
     );
-    if (errU) return { ...base, error: `no se pudieron leer las unidades: ${errU.message}` };
+    if (errU) {
+      logger.error('gps.unidades_no_leidas', { tenantId, proveedor: conectorId, err: errU.message });
+      return { ...base, error: motivoParaPanel('leer_unidades') };
+    }
     for (const u of unidades ?? []) {
       if (u.gps_device_id) porDevice.set(String(u.gps_device_id), String(u.id));
     }
@@ -211,7 +244,8 @@ export async function sincronizarGpsDeFlota(
     if (sinTiempo()) return { ...base, backlog: true, error: 'no se abrió la compuerta de privacidad: venció el presupuesto' };
     const compuerta = await unidadesSinAvisoPrevio(tenantId, [...unidadesVistas]);
     if (compuerta.error) {
-      return { ...base, error: `no se guardó ninguna posición: ${compuerta.error}` };
+      logger.error('gps.compuerta_privacidad_error', { tenantId, proveedor: conectorId, err: compuerta.error });
+      return { ...base, error: motivoParaPanel('compuerta_privacidad') };
     }
     if (compuerta.sinAviso.size > 0) {
       base.sinAvisoPrevio = compuerta.sinAviso.size;
@@ -235,7 +269,10 @@ export async function sincronizarGpsDeFlota(
           .select('id'),
         'gps.guardar_posiciones',
       );
-      if (errIns) return { ...base, error: `no se pudieron guardar las posiciones: ${errIns.message}` };
+      if (errIns) {
+        logger.error('gps.posiciones_no_guardadas', { tenantId, proveedor: conectorId, err: errIns.message });
+        return { ...base, error: motivoParaPanel('guardar_posiciones') };
+      }
       base.guardadas += (insertadas ?? []).length;
     }
 
@@ -255,7 +292,8 @@ export async function sincronizarGpsDeFlota(
         'gps.sellar_visto',
       );
       if (errSello) {
-        return { ...base, error: `las posiciones se guardaron pero no se pudo sellar gps_visto_en: ${errSello.message}` };
+        logger.error('gps.sello_no_guardado', { tenantId, proveedor: conectorId, err: errSello.message });
+        return { ...base, error: motivoParaPanel('sellar_visto') };
       }
     }
   }
@@ -323,7 +361,9 @@ export async function sincronizarGpsTodas(
       if (!completo) resultado.backlog = true;
       return resultado;
     } catch (e) {
-      return { ...resultado, error: `no se pudo finalizar el estado durable: ${e instanceof Error ? e.message : String(e)}`, backlog: true };
+      const detalle = e instanceof Error ? e.message : String(e);
+      logger.error('gps.estado_durable_no_finalizado', { tenantId: c.tenantId, proveedor: c.proveedor, err: detalle });
+      return { ...resultado, error: motivoParaPanel('finalizar_durable'), backlog: true };
     }
   });
   const salida = resultados.map((r, i) => {

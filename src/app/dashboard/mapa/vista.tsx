@@ -128,12 +128,26 @@ export function VistaMapa({ ubicados, sinUbicar, totalVivos, tope, rastreo }: {
             </div>
 
             {rastreo.error !== null ? (
+              // AUDITORÍA 28, FE-M4: antes se pintaba `rastreo.error.slice(0, 140)`
+              // — el mensaje crudo de PostgREST («permission denied for table
+              // unidad») llegaba a la pantalla del cliente. `page.tsx` ya entrega
+              // aquí una frase fija (nunca el mensaje original), pero esta vista
+              // tampoco debe volver a confiar en el contenido de `rastreo.error`
+              // para pintarlo: solo mira si hay error o no.
               <p className="text-[12px] mt-1" style={{ color: 'var(--warn)' }}>
-                No se pudo leer el rastreo de esta flota ({rastreo.error.slice(0, 140)}). Recarga en un
-                momento — mientras tanto esta sección no afirma nada sobre tus unidades.
+                No se pudo leer el rastreo de esta flota. Recarga en un momento — mientras tanto esta
+                sección no afirma nada sobre tus unidades.
               </p>
             ) : (
               <>
+                {/* AUDITORÍA 28, FE-M4: `p.error` (`conector_poll_estado.
+                    ultimo_error`, vía `sincronizar_gps.ts`) ya es una frase
+                    NUESTRA desde este cambio — la decisión es pintarla igual
+                    que hoy, sin acotar. Fila escrita ANTES de este cambio
+                    puede traer el mensaje crudo de Postgres todavía: es un
+                    rezago que se limpia solo en el siguiente poll (cada
+                    corrida vuelve a escribir la columna), no algo que esta
+                    vista deba filtrar por patrón. */}
                 {rastreo.polls.map((p) => (
                   <p key={`${p.proveedor}:${p.recurso}`} className="text-[11px] mt-1" style={{ color: p.backlogPendiente || p.eventosCuarentenaMuertos > 0 || p.eventosOutboxMuertos > 0 || p.avisosMuertos > 0 ? 'var(--warn)' : 'var(--faint)' }}>
                     {p.proveedor} · {p.recurso}: poll {p.ultimoPoll ? fechaHoraMx(p.ultimoPoll) : 'nunca'};
