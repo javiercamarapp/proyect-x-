@@ -31,8 +31,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ───────────────────────────────────────────────────────────────────────────
 
 const runAgent = vi.fn();
-const fotoAnteriorSinProcesar = vi.fn<() => Promise<boolean | null>>(async () => false);
-beforeEach(() => { fotoAnteriorSinProcesar.mockReset(); fotoAnteriorSinProcesar.mockResolvedValue(false); });
+interface FotoAnteriorResultado { vivas: number; muertas: Array<{ id: string; recibidoMs: number | null; timestampMs: number | null }> }
+const fotoAnteriorSinProcesar = vi.fn<() => Promise<FotoAnteriorResultado | null>>(async () => ({ vivas: 0, muertas: [] }));
+beforeEach(() => { fotoAnteriorSinProcesar.mockReset(); fotoAnteriorSinProcesar.mockResolvedValue({ vivas: 0, muertas: [] }); });
 // DAT-21: el processor pide el mutex del CIERRE por `intentarLockViaje`, que
 // devuelve tres estados. `acquireViajeLock` (booleano) sigue existiendo para
 // los otros llamadores y se mockea aparte para que este archivo no dependa de
@@ -261,8 +262,8 @@ describe('processInbound — el "listo" que llegó tarde', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('sin hora de Meta aplaza el cierre, no consulta apertura ni ejecuta el agente', async () => {
-    expect(await processInbound({ ...listo, timestampMs: undefined, waMessageId: 'wa-sin-hora' })).toBe('sin_tiempo');
+  it('sin NINGUNA hora (ni timestampMs ni recibidoMs) consume el intento — ya no aplaza para siempre (BE-A4)', async () => {
+    expect(await processInbound({ ...listo, timestampMs: undefined, waMessageId: 'wa-sin-hora' })).toBe('reintentable');
     expect(viajeAbiertoDesdeMs, 'la consulta corre SÓLO cuando puede decidir algo')
       .not.toHaveBeenCalled();
     expect(runAgent).not.toHaveBeenCalled();
@@ -270,6 +271,13 @@ describe('processInbound — el "listo" que llegó tarde', () => {
     expect(salientes).toHaveLength(0);
     expect(intentarLockViaje).not.toHaveBeenCalled();
     expect(completarMessageClaim).not.toHaveBeenCalled();
+  });
+
+  it('BE-A4: sin timestampMs pero CON recibidoMs, la guardia de apertura sí corre (con la cota superior)', async () => {
+    await processInbound({ ...listo, timestampMs: undefined, recibidoMs: ABIERTO_MS - 600_000, waMessageId: 'wa-recibido-viejo' });
+    expect(viajeAbiertoDesdeMs).toHaveBeenCalled();
+    expect(runAgent, 'recibidoMs < abiertoDesde implica que la hora real también lo era')
+      .not.toHaveBeenCalled();
   });
 });
 
@@ -300,7 +308,7 @@ describe('processInbound — el resultado que decide la fila durable', () => {
     expect(completarMessageClaim).toHaveBeenCalledWith('wa1');
   });
 
-  it.each([true, null])('foto anterior pendiente o indeterminada (%s) aplaza sin tomar mutex ni cerrar', async (estadoFoto) => {
+  it.each([{ vivas: 1, muertas: [] }, null])('foto anterior pendiente o indeterminada (%s) aplaza sin tomar mutex ni cerrar', async (estadoFoto) => {
     fotoAnteriorSinProcesar.mockResolvedValue(estadoFoto);
     intentarLockViaje.mockResolvedValue('obtenido');
     expect(await processInbound(listo)).toBe('sin_tiempo');

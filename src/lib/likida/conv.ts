@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { acotada, PRESUPUESTO_WEBHOOK_MS } from './presupuesto';
 import { violaIndice } from './pg_errores';
 import { destinatarioEnmascarado } from '@/lib/meta/client';
+import { MAX_INTENTOS_PENDIENTE } from './wa_pendientes';
 
 export interface ResolvedOperador {
   tenantId: string;
@@ -916,6 +917,26 @@ export async function intentarLockViaje(viajeId: string, opts?: { ttlMs?: number
   }
 }
 
+/** Una foto sin procesar que ya agotó `MAX_INTENTOS_PENDIENTE` intentos: es
+ *  invisible para el cron (0325 filtra `intentos < MAX`) y nunca se va a
+ *  procesar sola — quien cierra tiene que avisar y sellarla (BE-A3). */
+export interface FotoAnteriorMuerta {
+  id: string;
+  /** La hora en que NUESTRO servidor la recibió — `null` si no se pudo leer. */
+  recibidoMs: number | null;
+  /** La hora real de Meta, si la trajo — `null` si no. */
+  timestampMs: number | null;
+}
+
+/** Resultado de `fotoAnteriorSinProcesar` cuando la lectura sí se pudo hacer. */
+export interface FotoAnteriorResultado {
+  /** Fotos sin procesar con `intentos < MAX_INTENTOS_PENDIENTE`: el cron
+   *  las va a tomar solo. El cierre debe aplazarse y esperar. */
+  vivas: number;
+  /** Fotos que agotaron sus intentos. Nunca van a procesarse solas. */
+  muertas: FotoAnteriorMuerta[];
+}
+
 /**
  * ¿Quedó una FOTO de este chofer, más vieja que este mensaje, sin procesar?
  *
@@ -934,13 +955,21 @@ export async function intentarLockViaje(viajeId: string, opts?: { ttlMs?: number
  * tuvo tiempo de llegar a la tabla: si está ahí, el «listo» se aplaza y el
  * cron lo vuelve a tomar, ahora sí después de ella.
  *
- * TRES estados: `true` = existe una foto anterior pendiente (incluidas las que
- * agotaron intentos), `false` = la lectura completa confirma que no existe,
- * `null` = no se pudo saber. Quien pretende CERRAR debe tratar `null` igual que
- * `true`: una falla de infraestructura no es evidencia de que el fajo terminó.
+ * AUDITORÍA 28 · BE-A3 (ALTO): una foto puede quedar sin procesar por dos
+ * razones muy distintas, y esta función ya NO las mezcla. `vivas` cuenta las
+ * que el cron todavía va a intentar (`intentos < MAX_INTENTOS_PENDIENTE`,
+ * `wa_pendientes.ts`); `muertas` trae las que agotaron sus intentos y son
+ * INVISIBLES para el cron — no hay salida automática que las procese, así
+ * que aplazar el "listo" en silencio las bloquearía para siempre. Antes esta
+ * función devolvía `true` para ambos casos por igual, y el doc-comment lo
+ * decía literalmente: era el defecto documentado, no el diseño.
+ *
+ * `null` = no se pudo saber (lectura caída). Quien pretende CERRAR debe
+ * tratar `null` igual que `vivas > 0`: una falla de infraestructura no es
+ * evidencia de que el fajo terminó.
  */
-export async function fotoAnteriorSinProcesar(telefono: string, mensajeMs: number): Promise<boolean | null> {
-  if (!telefono || !Number.isFinite(mensajeMs) || mensajeMs <= 0) return false;
+export async function fotoAnteriorSinProcesar(telefono: string, mensajeMs: number): Promise<FotoAnteriorResultado | null> {
+  if (!telefono || !Number.isFinite(mensajeMs) || mensajeMs <= 0) return { vivas: 0, muertas: [] };
   try {
     return await consultarFotoAnterior(telefono, mensajeMs);
   } catch (e) {
@@ -949,24 +978,47 @@ export async function fotoAnteriorSinProcesar(telefono: string, mensajeMs: numbe
   }
 }
 
-async function consultarFotoAnterior(telefono: string, mensajeMs: number): Promise<boolean | null> {
+interface FilaFotoAnterior {
+  id: string;
+  intentos: number;
+  recibido_en: string | null;
+  timestampMs: unknown;
+}
+
+async function consultarFotoAnterior(telefono: string, mensajeMs: number): Promise<FotoAnteriorResultado | null> {
   const { data, error } = await acotada(supabaseAdmin()
     .from('wa_evento_pendiente')
-    .select('id')
+    .select('id, intentos, recibido_en, timestampMs:evento->timestampMs')
     .is('procesado_en', null)
     .in('evento->>from', variantesTelefono(telefono))
     .eq('evento->>type', 'image')
     // `->` (jsonb) y no `->>`: con texto, «999…» compararía como cadena.
     .lt('evento->timestampMs', mensajeMs)
-    // orden-no-importa: esto pregunta si EXISTE alguna, no cuál. Con `limit(1)`
-    // el resultado es «hay» o «no hay», y las dos respuestas son las mismas sin
-    // importar qué fila devuelva la base.
-    .limit(1), 'fotoAnteriorSinProcesar');
+    // Desempate total: `recibido_en` puede empatar entre dos POSTs de la
+    // misma ráfaga; `id` (el wamid, PK) nunca.
+    .order('recibido_en')
+    .order('id')
+    // Un chofer no debería acumular más que un puñado de fotos sin procesar;
+    // 50 es margen generoso y evita traer la tabla entera si algo se descontroló.
+    .limit(50), 'fotoAnteriorSinProcesar');
   if (error) {
     logger.warn('inbox.foto_anterior_ilegible', { err: error.message });
     return null;
   }
-  return (data?.length ?? 0) > 0;
+  const filas = (data ?? []) as unknown as FilaFotoAnterior[];
+  let vivas = 0;
+  const muertas: FotoAnteriorMuerta[] = [];
+  for (const fila of filas) {
+    if (fila.intentos < MAX_INTENTOS_PENDIENTE) { vivas++; continue; }
+    const recibidoMs = fila.recibido_en ? Date.parse(fila.recibido_en) : Number.NaN;
+    const ts = typeof fila.timestampMs === 'number' ? fila.timestampMs : Number(fila.timestampMs);
+    muertas.push({
+      id: fila.id,
+      recibidoMs: Number.isFinite(recibidoMs) ? recibidoMs : null,
+      timestampMs: Number.isFinite(ts) ? ts : null,
+    });
+  }
+  return { vivas, muertas };
 }
 
 /**
