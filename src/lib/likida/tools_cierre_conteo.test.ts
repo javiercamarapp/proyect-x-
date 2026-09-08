@@ -55,7 +55,7 @@ vi.mock('./liquidacion/pdf', () => ({
 }));
 
 const saveLiquidacion = vi.fn(async (_t: string, _l: unknown, _p?: string, _n?: number, _s?: unknown) => 'liq-1');
-const leerSnapshotInsumosCierre = vi.fn(async () => ({ version: 1 as const, hash: 'a'.repeat(64) }));
+const leerSnapshotInsumosCierre = vi.fn(async () => ({ version: 2 as const, hash: 'a'.repeat(64) }));
 vi.mock('./repo', async () => {
   const real = await vi.importActual<typeof import('./repo')>('./repo');
   return {
@@ -92,8 +92,8 @@ beforeEach(() => {
   saveLiquidacion.mockResolvedValue('liq-1');
   leerSnapshotInsumosCierre.mockReset();
   leerSnapshotInsumosCierre
-    .mockResolvedValueOnce({ version: 1, hash: 'a'.repeat(64) })
-    .mockResolvedValue({ version: 1, hash: 'b'.repeat(64) });
+    .mockResolvedValueOnce({ version: 2, hash: 'a'.repeat(64) })
+    .mockResolvedValue({ version: 2, hash: 'b'.repeat(64) });
   cuadrarDesdeDB.mockClear();
   pdfsImpresos.length = 0;
   fotos = [conNGastos(5)];
@@ -105,7 +105,7 @@ describe('el cierre le dice a la base cuántos comprobantes archivó', () => {
     expect(r.success).toBe(true);
     expect(saveLiquidacion).toHaveBeenCalledTimes(1);
     expect(saveLiquidacion.mock.calls[0][3]).toBe(5);
-    expect(saveLiquidacion.mock.calls[0][4]).toEqual({ version: 1, hash: 'a'.repeat(64) });
+    expect(saveLiquidacion.mock.calls[0][4]).toEqual({ version: 2, hash: 'a'.repeat(64) });
     expect(cuadrarDesdeDB).toHaveBeenCalledWith('t1', 'v1', undefined, { modo: 'cierre' });
     expect(pdfsImpresos).toEqual([5, 5]);   // contralor + operador
   });
@@ -123,7 +123,7 @@ describe('si un gasto entra en la ventana, se vuelve a fotografiar UNA vez', () 
     expect(cuadrarDesdeDB).toHaveBeenCalledTimes(2);
     expect(saveLiquidacion).toHaveBeenCalledTimes(2);
     expect(saveLiquidacion.mock.calls[1][3]).toBe(6);
-    expect(saveLiquidacion.mock.calls[1][4]).toEqual({ version: 1, hash: 'b'.repeat(64) });
+    expect(saveLiquidacion.mock.calls[1][4]).toEqual({ version: 2, hash: 'b'.repeat(64) });
     // Los PDF se REIMPRIMEN con la fotografía nueva: archivar el papel viejo
     // sería exactamente el hallazgo, movido de sitio.
     expect(pdfsImpresos).toEqual([5, 5, 6, 6]);

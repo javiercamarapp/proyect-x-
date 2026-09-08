@@ -78,7 +78,7 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => VIAJE),
   getOperador: vi.fn(async () => OPERADOR),
   saveLiquidacion,
-  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 2, hash: 'a'.repeat(64) })),
   insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
@@ -168,7 +168,7 @@ describe('guardar_liquidacion — el cierre genera DOS ejemplares y cada uno es 
     // del candado del viaje (DAT-02); el 5º sella los insumos bajo el candado.
     expect(saveLiquidacion).toHaveBeenCalledWith(
       't1', LIQ, 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf', LIQ.gastos.length,
-      { version: 1, hash: 'a'.repeat(64) },
+      { version: 2, hash: 'a'.repeat(64) },
     );
   });
 

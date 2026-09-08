@@ -41,7 +41,7 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => ({ id: 'v1', folio: 'VJ-1', anticipo: 10600 })),
   getOperador: vi.fn(async () => ({ id: 'o1', nombre: 'Juan', telefono: '5219993700779' })),
   saveLiquidacion,
-  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 2, hash: 'a'.repeat(64) })),
   insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
