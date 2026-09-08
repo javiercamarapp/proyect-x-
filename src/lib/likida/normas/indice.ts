@@ -73,6 +73,23 @@ export interface Norma {
    * se enciende solo.
    */
   exigibleDesde?: string | null;
+  /**
+   * AUDITORÍA 28, FIS-M2 (MEDIO, mecánico): hasta cuándo la norma RIGE, si
+   * alguna fuente lo confirma. Espejo de `fecha_vigencia_hasta` en la ficha
+   * (ISO YYYY-MM-DD), `null` cuando la ficha lo confirma explícitamente como
+   * "no caduca / nadie lo ha visto expirar" (p. ej. una LEY sin vigencia
+   * fijada), y AUSENTE (`undefined`, sin declarar el campo) cuando la ficha
+   * no trae el dato — hoy la mayoría de las fichas, porque la RFA 2026 es la
+   * única familia con vigencia anual explícita.
+   *
+   * EL MOTOR NO LO LEE TODAVÍA. Existe para que la fecha de vencimiento sea
+   * un dato COTEJADO (`normas_sincronizadas.test.ts`) y no un comentario que
+   * nadie revisa el 1-ene-2027. Qué hacer cuando una ficha vence —fallar
+   * cerrado como `cuotaDieselVigente`, o seguir citando con una advertencia—
+   * es decisión de negocio pendiente (plan de auditoría §5.7), no algo que
+   * este campo decida por sí solo.
+   */
+  exigibleHasta?: string | null;
   /** Ruta de la ficha con el texto vigente y la trazabilidad. */
   ficha: string;
 }
@@ -266,6 +283,7 @@ export const NORMAS: Record<string, Norma> = {
     citas: ["LISR 27-III"],
     jerarquia: 1,
     estado: "evidencia_corroborante",
+    exigibleHasta: null,
     ficha: "normas/lisr-27-III.yaml",
   },
   'lisr-28-fr-V': {
@@ -299,6 +317,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 1,
     estado: "verificado_fuente_primaria",
     exigibleDesde: null,
+    exigibleHasta: null,
     ficha: "normas/lisr-72-73.yaml",
   },
   'liva-art-5': {
@@ -330,6 +349,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 3,
     estado: "verificado_fuente_primaria",
     exigibleDesde: "2026-02-18",
+    exigibleHasta: "2026-12-31",
     ficha: "normas/rfa-2026-2.1.yaml",
   },
   'rfa-2026-2.2': {
@@ -341,6 +361,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 3,
     estado: "verificado_fuente_primaria",
     exigibleDesde: "2026-02-18",
+    exigibleHasta: "2026-12-31",
     ficha: "normas/rfa-2026-2.2.yaml",
   },
   'rfa-2026-2.3': {
@@ -352,6 +373,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 3,
     estado: "verificado_fuente_primaria",
     exigibleDesde: "2026-02-18",
+    exigibleHasta: "2026-12-31",
     ficha: "normas/rfa-2026-2.3.yaml",
   },
   'rfa-2026-2.5': {
@@ -363,6 +385,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 3,
     estado: "verificado_fuente_primaria",
     exigibleDesde: "2026-02-18",
+    exigibleHasta: "2026-12-31",
     ficha: "normas/rfa-2026-2.5.yaml",
   },
   'rfa-2026-2.9': {
@@ -374,6 +397,7 @@ export const NORMAS: Record<string, Norma> = {
     jerarquia: 3,
     estado: "verificado_fuente_primaria",
     exigibleDesde: "2026-02-18",
+    exigibleHasta: "2026-12-31",
     ficha: "normas/rfa-2026-2.9.yaml",
   },
   'rlisr-57': {

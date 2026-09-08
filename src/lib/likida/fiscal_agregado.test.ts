@@ -296,7 +296,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const {
-  getGastosFiscales, resumirFiscal, resumirPerdidas, resumirCombustibleCasetas, tope15DeGastos,
+  getGastosFiscales, resumirFiscal, resumirPerdidas, resumirCombustibleCasetas,
   diagnosticoRetencion, cortesDePlazo, resolverPeriodo,
 } = await import('./fiscal');
 
@@ -325,7 +325,8 @@ function cifras(gastos: GastoFiscal[], o: OpcionesFiscales) {
     fiscal: resumirFiscal(gastos, o),
     perdidas,
     combustible: resumirCombustibleCasetas(gastos),
-    tope15: tope15DeGastos(gastos, o),
+    // AUDITORÍA 28, FIS-B2: `tope15DeGastos` se retiró (código muerto en
+    // producción); esta cubeta se quita de la equivalencia con ella.
     retencion: diagnosticoRetencion(gastos),
   };
 }
@@ -359,7 +360,6 @@ describe('getGastosFiscales — equivalencia: la ley sobre filas crudas vs sobre
     expect(v.fiscal.casetasSinSubTotal).toBe(1);
     expect(v.fiscal.porValidar).toBe(2);
     expect(v.perdidas.sinFecha).toBe(2);
-    expect(v.tope15.razon).toBeGreaterThan(0);
     expect(v.retencion.candidatos).toBe(1);
   });
 

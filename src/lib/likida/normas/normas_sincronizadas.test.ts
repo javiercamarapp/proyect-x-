@@ -23,6 +23,22 @@ function campo(txt: string, n: string): string | undefined {
 }
 
 /**
+ * AUDITORÍA 28, FIS-M2 (MEDIO, mecánico): a diferencia de `campo()`, esto
+ * distingue los TRES estados de un campo YAML: presente con valor, presente
+ * con `null` explícito, y AUSENTE. `campo()` colapsa los dos últimos —
+ * correcto para `fecha_vigencia_desde` (el índice también colapsa null y
+ * ausente a `null` ahí), pero `fecha_vigencia_hasta`/`exigibleHasta` necesita
+ * los tres para poder decir "nadie lo confirmó" (`null`) sin confundirlo con
+ * "esta ficha no trae el campo" (`undefined`).
+ */
+function campoTriEstado(txt: string, n: string): { presente: boolean; valor: string | null } {
+  const m = new RegExp(`^${n}:\\s*(.+)$`, 'm').exec(txt);
+  if (!m) return { presente: false, valor: null };
+  const v = m[1].trim().replace(/^["']|["']$/g, '');
+  return { presente: true, valor: v === 'null' ? null : v };
+}
+
+/**
  * El `titulo` de la ficha: inline entre comillas (el caso común) o un escalar
  * YAML plegado (`titulo: >`, líneas indentadas debajo). FISCAL (barrido
  * MEDIO/BAJO): `criterio-1-CFF-PI.yaml` usa la forma plegada, y quien copió el
@@ -126,6 +142,33 @@ describe('índice de normas vs fichas', () => {
       const enFicha = campo(f.txt, 'fecha_vigencia_desde') ?? null;
       const enIndice = NORMAS[f.id!].exigibleDesde ?? null;
       expect(enIndice, `fecha_vigencia_desde distinta en ${f.archivo}`).toBe(enFicha);
+    }
+  });
+
+  // ── AUDITORÍA 28, FIS-M2 (MEDIO, mecánico) ──────────────────────────────
+  //
+  // Espejo del `it` de arriba, pero para `fecha_vigencia_hasta`/
+  // `exigibleHasta`. A diferencia de `exigibleDesde` (que colapsa "sin
+  // confirmar" y "no aplica" al mismo `null`), aquí los TRES estados
+  // importan: una fecha real, `null` EXPLÍCITO ("se confirmó que no caduca"),
+  // y AUSENTE (la ficha no declara el campo — ni fecha ni null). Confundir
+  // "ausente" con "null confirmado" haría parecer verificado algo que nadie
+  // ha mirado.
+  it('la FECHA DE FIN DE VIGENCIA del índice es la de la ficha: fecha, null explícito o ausente', () => {
+    for (const f of fichas) {
+      const enFicha = campoTriEstado(f.txt, 'fecha_vigencia_hasta');
+      const enIndice = NORMAS[f.id!].exigibleHasta;
+      if (!enFicha.presente) {
+        expect(enIndice, `${f.archivo} no declara fecha_vigencia_hasta y el índice sí trae exigibleHasta`).toBeUndefined();
+      } else {
+        expect(enIndice, `fecha_vigencia_hasta distinta en ${f.archivo}`).toBe(enFicha.valor);
+      }
+    }
+  });
+
+  it('las cinco RFA 2026 traen fecha_vigencia_hasta (para que nadie la borre sin verla)', () => {
+    for (const id of ['rfa-2026-2.1', 'rfa-2026-2.2', 'rfa-2026-2.3', 'rfa-2026-2.5', 'rfa-2026-2.9']) {
+      expect(typeof NORMAS[id].exigibleHasta, `${id} debería traer fecha_vigencia_hasta`).toBe('string');
     }
   });
 });
@@ -259,6 +302,22 @@ describe('usado_en_codigo apunta a código que existe', () => {
     // silencio — el mismo modo de falla que este archivo existe para evitar.
     const rutas = fichas.flatMap((f) => usadoEnCodigo(f.txt)).map(rutaCitada).filter(Boolean);
     expect(rutas.length).toBeGreaterThan(15);
+  });
+});
+
+// ── AUDITORÍA 28, FIS-M2 (MEDIO, mecánico, opcional) ────────────────────────
+// El SKILL.md de vigilancia-normativa citaba "18 fichas" congelado, con 39 en
+// disco. Este `it` no copia el número real: lee la carpeta (`archivos`, ya
+// calculado arriba) y falla si SKILL.md vuelve a citar un conteo de fichas
+// que no coincida.
+describe('SKILL.md de vigilancia-normativa no congela el número de fichas', () => {
+  it('cualquier "<N> fichas" que cite coincide con el conteo real de normas/*.yaml', () => {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta fija de este repo, escrita en el propio archivo de prueba; no hay entrada de usuario.
+    const skill = readFileSync(new URL('../../../../.claude/skills/vigilancia-normativa/SKILL.md', import.meta.url), 'utf8');
+    const matches = [...skill.matchAll(/(\d+)\s+fichas/gi)];
+    for (const m of matches) {
+      expect(Number(m[1]), `SKILL.md cita "${m[0]}" y hay ${archivos.length} fichas en normas/*.yaml`).toBe(archivos.length);
+    }
   });
 });
 

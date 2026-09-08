@@ -1,6 +1,6 @@
 ---
 name: vigilancia-normativa
-description: Vigila el DOF, el minisitio del SAT y los textos de ley en diputados.gob.mx para detectar cuándo una de las 18 fichas de normas/ dejó de ser cierta, y abre PR marcándola como contradicha con el radio de impacto en el código. Úsala en el barrido diario, al preguntar si cambió alguna norma, antes de un demo o de facturar, cuando una ficha lleve meses sin verificar, o al revisar si el SAT publicó una modificación anticipada.
+description: Vigila el DOF, el minisitio del SAT y los textos de ley en diputados.gob.mx para detectar cuándo alguna de las fichas de `normas/*.yaml` dejó de ser cierta, y abre PR marcándola como contradicha con el radio de impacto en el código. Úsala en el barrido diario, al preguntar si cambió alguna norma, antes de un demo o de facturar, cuando una ficha lleve meses sin verificar, o al revisar si el SAT publicó una modificación anticipada.
 ---
 
 # Vigilancia normativa
@@ -29,7 +29,7 @@ Detalle de endpoints, qué respondió cada uno y qué rutas están muertas: `ref
 
 ## Cómo decide que algo cambió
 
-Cada ficha lleva `hash_texto_vigente` — SHA-256 del `texto_vigente` normalizado — y un bloque `vigilancia` con sus disparadores y su fuente. Cuando el barrido encuentra una publicación que toca los disparadores de una ficha:
+AUDITORÍA 28, FIS-M2 (MEDIO, mecánico): esto decía que "cada ficha lleva `hash_texto_vigente`... y un bloque `vigilancia`" — ninguna de las 39 fichas de `normas/*.yaml` trae hoy ninguno de los dos campos (verificado con `grep`). El mecanismo REAL es el del barrido: cruzar el TÍTULO de cada publicación del DOF contra el diccionario de disparadores (`Miscelánea Fiscal`, `facilidades administrativas`, `Ley de Ingresos`, `Código Fiscal`, `Impuesto sobre la Renta`, `valor agregado`, `producción y servicios`, `datos personales`, `autotransporte`, `Anexo`, `Nota Aclaratoria`, `Fe de erratas` — ver `references/prompt.md`, sección 1). Si un `hash_texto_vigente`/bloque `vigilancia` por ficha DEBERÍA existir (para detectar, ficha por ficha, que su `texto_vigente` cambió sin depender de palabras clave en un título), es trabajo pendiente — no algo ya construido. Cuando el barrido encuentra una publicación que toca los disparadores de una ficha:
 
 1. Marca `estado_verificacion: contradicho` y actualiza `verificado_el`.
 2. Pega el texto nuevo y el `codNota`.

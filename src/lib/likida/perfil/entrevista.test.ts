@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { interpretarTurno, estadoEntrevista, mensajeBienvenida, CATALOGO } from './entrevista';
+import { interpretarTurno, estadoEntrevista, mensajeBienvenida, CATALOGO, CATALOGO_POR_ID } from './entrevista';
 import { declararHechos, declararAusente, onboardingFiscalListo, calificaEstimuloPeaje, declararUmbralPeaje } from './preguntas';
 
 describe('entrevista — no inventa fiscal', () => {
@@ -9,6 +9,16 @@ describe('entrevista — no inventa fiscal', () => {
       expect(p.sustento.cita.length).toBeGreaterThan(3);
       expect(p.pregunta.length).toBeGreaterThan(10);
     }
+  });
+
+  // AUDITORÍA 28, FIS-M1 (MEDIO): la RFA 2026 regla 2.9 (verificado_fuente_
+  // primaria) dice SOLO "carga federal". Esta pregunta decía "carga federal,
+  // pasaje o turismo" y abría la misma facilidad del 15% para una flota que
+  // la regla no cubre. Pasaje/turismo foráneo es la RFA 3.12, sin ficha.
+  it('dedicacionExclusivaCarga NO menciona pasaje ni turismo (fail-closed hasta que exista ficha 3.12)', () => {
+    const p = CATALOGO_POR_ID.dedicacionExclusivaCarga.pregunta.toLowerCase();
+    expect(p).not.toMatch(/pasaje|turismo/);
+    expect(p).toMatch(/carga federal/);
   });
 
   it('perfil vacío: la primera pregunta es el umbral de $300M, requerida', () => {

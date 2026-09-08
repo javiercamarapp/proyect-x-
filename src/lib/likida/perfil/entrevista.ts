@@ -156,10 +156,19 @@ export const CATALOGO: PreguntaEntrevista[] = [
     chips: [{ valor: 'no_se', etiqueta: 'Lo busco en la constancia' }],
     requeridaParaPanel: false,
   },
+  // AUDITORÍA 28 (FIS-M1, MEDIO): esta pregunta incluía «pasaje o turismo».
+  // El texto VERIFICADO de la RFA 2026 regla 2.9 (normas/rfa-2026-2.9.yaml,
+  // verificado_fuente_primaria) dice SOLO «carga federal» — igual que 2.1 y
+  // 2.2, las otras dos reglas del mismo Título 2. El pasaje y el turismo
+  // foráneo son materia de la RFA 3.12 (citada como excepción distinta en
+  // `normas/lisr-27-III.yaml`), que NO tiene ficha en este repo. Contestar
+  // «sí» aquí abre la facilidad del 15%: una flota de pasaje/turismo que
+  // respondiera que sí quedaba declarada elegible sin serlo. Fail-closed:
+  // deja de abrir la 2.9 para pasaje/turismo hasta que exista ficha 3.12.
   {
     id: 'dedicacionExclusivaCarga',
     titulo: 'Dedicación exclusiva',
-    pregunta: '¿La flota se dedica exclusivamente al autotransporte terrestre de carga federal, pasaje o turismo?',
+    pregunta: '¿La flota se dedica exclusivamente al autotransporte terrestre de carga federal?',
     porQue: 'Es la válvula de la facilidad del 15% de combustible en efectivo (RFA 2.9) y una condición del estímulo de peaje.',
     sustento: {
       cita: 'RFA 2026 regla 2.9',

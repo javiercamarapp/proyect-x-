@@ -106,7 +106,9 @@ export interface NuevaFlota {
   /** RFA 2026 regla 2.9: ¿tributa en Título II Cap. VII (coordinados) o Título
    *  IV Cap. II Secc. I (PF con actividad empresarial)? — se captura como el
    *  código SAT real (c_RegimenFiscal) en `tenant.regimen_fiscal`, y la
-   *  elegibilidad se DERIVA de él (los códigos 601/612 son los que califican). */
+   *  elegibilidad se DERIVA de él (los códigos 624/612 son los que califican
+   *  — 601 NO entra: es Título II a secas, no Cap. VII. Ver el bloque
+   *  FISC-C2-1 más abajo, donde `REGIMENES_ELEGIBLES` lo aplica). */
   regimenFiscal?: string;
   /** Razón social TAL CUAL la Constancia de Situación Fiscal. Junto con el RFC,
    *  el régimen, el CP fiscal y el uso, forma los CINCO datos que el CFDI 4.0

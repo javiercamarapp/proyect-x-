@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolverPeriodo, periodoAnterior, PERIODO_POR_DEFECTO,
   causasDe, causaDominante, resumirPerdidas, resumirFiscal,
-  resumirCombustibleCasetas, tope15DeGastos, diagnosticoRetencion, aFilasExport,
+  resumirCombustibleCasetas, diagnosticoRetencion, aFilasExport,
   esCombustible, esDieselConIeps, ORDEN, TITULOS,
   type GastoFiscal, type OpcionesFiscales,
 } from './fiscal';
@@ -487,22 +487,11 @@ describe('resumirCombustibleCasetas', () => {
   });
 });
 
-describe('tope15DeGastos', () => {
-  it('la base es combustible contra combustible, no el gasto total', () => {
-    // El denominador equivocado haría parecer holgada a una flota que ya se pasó.
-    const r = tope15DeGastos([
-      gasto({ id: 'a', concepto: 'diesel', monto: 200, formaPago: '01' }),
-      gasto({ id: 'b', concepto: 'diesel', monto: 800, formaPago: '03' }),
-      gasto({ id: 'c', concepto: 'alimentacion', monto: 100000, formaPago: '01' }),
-    ], OPTS);
-    expect(r.razon).toBeCloseTo(0.2, 5);
-    expect(r.estado).toBe('excedido');
-  });
-
-  it('sin combustible no se afirma nada', () => {
-    expect(tope15DeGastos([gasto({ concepto: 'alimentacion', monto: 500 })], OPTS).estado).toBe('holgado');
-  });
-});
+// AUDITORÍA 28, FIS-B2: `tope15DeGastos` se retiró de fiscal.ts (código
+// muerto en producción; sus dos pruebas de esta base vivían aquí). Lo vivo
+// del 15% sigue probado: `evaluarTope15`/`avisoTope15` en
+// periodo/aviso.test.ts, y `combustibleEjercicioDe`/`proporcionCombustible15`
+// en fiscal_agregado.test.ts y fiscal_combustible15.test.ts.
 
 // ── Retenciones ────────────────────────────────────────────────────────────
 
