@@ -216,4 +216,25 @@ describe('el cableado', () => {
     // cambio SÍ puede seguir mencionando "--grep" en prosa.
     expect(wf).not.toContain("git log -i --grep");
   });
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // OP-A2 (auditoría 28, ALTO) — el pulso declara `cron: '*/30 * * * *'` pero
+  // la propia auditoría lo midió corriendo ~8 veces al día, con huecos de
+  // hasta 5h30. Nada en el repo medía la cadencia real del propio workflow.
+  // Este `it` exige que el pulso se mida a sí mismo y avise (no que decida)
+  // cuando se degrade — solo en schedule/workflow_dispatch, nunca en push.
+  // ═════════════════════════════════════════════════════════════════════════
+  it('OP-A2: el pulso mide su propia cadencia y avisa (::warning::) cuando se degrada, con permiso para leerse', () => {
+    const wf = readFileSync('.github/workflows/salud-produccion.yml', 'utf8');
+    expect(wf).toContain('actions: read');
+    expect(wf).toContain('contents: read');
+    expect(wf).toContain('issues: write');
+    expect(wf).toContain('gh run list');
+    expect(wf).toMatch(/salud-produccion\.yml/);
+    expect(wf).toContain('::warning::');
+    // El paso de cadencia no corre en push (ahí no hay "corrida programada
+    // anterior" que medir de la misma forma, y OP-C2 ya fija que push no
+    // evalúa invariantes de deriva).
+    expect(wf).toMatch(/github\.event_name\s*!=\s*'push'/);
+  });
 });
