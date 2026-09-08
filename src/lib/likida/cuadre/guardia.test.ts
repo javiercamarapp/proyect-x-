@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Liquidacion } from '@/types/likida';
+import { logger } from '@/lib/logger';
 
 // Se mockea el motor de cuadre desde DB para probar SOLO la lógica de la guardia
 // (ramas de reemplazo / passthrough / fail-closed), sin tocar Supabase.
@@ -311,6 +312,61 @@ describe('guardiaCifras — AG-3: el cierre usa el snapshot de guardar_liquidaci
     expect(r.reply).toContain('$8,000.00');
     expect(r.reply).not.toContain('500,000');
     expect(r.reply).not.toContain('492,000');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, TC-M4 — `estado_viaje` ES INVISIBLE PARA LA GUARDIA.
+//
+// El prompt del ayudante ORDENA llamar `estado_viaje` ante cualquier mensaje
+// abierto ("hola", "¿qué pasó?") y narrar esos números. Antes, si el modelo
+// llamaba SOLO esa tool (sin `consultar_politica`), la guardia no la contaba
+// como respaldo y sustituía la respuesta por un recálculo `best_effort` sin
+// desglose — se pagaba la tool, el modelo la citaba bien, y la guardia la
+// tiraba de todos modos por una tool que no tiene nada que ver.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('guardiaCifras — TC-M4: estado_viaje respalda cifras igual que consultar_politica', () => {
+  beforeEach(() => {
+    cuadrarDesdeDB.mockReset();
+    cuadrarDesdeDB.mockResolvedValue(LIQ);
+  });
+
+  const estadoViaje = {
+    origen: 'CDMX', destino: 'Monterrey', estatus: 'abierto', anticipo: 12000,
+    comprobado: 9681, comprobantes: 3, copias_excluidas: 1,
+    por_concepto: [{ concepto: 'diesel', total: 6000, n: 2 }, { concepto: 'caseta', total: 3681, n: 1 }],
+    litros_diesel_leidos: 120,
+  };
+
+  it('narra exactamente los números de estado_viaje (incluido un total de por_concepto): NO se fuerza', async () => {
+    const r = await guardiaCifras(
+      'Llevas comprobados $9,681 de tu anticipo de $12,000. En diésel van $6,000.',
+      [tcRes('estado_viaje', estadoViaje)],
+      't', 'v',
+    );
+    expect(r.forzado).toBe(false);
+    expect(cuadrarDesdeDB).not.toHaveBeenCalled();
+    expect(r.reply).toContain('$9,681');
+  });
+
+  it('estado_viaje + una cifra inventada: se fuerza al resumen de la base y se loguea sin respaldo', async () => {
+    const spy = vi.spyOn(logger, 'warn');
+    const r = await guardiaCifras(
+      'Llevas comprobados $9,681. Y te sobran $500 extra que nadie calculó.',
+      [tcRes('estado_viaje', estadoViaje)],
+      't', 'v',
+    );
+    expect(r.forzado).toBe(true);
+    expect(cuadrarDesdeDB).toHaveBeenCalledWith('t', 'v');
+    expect(spy).toHaveBeenCalledWith('guardia_cifras_sin_respaldo', expect.objectContaining({ cifras: expect.arrayContaining([500]) }));
+    spy.mockRestore();
+  });
+
+  it('los casos de T1-02 (cerró sin snapshot → texto neutro) siguen verdes', async () => {
+    const r = await guardiaCifras('sobró 999', [tc('guardar_liquidacion')], 't', 'v');
+    expect(r.forzado).toBe(true);
+    expect(cuadrarDesdeDB).not.toHaveBeenCalled();
+    expect(r.reply).toBe('Ya cerré tu liquidación ✅. Te mando el PDF.');
   });
 });
 
