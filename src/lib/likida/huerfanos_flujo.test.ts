@@ -205,6 +205,53 @@ describe('el chofer que manda fotos sin viaje abierto', () => {
     expect(salientes).toHaveLength(0);
   });
 
+  // ── AUDITORÍA 28, REN-A2 — GEMELA de `falloTecnico`, pero el freno es el
+  // presupuesto de IA de la flota, agotado ANTES de llamar al proveedor. NO es
+  // un fallo técnico, y reenviar HOY falla igual (el corte es a medianoche
+  // MX), así que el mensaje NO puede ser el mismo que `fallo_tecnico`.
+  const sinPresupuesto = () => extraerComprobante.mockResolvedValue({
+    legible: false, motivo: 'sin_presupuesto',
+    gasto: { concepto: 'otro', monto: 0, ocrConfianza: 0 },
+    costo: { modelo: 'ocr:sin_presupuesto', tokensIn: 0, tokensOut: 0, costoUsd: 0 },
+  });
+
+  it('si el techo de IA se agotó, el comprobante se guarda como fallo_ocr con la marca sinPresupuesto', async () => {
+    sinPresupuesto();
+    await processInbound(foto);
+    expect(guardarHuerfano).toHaveBeenCalledWith('t1', 'o1', expect.objectContaining({
+      motivo: 'fallo_ocr', rutaImagen: 't1/sin-viaje/HASH.jpg',
+    }));
+    expect(guardarHuerfano.mock.calls[0][2].gasto).toMatchObject({
+      ocrExtra: expect.objectContaining({ sinPresupuesto: true }),
+    });
+  });
+
+  it('y el mensaje dice cupo de IA, no "se me trabó" ni "buena luz" ni "en un rato"', async () => {
+    sinPresupuesto();
+    await processInbound(foto);
+    const m = salientes.join(' ');
+    expect(m).toMatch(/cupo de ia/i);
+    expect(m).not.toMatch(/se me trabó/i);
+    expect(m).not.toMatch(/difícil de leer|buena luz/i);
+    expect(m).not.toMatch(/en un rato/i);
+    expect(m).toMatch(/mañana/i);
+  });
+
+  it('si además NO se pudo guardar, lo dice en vez de dejarlo creer que sí', async () => {
+    sinPresupuesto();
+    guardarHuerfano.mockResolvedValue(false);
+    await processInbound(foto);
+    expect(salientes.join(' ')).toMatch(/tampoco lo pude guardar/i);
+  });
+
+  it('en una ráfaga no da once explicaciones del mismo cupo agotado', async () => {
+    sinPresupuesto();
+    getHuerfanos.mockResolvedValue([HUERFANO('a', 0), HUERFANO('b', 0)]);
+    await processInbound(foto);
+    expect(guardarHuerfano).toHaveBeenCalled();
+    expect(salientes).toHaveLength(0);
+  });
+
   it('una foto ilegible se pide otra vez, no se guarda basura', async () => {
     extraerComprobante.mockResolvedValue({
       legible: false, motivo: 'ilegible',
@@ -252,6 +299,24 @@ describe('cuando por fin hay viaje, se pregunta antes de adjuntar', () => {
       motivo: 'fallo_ocr', viajeId: 'v1',
       gasto: expect.objectContaining({ imgHash: 'HASH' }),
     }));
+  });
+
+  it('AUDITORÍA 28, REN-A2: con viaje, el techo de IA agotado también queda ligado al viaje con la marca sinPresupuesto', async () => {
+    getHuerfanos.mockResolvedValue([]);
+    extraerComprobante.mockResolvedValue({
+      legible: false, motivo: 'sin_presupuesto',
+      gasto: { concepto: 'otro', monto: 0, ocrConfianza: 0 },
+      costo: { modelo: 'ocr:sin_presupuesto', tokensIn: 0, tokensOut: 0, costoUsd: 0 },
+    });
+
+    await processInbound(foto);
+
+    expect(guardarHuerfano).toHaveBeenCalledWith('t1', 'o1', expect.objectContaining({
+      motivo: 'fallo_ocr', viajeId: 'v1',
+    }));
+    expect(guardarHuerfano.mock.calls[0][2].gasto).toMatchObject({
+      ocrExtra: expect.objectContaining({ sinPresupuesto: true }),
+    });
   });
 
   it('al reintentar y guardar la misma foto, resuelve durablemente su incidente OCR', async () => {

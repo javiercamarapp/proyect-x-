@@ -83,15 +83,38 @@ function prepararZxing(): Promise<void> {
  *  constante para que las dos no se desincronicen. */
 export const ANCHO_PRINCIPAL_PX = 1600;
 
+/** Lo que devuelve `decodificarCodigosYReducir`: los códigos de la foto y,
+ *  aparte, el buffer ya reescalado a `ANCHO_PRINCIPAL_PX` — la MISMA pasada de
+ *  `sharp` que se usó para buscar códigos, reusable por quien mande la foto a
+ *  visión (ver AUDITORÍA 28, REN-A2/REN-B1, más abajo). */
+export interface CodigosYReducida {
+  codigos: CodigoLeido[];
+  /** `null` si la decodificación entera falló (mismo catch de siempre) — en
+   *  ese caso tampoco hay reducida que reusar y el llamador cae a su propio
+   *  redimensionado. */
+  reducida: Buffer | null;
+}
+
 /**
- * Lee TODOS los códigos de una foto: QR y códigos de barras 1D.
+ * Lee TODOS los códigos de una foto (QR y códigos de barras 1D) Y CONSERVA la
+ * pasada a `ANCHO_PRINCIPAL_PX` para que quien mande la foto a visión no la
+ * vuelva a calcular.
  *
  * Por qué zxing y no jsQR: sobre la foto de campo de `__fixtures__` —un
  * acercamiento deliberado al ticket— jsQR falla en 1600, 1200 y 900 px, y aun
  * si leyera el QR no puede ver el Code93, porque jsQR solo lee 2D. El folio de
  * facturación del ticket viaja justo en ese código de barras.
+ *
+ * AUDITORÍA 28, REN-B1 (BAJO, reincidente de la 25): `extraerComprobante`
+ * (ocr.ts) llamaba a esta decodificación Y DESPUÉS, por separado, a
+ * `redimensionarParaVision` — la MISMA pasada de `ANCHO_PRINCIPAL_PX` sobre el
+ * MISMO buffer, otra vez. Caso común (ticket sin código): 1600 + 1000 + 1600 =
+ * 3 pasadas de `sharp` sobre un JPEG de hasta 6 MB. Aquí se conserva el buffer
+ * de la primera pasada (`ANCHO_PRINCIPAL_PX`) en vez de tirarlo, así que el
+ * llamador puede reusarlo: 1600 + 1000 (o solo 1600 si el CFDI/liga ya salió
+ * ahí) — nunca una tercera.
  */
-export async function decodeCodigosFromImage(image: Buffer): Promise<CodigoLeido[]> {
+export async function decodificarCodigosYReducir(image: Buffer): Promise<CodigosYReducida> {
   try {
     await prepararZxing();
     // `.rotate()` aplica la orientación EXIF: sharp trabaja sobre píxeles crudos
@@ -111,9 +134,16 @@ export async function decodeCodigosFromImage(image: Buffer): Promise<CodigoLeido
     // códigos de las dos pasadas (dedupe por formato+texto) y solo se corta
     // temprano cuando ya apareció el dato que de verdad importa —CFDI o liga—,
     // no con cualquier código.
+    //
+    // NOTA: la pasada de 1000 px SIEMPRE sale del `image` ORIGINAL, nunca del
+    // JPEG ya reducido a 1600: re-codificar a JPEG cambia los píxeles, y hay un
+    // ticket real (Office Depot, `codigos.test.ts`) cuyo QR solo se lee a
+    // 1000 px exactos. Encadenar las pasadas rompería justo ese caso.
     const vistos = new Map<string, CodigoLeido>();
+    let reducida: Buffer | null = null;
     for (const ancho of [ANCHO_PRINCIPAL_PX, 1000]) {
       const buf = await sharp(image).rotate().resize({ width: ancho, withoutEnlargement: true }).jpeg().toBuffer();
+      if (ancho === ANCHO_PRINCIPAL_PX) reducida = buf;
       const leidos = await readBarcodes(new Blob([new Uint8Array(buf)]), { tryHarder: true });
       for (const r of leidos) {
         if (!r.text) continue;
@@ -122,10 +152,19 @@ export async function decodeCodigosFromImage(image: Buffer): Promise<CodigoLeido
       }
       if ([...vistos.values()].some((c) => c.cfdi || c.urlFacturacion)) break;
     }
-    return [...vistos.values()];
+    return { codigos: [...vistos.values()], reducida };
   } catch {
-    return [];
+    return { codigos: [], reducida: null };
   }
+}
+
+/**
+ * Compatibilidad: solo los códigos, sin la reducida. `decodeQrFromImage` y las
+ * pruebas de este archivo llaman esta forma; el camino nuevo que sí necesita
+ * la reducida (`extraerComprobante`) usa `decodificarCodigosYReducir` directo.
+ */
+export async function decodeCodigosFromImage(image: Buffer): Promise<CodigoLeido[]> {
+  return (await decodificarCodigosYReducir(image)).codigos;
 }
 
 /**

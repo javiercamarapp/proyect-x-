@@ -13,10 +13,10 @@ import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
 import { generateStructured, StructuredError, TruncatedError, resumenCausa } from '@/lib/llm/openrouter';
-import type { LlmBudget } from '@/lib/llm/budget';
+import { esErrorDePresupuesto, type LlmBudget } from '@/lib/llm/budget';
 import { alertarOperador, contadorDeFallos } from '@/lib/observability/alerta';
 import { bufferFromDataUrl, esRfcValido, esUuidValido, rfcChecksumOk } from './cfdi';
-import { decodeCodigosFromImage, redimensionarParaVision } from './cfdi_imagen';
+import { decodificarCodigosYReducir, redimensionarParaVision } from './cfdi_imagen';
 import { normalizarFecha, corregirVolteoDiaMes } from './fecha';
 import { hoyMx } from '@/lib/formato';
 import { sanitizarFolio, sanitizarTexto, sanitizarProducto } from './sanitizar';
@@ -226,8 +226,14 @@ NO CONFUNDIR: "CLAVE PEMEX 32011" (o similar) es un código INTERNO de producto 
  *                     gasto: en 14 fotos reales duplicó $1,600. Igual que el
  *                     acercamiento, se pega al comprobante que le corresponde en
  *                     vez de darse de alta.
+ * - `sin_presupuesto` → el techo diario de IA de la flota (o de la corrida) se
+ *                     agotó ANTES de llamar al proveedor. Reenviar HOY falla
+ *                     igual; mañana (corte a medianoche MX) o con el tope
+ *                     subido, entra. No es un fallo del proveedor ni de la
+ *                     foto — es el freno de dinero haciendo su trabajo
+ *                     (auditoría 28, REN-A2).
  */
-export const MOTIVOS_FALLO = ['ilegible', 'fallo_tecnico', 'solo_codigo', 'solo_pago'] as const;
+export const MOTIVOS_FALLO = ['ilegible', 'fallo_tecnico', 'solo_codigo', 'solo_pago', 'sin_presupuesto'] as const;
 export type MotivoFallo = typeof MOTIVOS_FALLO[number];
 
 /**
@@ -352,6 +358,25 @@ function abortado(err: unknown, signal?: AbortSignal): boolean {
 }
 
 /**
+ * Los campos de `LlmBudgetExceededError` (`scope`, `requestedUsd`, `limitUsd`),
+ * atravesando `cause` igual que `esErrorDePresupuesto` — la excepción real
+ * puede llegar envuelta (`generateWithTools` envuelve cualquier fallo del
+ * ciclo). Solo para el log; la decisión de "es o no presupuesto" la toma
+ * `esErrorDePresupuesto`.
+ */
+function datosDePresupuesto(err: unknown, profundidad = 6): { scope?: string; requestedUsd?: number; limitUsd?: number } {
+  let cur: unknown = err;
+  for (let i = 0; i < profundidad && cur && typeof cur === 'object'; i++) {
+    const o = cur as { scope?: unknown; requestedUsd?: unknown; limitUsd?: unknown; cause?: unknown };
+    if (typeof o.scope === 'string' && typeof o.requestedUsd === 'number' && typeof o.limitUsd === 'number') {
+      return { scope: o.scope, requestedUsd: o.requestedUsd, limitUsd: o.limitUsd };
+    }
+    cur = o.cause;
+  }
+  return {};
+}
+
+/**
  * Extrae un comprobante de UNA o VARIAS fotos del mismo ticket.
  *
  * El protocolo de dos fotos sale de una medición, no de una preferencia: sobre
@@ -383,29 +408,41 @@ export async function extraerComprobante(
 
   // Los códigos, primero: son gratis frente a una llamada de visión y deciden
   // sobre CUÁL foto vale la pena gastar el OCR.
-  // Sin try/catch alrededor: `decodeCodigosFromImage` ya devuelve [] ante
-  // cualquier fallo, y un catch de más aquí se traga errores de programación
-  // (se comió un import faltante y lo hizo pasar por "esta foto no traía código").
-  const codigosPorFoto = await Promise.all(fotos.map((f) => decodeCodigosFromImage(bufferFromDataUrl(f))));
-  const codigos = codigosPorFoto.flat();
+  // Sin try/catch alrededor: `decodificarCodigosYReducir` ya devuelve
+  // `{ codigos: [], reducida: null }` ante cualquier fallo, y un catch de más
+  // aquí se traga errores de programación (se comió un import faltante y lo
+  // hizo pasar por "esta foto no traía código").
+  const resultadosPorFoto = await Promise.all(fotos.map((f) => decodificarCodigosYReducir(bufferFromDataUrl(f))));
+  const codigos = resultadosPorFoto.flatMap((r) => r.codigos);
   // La foto sin código es la del ticket completo (el acercamiento se tomó PARA
   // el código, así que trae poco texto). Si todas traen código, la primera.
-  const iSinCodigo = codigosPorFoto.findIndex((c) => c.length === 0);
-  const principalOriginal = fotos[iSinCodigo >= 0 ? iSinCodigo : 0];
+  const iSinCodigo = resultadosPorFoto.findIndex((r) => r.codigos.length === 0);
+  const iPrincipal = iSinCodigo >= 0 ? iSinCodigo : 0;
+  const principalOriginal = fotos[iPrincipal];
 
-  // AUDITORÍA 25, BAJO (REND-A9, REINCIDENTE): la foto iba al modelo de visión
-  // a resolución NATIVA aunque `decodeCodigosFromImage` ya calculó (y tiró) el
-  // mismo buffer reducido dos líneas arriba. Un ticket de iPhone reciente
-  // (4032×3024, ~4-5 MB) sube 5.3-6.7 MB de base64 dentro del cuerpo JSON, y
-  // ese cuerpo se reenvía hasta cuatro veces por la escalera de reintentos de
-  // `openrouter.ts`. Si el redimensionado falla, se manda el original: la
-  // foto nunca se pierde por un problema de `sharp`.
+  // AUDITORÍA 25/28, BAJO (REN-B1, REINCIDENTE): la foto iba al modelo de
+  // visión a resolución NATIVA, o —tras la 25— pasaba OTRA VEZ por `sharp` a
+  // 1600 px aunque `decodificarCodigosYReducir` ya hubiera calculado esa misma
+  // pasada dos líneas arriba. Un ticket de iPhone reciente (4032×3024, ~4-5 MB)
+  // sube 5.3-6.7 MB de base64 dentro del cuerpo JSON, y ese cuerpo se reenvía
+  // hasta cuatro veces por la escalera de reintentos de `openrouter.ts`.
+  // Antes: 1600 (códigos) + 1000 (códigos) + 1600 (visión) = 3 pasadas en el
+  // caso común. Ahora: se reusa la reducida de la foto principal si la hubo
+  // (2 pasadas, o 1 si el CFDI/liga salió ya a 1600) y solo se cae al
+  // redimensionado de siempre —UNA pasada más— si por lo que sea no quedó
+  // ninguna (falló `sharp` en la decodificación). Si ESE también falla, se
+  // manda el original: la foto nunca se pierde por un problema de `sharp`.
   let principal = principalOriginal;
-  try {
-    const reducida = await redimensionarParaVision(bufferFromDataUrl(principalOriginal));
-    principal = `data:image/jpeg;base64,${reducida.toString('base64')}`;
-  } catch (e) {
-    logger.warn('ocr.redimension_fallo', { err: e instanceof Error ? e.message : String(e) });
+  const reducidaPrevia = resultadosPorFoto[iPrincipal]?.reducida;
+  if (reducidaPrevia) {
+    principal = `data:image/jpeg;base64,${reducidaPrevia.toString('base64')}`;
+  } else {
+    try {
+      const reducida = await redimensionarParaVision(bufferFromDataUrl(principalOriginal));
+      principal = `data:image/jpeg;base64,${reducida.toString('base64')}`;
+    } catch (e) {
+      logger.warn('ocr.redimension_fallo', { err: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   let res: Awaited<ReturnType<typeof generateStructured<z.infer<typeof ExtraccionSchema>>>>;
@@ -426,6 +463,35 @@ export async function extraerComprobante(
     // Aquí solo caen fallos NUESTROS: respuesta truncada, provider caído,
     // timeout, schema roto. Por eso el motivo es 'fallo_tecnico' y el costo se
     // contabiliza (la llamada se cobró aunque no sirviera).
+    //
+    // AUDITORÍA 28, REN-A2: la ÚNICA excepción es el freno de presupuesto.
+    // `reserveLlmBudget` corre FUERA del try que envuelve al proveedor
+    // (openrouter.ts:712-731), así que `LlmBudgetExceededError` llega aquí
+    // DESNUDA — y hasta este cambio caía en el resto del catch como si fuera
+    // un fallo técnico cualquiera: 'ocr.caido' al 5.º seguido y "se me trabó,
+    // reenvíamela en un ratito" a un chofer cuyo reenvío iba a fallar IDÉNTICO
+    // hasta la medianoche de México (el corte del día de la RPC de presupuesto).
+    // No es un defecto: es el freno de dinero haciendo su trabajo, y se
+    // distingue ANTES de cualquier log o contador de fallos del proveedor.
+    if (esErrorDePresupuesto(e)) {
+      const { scope, requestedUsd, limitUsd } = datosDePresupuesto(e);
+      // warn, no error: no es un bug nuestro, es el freno funcionando.
+      logger.warn('ocr.sin_presupuesto', { scope, requestedUsd, limitUsd, causa: resumenCausa(e) });
+      // NADA de vigilante.fallo() / 'ocr.caido' / 'ocr.credencial': el
+      // proveedor ni se llamó, así que no es evidencia de que esté caído. Y
+      // tampoco vigilante.exito() — no fue un éxito —: el contador de fallos
+      // SEGUIDOS del proveedor queda exactamente como estaba.
+      return {
+        gasto: { id: randomUUID(), concepto: 'otro', monto: 0, ocrConfianza: 0 },
+        legible: false,
+        motivo: 'sin_presupuesto',
+        // AQUÍ el 0 SÍ es verdad: la llamada al proveedor nunca se hizo, así
+        // que no hay costo que medir ni ocultar. Difiere del abort de RES-4
+        // (más abajo, `noMedido`): ahí el proveedor PUDO haber cobrado la
+        // llamada y el 0 es "no se sabe"; aquí es "no se llamó".
+        costo: { modelo: 'ocr:sin_presupuesto', tokensIn: 0, tokensOut: 0, costoUsd: 0 },
+      };
+    }
     const err = e as StructuredError;
     const truncado = e instanceof TruncatedError;
     const { status, codigo } = codigoYStatus(e);

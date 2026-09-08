@@ -1069,6 +1069,16 @@ function causaDeFondo(e: unknown): unknown {
 const COLOFON_NO_CERRE = 'Todavía *NO* cerré tu liquidación: tu viaje sigue abierto. En un momento vuelve a escribirme *listo* y la cierro.';
 const COLOFON_SIN_PRESUPUESTO = 'Hoy tu flota ya agotó su cupo de IA, así que todavía *NO* cerré tu liquidación: tu viaje sigue abierto y tus comprobantes quedan guardados. Mañana escríbeme *listo* otra vez, o pídele a tu contralor que suba el tope hoy.';
 
+// AUDITORÍA 28, REN-A2 — gemelas de COLOFON_SIN_PRESUPUESTO, pero para la FOTO
+// individual (no el cierre): el techo diario de IA de la flota se agotó ANTES
+// de llamar al proveedor. No es un fallo técnico (nada de "se me trabó" ni
+// "en un rato"), porque reenviar HOY falla IDÉNTICO — el corte es a
+// medianoche MX. El papel SÍ se guarda (huérfano `fallo_ocr`, ver el CHECK de
+// la 0073 más abajo), así que la única diferencia entre las dos variantes es
+// si esa foto en particular alcanzó a guardarse.
+const MENSAJE_FOTO_SIN_PRESUPUESTO = 'Hoy tu flota ya agotó su cupo de IA 💤 — no es tu foto. Guardé la imagen para tu oficina, así que el papel *no se pierde*, pero no alcancé a leer el monto: reenvíamela mañana, o pídele a tu contralor que suba el tope hoy. 📸';
+const MENSAJE_FOTO_SIN_PRESUPUESTO_SIN_GUARDAR = 'Hoy tu flota ya agotó su cupo de IA 💤 — no es tu foto — y tampoco lo pude guardar. Conserva el ticket y reenvíamelo mañana, o pídele a tu contralor que suba el tope hoy. 🙏';
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA 24 · AGEN-4 (ALTO) — TODA muerte posterior al commit del cierre
@@ -2084,6 +2094,40 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
           // porque marcarlos 'descartado' escribiría en la base algo que el
           // operador no dijo; el arreglo va en la lectura (filtrar por monto en
           // la consulta, o subir el tope) y queda anotado.
+          // AUDITORÍA 28, REN-A2 — GEMELA de la rama de abajo, pero ANTES: el
+          // techo diario de IA de la flota se agotó ANTES de llamar al
+          // proveedor (`LlmBudgetExceededError`, ver ocr.ts). NO es un fallo
+          // técnico — el freno de dinero hizo su trabajo — así que el chofer
+          // NO puede resolverlo reenviando HOY: el corte de la RPC de
+          // presupuesto es a medianoche MX, y un motivo desconocido caería a
+          // "difícil de leer" (:2139 hoy), que sería PEOR que decir la verdad.
+          // Se guarda como huérfano `fallo_ocr` porque el CHECK de la 0073
+          // (`comprobante_huerfano.motivo`) no admite un motivo nuevo sin
+          // migración —fuera de este lote—, y funcionalmente da igual:
+          // `resolverIncidenteOcrDeEstaFoto` casa el reenvío por `imgHash` y
+          // resuelve el huérfano igual que cualquier otro `fallo_ocr`. La
+          // marca `sinPresupuesto` en `ocrExtra` (jsonb, sin esquema) es lo
+          // que le dice a la oficina POR QUÉ ese huérfano no tiene monto.
+          if (!ex.legible && ex.motivo === 'sin_presupuesto') {
+            const guardado = await guardarHuerfano(op.tenantId, op.operadorId, {
+              gasto: {
+                ...ex.gasto, imgHash, ...(ruta ? { imagenUrl: ruta } : {}),
+                ocrExtra: { ...(ex.gasto.ocrExtra ?? {}), sinPresupuesto: true },
+              },
+              motivo: 'fallo_ocr', rutaImagen: ruta,
+            });
+            logger.warn('huerfano.sin_presupuesto', {
+              tenant: op.tenantId, operador: op.operadorId, guardado, conImagen: Boolean(ruta),
+            });
+            if (!guardado) {
+              await sendText(msg.from, MENSAJE_FOTO_SIN_PRESUPUESTO_SIN_GUARDAR);
+              return;
+            }
+            // MISMO CRITERIO QUE EL ACUSE DE ABAJO: una explicación por ráfaga.
+            const enEspera = await getHuerfanos(op.tenantId, op.operadorId);
+            if (enEspera.length <= 1) await sendText(msg.from, MENSAJE_FOTO_SIN_PRESUPUESTO);
+            return;
+          }
           if (!ex.legible && ex.motivo === 'fallo_tecnico') {
             const guardado = await guardarHuerfano(op.tenantId, op.operadorId, {
               gasto: { ...ex.gasto, imgHash, ...(ruta ? { imagenUrl: ruta } : {}) },
@@ -2641,6 +2685,29 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
               // el reenvío, y eso es lo que se pide.
               ? 'Se me trabó a mí al leer ese comprobante ⚙️ — no es tu foto. Guardé la imagen para tu oficina, así que el papel *no se pierde*, pero no alcancé a leer el monto: reenvíamela en un momento para poder contarla. 📸'
               : 'Se me trabó a mí al leer ese comprobante ⚙️ y tampoco lo pude guardar. Conserva el ticket y reenvíamelo en un rato, por favor. 🙏',
+          });
+          return;
+        }
+        // AUDITORÍA 28, REN-A2 — GEMELA de `avisar_falla`, pero el freno fue
+        // el presupuesto de IA de la flota, no un fallo del proveedor: el
+        // mensaje NO promete "en un momento" (reenviar HOY falla igual, el
+        // corte es a medianoche MX) y pide mañana o que el contralor suba el
+        // tope.
+        if (decision.accion === 'avisar_sin_presupuesto') {
+          const ruta = await subida;
+          const guardado = await guardarHuerfano(op.tenantId, op.operadorId, {
+            gasto: {
+              ...gasto,
+              imgHash,
+              ...(ruta ? { imagenUrl: ruta } : {}),
+              ocrExtra: { ...(gasto.ocrExtra ?? {}), sinPresupuesto: true },
+            },
+            motivo: 'fallo_ocr', rutaImagen: ruta, viajeId,
+          });
+          logger.warn('foto.sin_presupuesto_guardada', { viaje: viajeId, tenant: op.tenantId, guardado, conImagen: Boolean(ruta) });
+          anotarIncidencia(viajeId, {
+            tipo: 'sin_presupuesto',
+            mensajeSolo: guardado ? MENSAJE_FOTO_SIN_PRESUPUESTO : MENSAJE_FOTO_SIN_PRESUPUESTO_SIN_GUARDAR,
           });
           return;
         }
