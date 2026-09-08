@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
+import { logger } from '@/lib/logger';
+// `@/lib/llm/budget` NO está mockeado en este archivo: `esErrorDePresupuesto`
+// y `LlmBudgetExceededError` son los reales (funciones puras, sin red ni
+// Supabase), así que las pruebas de TC-B3 usan la clase de verdad.
+import { LlmBudgetExceededError } from '@/lib/llm/budget';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EL REDACTOR (C5) — los contratos que el código debe sostener:
@@ -573,5 +578,52 @@ describe('el Redactor pide SCHEMA, no markdown (los 3 fallos de la primera pasad
     const llamada = generateStructured.mock.calls[0][0] as { budget: unknown };
     expect(llamada.budget).toBeUndefined();
     expect(encolarPieza).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, TC-B3 — el `break` del runner por presupuesto era código
+// muerto: `redactarCorreoFrio` aplanaba CUALQUIER error —incluido el tope de
+// presupuesto que `reserveLlmBudget` lanza dentro de `generateStructured`— en
+// el mismo `DatoInvalido` genérico, y el runner solo sabía reconocer
+// `DatoInvalido` con el mensaje "no pudo escribir en este momento". El tope de
+// dinero se contaba entonces como "el modelo no está contestando"
+// (`fallosModeloSeguidos`), disparando una alerta que culpa al modelo.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('el Redactor propaga el tope de presupuesto SIN disfrazarlo de fallo del modelo (TC-B3)', () => {
+  const listo = () => {
+    respuestas.set('prospecto', [{ data: PROSPECTO, error: null }]);
+    respuestas.set('prospecto_contacto', [{ data: [], error: null }]);
+    respuestas.set('cola_aprobacion', [{ data: [], error: null }]);
+  };
+
+  it('generateStructured lanza LlmBudgetExceededError → se propaga TAL CUAL (no DatoInvalido)', async () => {
+    listo();
+    const tope = new LlmBudgetExceededError('run', 0.05, 0.03);
+    generateStructured.mockRejectedValueOnce(tope);
+    await expect(redactarCorreoFrio('pr-1', 'Javier', 'cron', CONTEXTO)).rejects.toBe(tope);
+    expect(encolarPieza).not.toHaveBeenCalled();
+  });
+
+  it('la corrida se registra en fallo con el motivo de presupuesto, y NO se loguea redactor.modelo_fallo', async () => {
+    listo();
+    const errorLoggerSpy = vi.mocked(logger.error);
+    errorLoggerSpy.mockClear();
+    const tope = new LlmBudgetExceededError('tenant', 0.5, 0.4);
+    generateStructured.mockRejectedValueOnce(tope);
+    await expect(redactarCorreoFrio('pr-1', 'Javier', 'cron', CONTEXTO)).rejects.toBe(tope);
+    const corrida = registrarCorrida.mock.calls[0][2] as { estado: string; error: string };
+    expect(corrida.estado).toBe('fallo');
+    expect(corrida.error).toMatch(/presupuesto/i);
+    expect(errorLoggerSpy).not.toHaveBeenCalledWith('redactor.modelo_fallo', expect.anything());
+  });
+
+  it('un DatoInvalido genuino (no de presupuesto) sigue el camino de siempre: modelo_fallo se loguea', async () => {
+    listo();
+    const errorLoggerSpy = vi.mocked(logger.error);
+    errorLoggerSpy.mockClear();
+    generateStructured.mockRejectedValueOnce(new Error('boom del proveedor'));
+    await expect(redactarCorreoFrio('pr-1', 'Javier', 'cron', CONTEXTO)).rejects.toThrow(/no pudo escribir/);
+    expect(errorLoggerSpy).toHaveBeenCalledWith('redactor.modelo_fallo', expect.anything());
   });
 });

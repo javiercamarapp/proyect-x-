@@ -32,7 +32,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
 import { estaApagado, INTERRUPTORES, type NombreInterruptor } from '../interruptores';
 import { hoyMx } from '@/lib/formato';
-import { LlmBudgetExceededError, createLlmBudget, type LlmBudget } from '@/lib/llm/budget';
+import { esErrorDePresupuesto, createLlmBudget, type LlmBudget } from '@/lib/llm/budget';
 import { alertarOperador } from '@/lib/observability/alerta';
 import { DatoInvalido } from '../errores';
 import { redactarCorreoFrio } from './redactor';
@@ -556,7 +556,18 @@ async function loteRedactor(
     } catch (e) {
       // La RPC central ya hizo la decisión atómica. No se trata como un
       // prospecto inválido ni se sigue fabricando: el techo es de la corrida.
-      if (e instanceof LlmBudgetExceededError) break;
+      //
+      // AUDITORÍA 28, TC-B3: antes este `instanceof` era código muerto —
+      // `redactarCorreoFrio` aplanaba TODO error, incluido el tope de
+      // presupuesto, en `DatoInvalido` — y el tope se contaba como fallo del
+      // modelo (`fallosModeloSeguidos` de abajo), disparando una alerta que
+      // culpaba al modelo por quedarse sin presupuesto. `esErrorDePresupuesto`
+      // reconoce el tope aunque venga envuelto por el ciclo de reintentos de
+      // `generateStructured` (mismo criterio que ya usa el processor).
+      if (esErrorDePresupuesto(e)) {
+        motivoCorte = `el lote se cortó por presupuesto de IA agotado (${e instanceof Error ? e.message.slice(0, 160) : String(e)}) — lo que se fabricó queda; el resto le toca en la próxima corrida con techo disponible`;
+        break;
+      }
       // Guarda legítima o fallo puntual: se cuenta y se sigue — un prospecto
       // atorado no puede parar el lote entero. El detalle ya quedó en la
       // corrida/log del redactor.

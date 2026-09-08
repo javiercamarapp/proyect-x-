@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DatoInvalido } from '../errores';
+// `@/lib/llm/budget` NO está mockeado en esta suite: `LlmBudgetExceededError`
+// es la clase real (TC-B3, auditoría 28).
+import { LlmBudgetExceededError } from '@/lib/llm/budget';
 
 const alertarOperador = vi.fn(async (..._a: unknown[]) => undefined);
 vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: (...a: unknown[]) => alertarOperador(...a) }));
@@ -328,6 +331,47 @@ describe('el lote', () => {
     expect(alertarOperador).not.toHaveBeenCalled();
     expect(r.agentes[0].motivo).toBeUndefined();
     expect(r.agentes[0]).toMatchObject({ piezas: 0, saltados: 8 });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 28, TC-B3 — el `break` por presupuesto era código muerto:
+  // `redactarCorreoFrio` aplanaba el tope de presupuesto en `DatoInvalido`
+  // genérico, y este `catch` solo sabía reconocer ESE mensaje como "fallo del
+  // modelo" — sumaba a `fallosModeloSeguidos` y terminaba alertando al
+  // operador de que "el modelo no está contestando" cuando en realidad se
+  // acabó el dinero. Ahora el redactor propaga el error de presupuesto TAL
+  // CUAL y el runner lo reconoce con `esErrorDePresupuesto` para cortar el
+  // lote sin culpar al modelo.
+  // ═══════════════════════════════════════════════════════════════════════
+  it('TC-B3: LlmBudgetExceededError corta el lote (break), no cuenta como fallo del modelo y no alerta', async () => {
+    respuestas.set('agente_definicion', [{ data: [REDACTOR], error: null }]);
+    respuestas.set('cola_aprobacion', [{ data: null, error: null, count: 0 }]);
+    respuestas.set('prospecto', [{
+      data: Array.from({ length: 8 }, (_, i) => ({ id: `pr-${i}`, vendedor: null })), error: null,
+    }]);
+    redactar.mockRejectedValue(new LlmBudgetExceededError('run', 0.05, 0.03));
+    const r = await correrRunner(undefined, TENANT);
+    // Corta al primer tope de presupuesto: no sigue pagando llamadas contra
+    // un techo ya agotado.
+    expect(redactar).toHaveBeenCalledTimes(1);
+    expect(r.agentes[0]).toMatchObject({ resultado: 'corrio', piezas: 0, saltados: 0 });
+    expect(r.agentes[0].motivo).toMatch(/presupuesto/i);
+    expect(alertarOperador).not.toHaveBeenCalled();
+  });
+
+  it('TC-B3: un DatoInvalido genuino (no de presupuesto) sigue contando como fallo de modelo', async () => {
+    // Ya cubierto por AGB-11 arriba, pero se deja explícito aquí el
+    // contraste: DatoInvalido con el mensaje de "no pudo escribir" NO es
+    // presupuesto y SÍ debe seguir sumando a la racha.
+    respuestas.set('agente_definicion', [{ data: [REDACTOR], error: null }]);
+    respuestas.set('cola_aprobacion', [{ data: null, error: null, count: 0 }]);
+    respuestas.set('prospecto', [{
+      data: Array.from({ length: 8 }, (_, i) => ({ id: `pr-${i}`, vendedor: null })), error: null,
+    }]);
+    redactar.mockRejectedValue(new DatoInvalido('El Redactor no pudo escribir en este momento — inténtalo de nuevo.'));
+    const r = await correrRunner(undefined, TENANT);
+    expect(r.agentes[0].motivo).toMatch(/3 fallos del modelo SEGUIDOS/);
+    expect(alertarOperador).toHaveBeenCalledWith('redactor.fallos_seguidos', expect.objectContaining({ codigo: 'redactor_fallos_modelo_seguidos' }));
   });
 });
 
