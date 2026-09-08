@@ -55,8 +55,8 @@ la_excepcion_de_centrales_y_paraderos: >
   la RFA donde el régimen 624 NO abre automáticamente esas tres facilidades.
 impacto_en_producto: >
   Si Likida llegara a dar de alta una flota que en realidad es una central o paradero (no un
-  coordinado de transportistas), la regla `REGIMENES_ELEGIBLES = ['624', '612']` de
-  `administracion.ts` (RFA 2.9) la aceptaría por su régimen fiscal SAT sin distinguir este caso —
+  coordinado de transportistas), la regla `REGIMENES_ELEGIBLES_15 = ['624', '612']` de
+  `perfil/preguntas.ts` (RFA 2.9) la aceptaría por su régimen fiscal SAT sin distinguir este caso —
   el régimen 624 por sí solo no basta para saber si aplica o no la facilidad del 15%. Esto no es un
   drift confirmado (Likida hoy vende a flotas y transportistas, no a centrales/paraderos), pero es
   un hueco de precisión que vale la pena que el fiscalista confirme antes de que el producto entre

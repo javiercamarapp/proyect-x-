@@ -12,7 +12,11 @@ import { traerTodo, conteo } from './pg';
 import type { Gasto, Liquidacion, Viaje, Operador, Diferencia } from '@/types/likida';
 import type { CodigoPendiente } from './intake/emparejar';
 import { violaIndice } from './pg_errores';
-import { declararUmbralPeaje, declararFacilidad15 } from './perfil/preguntas';
+import {
+  declararUmbralPeaje, declararFacilidad15,
+  regimenElegiblePorClave, REGIMENES_ELEGIBLES_15,
+} from './perfil/preguntas';
+import { DatoInvalido } from './errores';
 import type { CuadreParaResumen } from './cuadre/resumen';
 
 // El tope de consulta vive en `presupuesto.ts`, con `TOPE_CONSULTA_MS` y el
@@ -1596,6 +1600,37 @@ export async function actualizarFacilidad15(
   reg: boolean | undefined,
   actualizadoPor: string | null,
 ): Promise<void> {
+  // AUDITORÍA 29, FIS-C1 (CRÍTICO): el `<select>` sí/no de `/admin/flotas`
+  // escribe por aquí, y desde FIS-A3 escribe la fuente que MANDA
+  // (`tenant.perfil`, `procedencia: 'declarado'`). Sin cotejo, un «Régimen: Sí»
+  // sobre una S.A. de C.V. clave 601 le ganaba a la derivación correcta desde
+  // la clave del SAT y el motor imprimía —citando la RFA 2026 regla 2.9— una
+  // deducción que la norma le niega: sobre un CFDI de diésel en efectivo de
+  // $11,600 pasaba de $0.00 a $11,600.00 deducibles y de $0.00 a $1,600.00 de
+  // IVA acreditable. Es la misma regla que `administracion.ts` ya aplicaba al
+  // dar de alta (comentario FISC-C2-1) y que este camino se saltaba.
+  //
+  // Se coteja SOLO la dirección peligrosa: conceder de más contra una clave
+  // que lo niega se rechaza; negar de más (o declarar sin clave registrada)
+  // pasa, porque fallar cerrado nunca imprime una deducción de más.
+  if (reg === true) {
+    const { data: fila, error: errClave } = await acotada(supabaseAdmin()
+      .from('tenant')
+      .select('regimen_fiscal')
+      .eq('id', tenantId)
+      .maybeSingle(), 'actualizarFacilidad15.clave');
+    // Sin comprobar el error, una base caída se leería como "esta flota no
+    // tiene clave" y la concesión pasaría justo cuando menos se puede verificar.
+    if (errClave) throw new Error(`actualizarFacilidad15: no se pudo leer el régimen fiscal: ${errClave.message}`);
+    const clave = (fila as { regimen_fiscal?: string | null } | null)?.regimen_fiscal ?? null;
+    if (regimenElegiblePorClave(clave) === false) {
+      throw new DatoInvalido(
+        `La flota está registrada con el régimen fiscal ${clave} ante el SAT, y la facilidad del 15% de la RFA 2026 regla 2.9 solo aplica a los regímenes ${REGIMENES_ELEGIBLES_15.join(' y ')}. `
+        + 'Si la flota cambió de régimen, corrige primero su régimen fiscal; si no, esta declaración imprimiría en el PDF una deducción que la norma le niega.',
+      );
+    }
+  }
+
   await guardarPerfilPatch(tenantId, declararFacilidad15(ded, reg), actualizadoPor);
 
   // AUDITORÍA 15, MEDIO: sin comprobar el error, un bache de red se leía como

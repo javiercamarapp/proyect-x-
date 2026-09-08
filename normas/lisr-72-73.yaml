@@ -195,7 +195,9 @@ pendiente_en_producto: >
 verificado_por: "auditoría fiscal semanal, área 5 (regímenes del autotransporte), 30-ago-2026"
 verificado_el: 2026-08-30
 usado_en_codigo:
-  - "src/lib/likida/administracion.ts — REGIMENES_ELEGIBLES (624/612) y el comentario FISC-C2-1 que distingue Título II Cap. VII de Título II a secas"
+  - "src/lib/likida/perfil/preguntas.ts — REGIMENES_ELEGIBLES_15 (624/612) y regimenElegiblePorClave, la derivación única desde la clave del SAT"
+  - "src/lib/likida/administracion.ts — el comentario FISC-C2-1 que distingue Título II Cap. VII de Título II a secas, y el alta que deriva regimenElegible de la clave"
+  - "src/lib/likida/repo.ts — actualizarFacilidad15 coteja la declaración manual de /admin/flotas contra la clave antes de conceder (auditoría 29, FIS-C1)"
   - "src/lib/likida/perfil/entrevista.ts — la pregunta de régimen SAT que deriva regimenElegible, y detectarRegimen (mapea texto libre a 624/601/612)"
   - "src/lib/saas/fiscal.ts — catálogo REGIMENES (601/603/612/621/624/626) usado al capturar el receptor del CFDI de la mensualidad"
   - "src/lib/evals/banco-contador.ts — Q8 (tope de $1,000,000 de la RFA 2.2 ¿por coordinado o por integrante?) y Q16 (RFA vs. Carta Porte, pruebas independientes)"

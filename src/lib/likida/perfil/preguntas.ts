@@ -342,6 +342,36 @@ export function facilidad15Declarada(perfilCrudo: unknown): { dedicacionExclusiv
 }
 
 /**
+ * AUDITORÍA 29, FIS-C1 — las claves del `c_RegimenFiscal` del SAT que abren la
+ * facilidad del 15% (RFA 2026 regla 2.9), y la derivación que hace de ellas el
+ * ÚNICO estándar de prueba del hecho fiscal.
+ *
+ * El texto verificado de la regla (`normas/rfa-2026-2.9.yaml`,
+ * `verificado_fuente_primaria`) condiciona la facilidad a «que tributen
+ * conforme al Título II, Capítulo VII o Título IV, Capítulo II, Sección I de la
+ * Ley del ISR»: Título II Cap. VII = coordinados = clave **624**; Título IV
+ * Cap. II Secc. I = PF con actividad empresarial = clave **612**. El Título II
+ * a secas —la S.A. de C.V. ordinaria, clave **601**— NO entra.
+ *
+ * Vivía como un literal local dentro de `crearFlota` (`administracion.ts`), que
+ * era el único sitio que derivaba la elegibilidad de un hecho comprobable
+ * mientras `/admin/flotas` la dejaba escribir a mano. Vive aquí porque este
+ * módulo no importa nada y sí lo importan los dos lados (el alta que deriva y
+ * el escritor que ahora coteja).
+ */
+export const REGIMENES_ELEGIBLES_15 = ['624', '612'] as const;
+
+/**
+ * `true`/`false` derivado de la clave del SAT; `undefined` cuando la flota aún
+ * no tiene clave registrada — que es «no se puede saber», no «no califica»: no
+ * se inventa un veredicto que la base no sostiene.
+ */
+export function regimenElegiblePorClave(regimenFiscal: string | null | undefined): boolean | undefined {
+  if (!regimenFiscal) return undefined;
+  return (REGIMENES_ELEGIBLES_15 as readonly string[]).includes(regimenFiscal);
+}
+
+/**
  * AUDITORÍA 28, FIS-A3 (fuente única) — RFA 2026 regla 2.9: la pareja
  * VIGENTE de la facilidad del 15%, con la MISMA precedencia que antes vivía
  * reimplementada por separado en `cuadre/desde_db.ts`, `fiscal.ts`, `tools.ts`
