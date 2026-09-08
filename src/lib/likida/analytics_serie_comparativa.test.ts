@@ -26,7 +26,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 type Gasto = { tenant_id: string; fecha: string; monto: number };
 type Viaje = { tenant_id: string; fecha_inicio: string | null; estatus: string };
-type Liq = { tenant_id: string; created_at: string; total_comprobado: number };
+type Liq = { tenant_id: string; created_at: string; total_comprobado: number; revision?: string | null };
 
 const TZ_MX = 'America/Mexico_City';
 
@@ -97,6 +97,7 @@ function sqlSerieEquivalente(gastos: Gasto[], viajes: Viaje[], liquidaciones: Li
     let liquidado = 0;
     for (const l of liquidaciones) {
       if (l.tenant_id !== tenantId) continue;
+      if (l.revision === 'rechazada') continue; // 0348 (BE-A2/DAT-M1)
       const dia = diaLocalMx(l.created_at);
       if (dia >= desde && dia <= hasta) liquidado += l.total_comprobado;
     }
