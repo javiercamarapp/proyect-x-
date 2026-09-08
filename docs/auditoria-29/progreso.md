@@ -79,3 +79,21 @@ declarados (el medidor de OP-A2, `861d09d`, **funciona y avisó**).
   en carretera. Rojo→verde medido con `git stash` (8 de 9 casos fallan sin el
   arreglo). Suite **937 / 12,553 / 0 fallan**, exit 0; `lint:ratchet` 0 nuevos
   (mordió un `no-unused-vars` mío y se quitó antes de commitear).
+- **Vuelta 3 · NO SE GASTÓ, y la razón está escrita.** El crítico más tratable
+  que quedaba era REN-C1. Al buscarle el arreglo encontré que el mecanismo es
+  barato (`decidirCruce` es **pura** y se puede llamar ANTES del sello, así que
+  el corte por reloj del archivo ya sirve sin necesidad de desellar) **pero el
+  número no sale**: derivando el margen con `margenUnidadAtomicaMs` —la
+  disciplina del propio repo, que suma techos— la unidad del `consolidado`
+  (~246 consultas) pide **~2,375 s contra un `maxDuration` de 300**. Bajo la
+  regla de la casa, un consolidado **no cabe nunca** en este cron. Un
+  guardarraíl honesto cambiaría una pérdida silenciosa por un aplazamiento
+  perpetuo. Eso es una decisión de diseño —sacar la conciliación a un job o cola
+  propios—, no un commit atómico. Queda **propuesto** con el camino escrito.
+
+## Cierre
+
+- `00-SINTESIS.md`, `tablero.html`, `tablero.png` (capturado **y mirado**) y
+  `RESULTADO.md` escritos y commiteados.
+- PR **#413** abierto en borrador y verificado con `list_pull_requests(open)`,
+  no afirmado de memoria.

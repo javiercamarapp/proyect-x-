@@ -129,9 +129,32 @@ código.
   corrida siguiente el CFDI sale por `cfdisRepetidos` (`:315`) y
   `cfdi_consolidado_linea` queda vacía. ~$27,600 de IVA de un mes de tarjeta de
   combustible que no llegan al contador, sin alerta. **Verificado por mí abriendo
-  el orden real.** No se arregló porque toca el camino del dinero y el arreglo
-  —desellar y cortar cuando el consolidado no cabe— no es de una línea; queda con
-  su escenario escrito para la 30.
+  el orden real.**
+
+  **Y lo llevé un paso más, porque cambia qué clase de problema es.** Buscando el
+  arreglo encontré dos cosas:
+
+  1. **El mecanismo del guardarraíl es barato.** `decidirCruce(cfdi, gastos,
+     lineasEcc)` (`cruce.ts:90-94`) es **pura** y solo necesita el CFDI parseado y
+     el fondo — las dos cosas ya existen **antes** del sello. Así que se puede
+     saber que el destino es `consolidado` antes de sellar, y cortar por el mismo
+     camino que el archivo ya tiene (`return { completo: false }`, el llamador no
+     marca el paquete como bajado, la corrida siguiente lo re-baja y retoma). No
+     hace falta «desellar» nada.
+  2. **Pero el número no sale, y ahí deja de ser un arreglo.** Si se deriva el
+     margen con la disciplina del propio repo —`margenUnidadAtomicaMs`, que suma
+     **techos**— la unidad del consolidado (~246 consultas: 46 páginas de
+     candidatos + 100 tandas de `ligarLineaAGasto` a 2 cada una) pide **~2,375 s
+     contra un `maxDuration` de 300**. Es decir: **bajo la propia regla de margen
+     de la casa, un consolidado no cabe NUNCA en este cron.** Un guardarraíl
+     honesto no lo protegería: lo dejaría sin correr para siempre, cambiando una
+     pérdida silenciosa por un aplazamiento perpetuo.
+
+  **Por eso queda propuesto y no arreglado**, y la decisión que pide no es de una
+  línea: la conciliación del consolidado tiene que salir de este cron (job propio
+  o cola con reanudación por página), no caber en él. Es exactamente el caso de
+  «un crítico que resistió necesita una decisión, no un cuarto intento». Queda con
+  su escenario, sus números y este camino escrito para la 30.
 
 **Pendientes con razón escrita (5):**
 
