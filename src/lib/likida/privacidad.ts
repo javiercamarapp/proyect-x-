@@ -657,17 +657,24 @@ export function avisoIntegral(r: DatosIntegral): SeccionAviso[] {
         // cabecera de ese archivo: "Eventos y posiciones comparten
         // proveedor, credencial y cadencia"). Se reutiliza la señal `gps`
         // por eso — no es un tratamiento con su propio conector, es el mismo
-        // con otro tipo de dato. NO se promete un plazo de borrado fijo para
-        // estos eventos: hoy no existe una purga automática que lo ejecute, y
-        // este archivo ya tiene un hallazgo (LEG-6) por prometer un "90 días"
-        // que ningún código cumplía — no se repite el error aquí. Mismo
-        // criterio que la categoría de salud, dos párrafos abajo: se declara
-        // la finalidad y el límite reales, no una cifra que nadie ejecuta.
+        // con otro tipo de dato.
+        //
+        // AUDITORÍA 28, LEG-B1 [BAJO]: este párrafo cerraba con "hoy no
+        // tienen una fecha de borrado automático", que era cierto cuando se
+        // escribió (LEG-6: no prometer un plazo que nadie ejecuta) pero dejó
+        // de serlo el día que la mig. 0335 dio de alta
+        // `purgar_evento_seguridad_flota(180, 365, …)` en
+        // `mantenimiento_de_datos` (cron `/api/cron/purgar`): 180 días para
+        // los eventos `not grave`, 365 para los `grave` (choque, impacto,
+        // volcadura — `esEventoGrave`, conectores/eventos_seguridad.ts). Una
+        // promesa que dejó de cumplirse por FALTA de código es tan falsa como
+        // una que nunca se cumplió; se actualiza al plazo real en vez de
+        // repetir la frase vieja.
         gps === 'conectado'
-          ? `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Hoy no tienen una fecha de borrado automático.`
+          ? `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Se conservan **180 días**; si el evento fue grave (choque, impacto o volcadura), se conservan **365 días**. Después se borran solos.`
           : gps === 'sin_conector'
             ? `Tu empresa **no tiene conectado un sistema de cámara o telemetría** con Likida, así que por ese medio no se recibe ningún evento sobre cómo conduces; si algún día lo conecta, este aviso cambia y el nuevo te llega por WhatsApp.`
-            : `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Hoy no tienen una fecha de borrado automático.`,
+            : `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Se conservan **180 días**; si el evento fue grave (choque, impacto o volcadura), se conservan **365 días**. Después se borran solos.`,
         // AUDITORÍA EXTERNA 16-AGO-2026 (P2): la versión anterior decía "no
         // se usa para nada", y el flujo real es más matizado — la foto viaja
         // COMPLETA al motor de lectura (no se puede enmascarar una imagen
