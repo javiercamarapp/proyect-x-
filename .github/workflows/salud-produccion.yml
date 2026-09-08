@@ -8,9 +8,12 @@
 # atrás sin avisar)— no se comparaba contra nada.
 #
 # Tres disparadores, un solo job:
-#   · schedule cada 30 min: producción contesta 200 con ok:true, o rojo; y
+#   · schedule declarado */30: producción contesta 200 con ok:true, o rojo; y
 #     corre el último commit con [deploy] de master (o uno posterior), o rojo
-#     (auditoría 24, OP-P3: el cotejo solo corría en el push).
+#     (auditoría 24, OP-P3: el cotejo solo corría en el push). GitHub NO
+#     garantiza la cadencia de `schedule` — la cadencia real la mide el propio
+#     job (OP-A2, auditoría 28: medida 4-7-sep-2026 en ~8 corridas/día con
+#     huecos de hasta 5h30, no las 48/día que "cada 30 min" prometía).
 #   · push a master: si el asunto lleva [deploy], PRIMERO la compuerta de
 #     migraciones (auditoría 24, OP-P1: el mismo veredicto que el
 #     ignoreCommand de Vercel, pero en rojo y con el motivo), y luego se espera
@@ -33,6 +36,10 @@ on:
 permissions:
   contents: read
   issues: write
+  # OP-A2 (auditoría 28): para medir la cadencia real hace falta leer corridas
+  # anteriores de este mismo workflow (`gh run list`). Solo lectura — no se
+  # cancela, no se relanza, no se toca ningún otro recurso de Actions.
+  actions: read
 
 jobs:
   pulso:
@@ -148,6 +155,49 @@ jobs:
           else
             echo "::error::Producción corre $version y el último commit con [deploy] en master es $(printf '%s' "$ultimo" | cut -c1-7): el build no llegó (compuerta de migraciones, o Vercel no construyó). Mira el panel o haz Redeploy."
             exit 1
+          fi
+
+      # ── OP-A2 (auditoría 28, ALTO), SOLO MEDIR Y AVISAR ─────────────────
+      # El `cron: '*/30 * * * *'` de arriba es lo DECLARADO. GitHub degrada
+      # los `schedule` bajo carga y no garantiza esa cadencia: la auditoría
+      # midió 20 corridas programadas en 2.457 días (~8/día, no las 48/día que
+      # "cada 30 min" promete) con huecos de hasta 5h30. Nada en el repo medía
+      # la cadencia REAL del propio pulso. Este paso solo AVISA (`::warning::`)
+      # cuando el hueco desde la corrida programada anterior duplica lo
+      # declarado — no decide qué hacer con la degradación (mover de runner,
+      # un monitor externo — eso es OP-C3, HUM) y nunca hace fallar el job por
+      # esto: un pulso lento sigue siendo un pulso, y tumbar el job por su
+      # propia cadencia le restaría la única señal que sí importa (¿contestó
+      # /api/health?). Si `gh` no puede leer corridas anteriores (permiso,
+      # o es la primera corrida) lo dice y sigue sin bloquear nada.
+      - name: Medir la cadencia real del pulso y avisar si se degrada
+        if: always() && github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          declarada_min=30
+          umbral_min=$((declarada_min * 2))
+          anterior=$(gh run list --workflow salud-produccion.yml --event schedule --status completed --limit 1 --json createdAt --jq '.[0].createdAt' 2>&1)
+          estado=$?
+          if [ "$estado" -ne 0 ]; then
+            echo "No se pudo leer la corrida programada anterior con \`gh run list\` (sin permiso todavía propagado, o error transitorio): $anterior"
+            echo "cadencia: declarada=${declarada_min}min real=sin_dato (no se pudo leer)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$anterior" ] || [ "$anterior" = "null" ]; then
+            echo "Todavía no hay una corrida programada anterior completada (primera corrida del pulso): nada que medir."
+            echo "cadencia: declarada=${declarada_min}min real=sin_dato (primera corrida)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          anterior_epoch=$(date -u -d "$anterior" +%s)
+          ahora_epoch=$(date -u +%s)
+          real_min=$(( (ahora_epoch - anterior_epoch) / 60 ))
+          echo "cadencia: declarada=${declarada_min}min real=${real_min}min (corrida anterior: $anterior)"
+          echo "cadencia: declarada=${declarada_min}min real=${real_min}min" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$real_min" -gt "$umbral_min" ]; then
+            horas=$(awk "BEGIN { printf \"%.1f\", $real_min/60 }")
+            echo "::warning::La cadencia real del pulso se degradó: ${real_min} min desde la corrida programada anterior (declarado cada ${declarada_min} min, ~${horas} h de hueco). GitHub no garantiza la cadencia de schedule — esto es medición, no decide qué hacer (ver OP-C3)."
           fi
 
       # ── AUDITORÍA 24, PRU-3 (ALTO): EL ROJO TIENE DUEÑO ─────────────────
