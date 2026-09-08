@@ -50,7 +50,7 @@ vi.mock('./repo', () => ({
   getViaje: vi.fn(async () => ({ id: 'v1', folio: 'VJ-1', anticipo: 8000 })),
   getOperador: vi.fn(async () => ({ id: 'o1', nombre: 'Juan', telefono: '5219993700779' })),
   saveLiquidacion,
-  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 1, hash: 'a'.repeat(64) })),
+  leerSnapshotInsumosCierre: vi.fn(async () => ({ version: 2, hash: 'a'.repeat(64) })),
   insumosDeCierreCambiaron: vi.fn(() => false),
   getAcumuladoCombustible: vi.fn(async () => { throw new Error('sin base en pruebas'); }),
 }));
@@ -139,7 +139,7 @@ describe('el kill switch de agente:liquidacion (0110) — antes decorativo, ahor
     // 5º sella la versión/hash de los insumos económicos y fiscales.
     expect(saveLiquidacion).toHaveBeenCalledWith(
       't1', LIQ, 't1/v1-version-00000000-0000-4000-8000-000000000046.pdf', LIQ.gastos.length,
-      { version: 1, hash: 'a'.repeat(64) },
+      { version: 2, hash: 'a'.repeat(64) },
     );
   });
 });

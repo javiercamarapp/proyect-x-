@@ -17925,6 +17925,9 @@ end $$;
 -- Toma un snapshot con UN gasto y conserva exactamente una fila mientras
 -- cambia, por separado, monto, IVA y UUID; después prueba DELETE+INSERT con el
 -- mismo conteo. Las cuatro llamadas deben abortar con CU006/snapshot_changed.
+-- version=2 desde la 0354 (DAT-B1, auditoría 28): guardar_liquidacion_tx
+-- exige esa versión desde entonces; el gasto de este bloque no toca REP '99',
+-- así que el hash no cambia de VALOR por la 0354, solo de version rotulada.
 -- Finalmente toma el hash vigente y el cierre feliz debe guardar ese mismo
 -- sello v1. Todo el DO termina con RAISE, así que no deja datos de verificación.
 -- Esperado: CIERRE_SNAPSHOT_0321 monto=t iva=t uuid=t reemplazo=t feliz=t sello=t
@@ -17962,7 +17965,7 @@ begin
   update public.gasto set monto = 900 where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 900, 1000, 100, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 900, 1000, 100, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then monto_bloqueado := true;
   end;
@@ -17972,7 +17975,7 @@ begin
   update public.gasto set iva_traslado = 99 where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 99, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 99, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then iva_bloqueado := true;
   end;
@@ -17982,7 +17985,7 @@ begin
   update public.gasto set cfdi_uuid = '22222222-2222-4222-8222-222222222222' where id = ga;
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then uuid_bloqueado := true;
   end;
@@ -17998,17 +18001,17 @@ begin
   );
   begin
     perform public.guardar_liquidacion_tx(
-      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+      ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
     );
   exception when sqlstate 'CU006' then reemplazo_bloqueado := true;
   end;
 
   h := public.cierre_insumos_hash(ta, vi);
   li := public.guardar_liquidacion_tx(
-    ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 1
+    ta, vi, 1000, 1000, 0, 'cuadrada', '[]', 0, 137.93, 0, null, 0, 1, h, 2
   );
   select estatus = 'liquidado' into feliz from public.viaje where id = vi;
-  select insumos_hash = h and insumos_hash_version = 1 into sello
+  select insumos_hash = h and insumos_hash_version = 2 into sello
     from public.liquidacion where id = li;
 
   raise exception E'CIERRE_SNAPSHOT_0321 monto=% iva=% uuid=% reemplazo=% feliz=% sello=%   (esperado t / t / t / t / t / t)',

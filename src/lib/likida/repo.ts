@@ -1050,7 +1050,7 @@ export const CIERRE_CONTEO_CAMBIO = 'CU003';
 export const CIERRE_SNAPSHOT_CAMBIO = 'CU006';
 
 export interface SnapshotInsumosCierre {
-  version: 1;
+  version: 2;
   hash: string;
 }
 
@@ -1080,10 +1080,10 @@ export async function leerSnapshotInsumosCierre(
   }), 'leerSnapshotInsumosCierre');
   if (error) throw new Error(`leerSnapshotInsumosCierre: ${error.message}`);
   const snapshot = data as Partial<SnapshotInsumosCierre> | null;
-  if (snapshot?.version !== 1 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
+  if (snapshot?.version !== 2 || typeof snapshot.hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.hash)) {
     throw new Error('leerSnapshotInsumosCierre: respuesta inválida de cierre_insumos_snapshot');
   }
-  return { version: 1, hash: snapshot.hash };
+  return { version: 2, hash: snapshot.hash };
 }
 
 /**
