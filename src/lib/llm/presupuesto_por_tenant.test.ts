@@ -19,6 +19,7 @@ const rpc = vi.hoisted(() => vi.fn());
 const tablas = vi.hoisted(() => new Map<string, { data: unknown; error: { message: string } | null }>());
 const alertar = vi.hoisted(() => vi.fn(async () => {}));
 const loggerError = vi.hoisted(() => vi.fn());
+const loggerInfo = vi.hoisted(() => vi.fn());
 
 function consulta(tabla: string) {
   const responder = async () => tablas.get(tabla) ?? { data: null, error: null };
@@ -31,7 +32,7 @@ function consulta(tabla: string) {
 }
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ rpc, from: (t: string) => consulta(t) }) }));
 vi.mock('@/lib/likida/presupuesto', () => ({ acotada: (query: unknown) => query }));
-vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: loggerError } }));
+vi.mock('@/lib/logger', () => ({ logger: { info: loggerInfo, warn: vi.fn(), error: loggerError } }));
 vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: alertar }));
 
 const {
@@ -51,6 +52,7 @@ beforeEach(() => {
   tablas.clear();
   alertar.mockClear();
   loggerError.mockClear();
+  loggerInfo.mockClear();
   olvidarTopesDeTenant();
   vi.unstubAllEnvs();
 });
@@ -170,6 +172,57 @@ describe('el techo diario que llega a la RPC sale de la FLOTA, no de una env glo
     await reserveLlmBudget(budget, 0.05);
     expect(reservaEnviada()?.p_tope_tenant_usd).toBe(2);
     expect(budget.origenTope).toBe('explicito');
+  });
+
+  // AUDITORÍA 28, REN-A1 (mecánico): `topeDerivadoDelPlan` acota con
+  // `Math.max(derivado, piso)`, así que un plan chico puede "derivarse" y aun
+  // así devolver EXACTAMENTE el piso. Antes el rótulo decía 'plan' de
+  // cualquier forma; ahora dice la verdad de dónde salió el número.
+  it('REN-A1: un plan chico (demo 50, flota base 500) cuyo derivado NO supera el piso se rotula "piso", no "plan"', async () => {
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '5');
+    for (const limiteViajesMes of [50, 500]) {
+      olvidarTopesDeTenant();
+      rpc.mockClear();
+      tablas.set('tenant', { data: { config: { politica: [{ concepto: 'diesel' }] } }, error: null });
+      tablas.set('suscripcion', { data: { plan: { limite_viajes_mes: limiteViajesMes } }, error: null });
+      const budget = createLlmBudget('flota-chica', RUN, 'interactivo');
+      await reserveLlmBudget(budget, 0.05);
+      expect(reservaEnviada()?.p_tope_tenant_usd, String(limiteViajesMes)).toBe(5);
+      expect(budget.origenTope, String(limiteViajesMes)).toBe('piso');
+    }
+  });
+
+  it('REN-A1: cuando el derivado SÍ supera el piso, sigue siendo "plan" (no se movió el caso sano)', async () => {
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '5');
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_MAX_USD', '60');
+    tablas.set('tenant', { data: { config: { politica: [{ concepto: 'diesel' }] } }, error: null });
+    tablas.set('suscripcion', { data: { plan: { limite_viajes_mes: 8_000 } }, error: null });
+    const budget = createLlmBudget('flota-grande', RUN, 'interactivo');
+    await reserveLlmBudget(budget, 0.05);
+    expect(budget.origenTope).toBe('plan');
+  });
+
+  it('REN-A1: cuando el piso gana, se registra UNA vez (al llenar la caché, no por reserva)', async () => {
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '5');
+    tablas.set('tenant', { data: { config: { politica: [{ concepto: 'diesel' }] } }, error: null });
+    tablas.set('suscripcion', { data: { plan: { limite_viajes_mes: 500 } }, error: null });
+    const budget = createLlmBudget('flota-base', RUN, 'interactivo');
+    await reserveLlmBudget(budget, 0.05);
+    await reserveLlmBudget(budget, 0.05);   // segunda reserva: mismo budget, caché sigue viva
+    expect(loggerInfo).toHaveBeenCalledTimes(1);
+    expect(loggerInfo).toHaveBeenCalledWith('presupuesto_llm.tope_plan_bajo_piso', expect.objectContaining({
+      tenantId: 'flota-base', limiteViajesMes: 500, pisoUsd: 5,
+    }));
+  });
+
+  it('REN-A1: la alerta presupuesto_ia.tope_tenant reporta origenTope "piso" para el plan que no lo superó', async () => {
+    vi.stubEnv('LIKIDA_LLM_TENANT_DAILY_BUDGET_USD', '5');
+    tablas.set('tenant', { data: { config: { politica: [{ concepto: 'diesel' }] } }, error: null });
+    tablas.set('suscripcion', { data: { plan: { limite_viajes_mes: 500 } }, error: null });
+    rpc.mockResolvedValue({ data: 'tope_tenant', error: null });
+    const budget = createLlmBudget('flota-alerta', RUN, 'interactivo');
+    await expect(reserveLlmBudget(budget, 0.05)).rejects.toBeInstanceOf(LlmBudgetExceededError);
+    expect(alertar).toHaveBeenCalledWith('presupuesto_ia.tope_tenant', expect.objectContaining({ origenTope: 'piso' }));
   });
 
   it('el techo se lee UNA vez por flota y se cachea: dos budgets, una lectura', async () => {

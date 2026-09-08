@@ -89,8 +89,16 @@ export interface LlmBudget {
    * De dónde salió `maxTenantDailyUsd` (auditoría 24, TC-N1/WA-1):
    *   · 'explicito' — el llamador lo pasó en `limits` (runner de agentes).
    *   · 'tenant'    — `tenant.config.presupuestoLlmUsdDia` (mig. 0278).
-   *   · 'plan'      — derivado de `plan.limite_viajes_mes` × costo por viaje.
-   *   · 'piso'      — la env global `LIKIDA_LLM_TENANT_DAILY_BUDGET_USD` (o $5).
+   *   · 'plan'      — derivado de `plan.limite_viajes_mes` × costo por viaje, Y
+   *                    ese derivado SUPERÓ el piso. `topeDerivadoDelPlan` acota
+   *                    el número con `Math.max(derivado, piso)`, así que un plan
+   *                    chico (demo, flota base) puede "derivarse" y aun así
+   *                    salir exactamente el piso — en ese caso el rótulo es
+   *                    'piso', no 'plan', porque lo que en verdad mandó fue el
+   *                    piso (REN-A1, auditoría 28).
+   *   · 'piso'      — la env global `LIKIDA_LLM_TENANT_DAILY_BUDGET_USD` (o $5),
+   *                    sea porque no hay plan/llave o porque el derivado del
+   *                    plan no superó el piso.
    * Hasta la primera reserva vale 'piso' salvo que sea explícito: la lectura
    * de la flota es asíncrona y se hace en `reserveLlmBudget`, no aquí.
    */
@@ -187,7 +195,13 @@ export function topesPresupuestoIa(): { topeTenantDiaUsd: number; reservaInterac
 //      valida número > 0). Es la palanca para el piloto: se sube UNA flota.
 //   3. Derivado del plan: `plan.limite_viajes_mes / 30` viajes/día × lo que
 //      cuesta liquidar un viaje completo (`COSTO_ESTIMADO_USD.viajeCompleto`),
-//      acotado entre el piso y `LIKIDA_LLM_TENANT_DAILY_BUDGET_MAX_USD`.
+//      acotado entre el piso y `LIKIDA_LLM_TENANT_DAILY_BUDGET_MAX_USD`. El
+//      rótulo `origen` solo dice 'plan' si ese derivado en verdad SUPERÓ el
+//      piso; con los planes chicos del catálogo (demo, flota base) el
+//      derivado no lo alcanza y lo que manda es el piso — el rótulo lo dice
+//      (REN-A1, auditoría 28): antes se leía 'plan' aunque el piso hubiera
+//      ganado, y Javier iba a revisar un plan mal dimensionado cuando lo que
+//      de verdad frenó a la flota fue el piso global.
 //   4. El piso: la env global de siempre, o $5.00 si no está.
 //
 // La lectura es asíncrona y `createLlmBudget` no lo es (lo llaman 14 sitios
@@ -310,7 +324,26 @@ export async function topeDiarioDelTenant(tenantId: string): Promise<TopeTenantR
       const rel = rSus.data?.plan as { limite_viajes_mes?: unknown } | Array<{ limite_viajes_mes?: unknown }> | null | undefined;
       const limite = Array.isArray(rel) ? rel[0]?.limite_viajes_mes : rel?.limite_viajes_mes;
       const n = typeof limite === 'number' ? limite : typeof limite === 'string' ? Number(limite) : NaN;
-      if (Number.isFinite(n) && n > 0) tope = { topeUsd: topeDerivadoDelPlan(n, piso), origen: 'plan' };
+      if (Number.isFinite(n) && n > 0) {
+        const derivadoUsd = topeDerivadoDelPlan(n, piso);
+        // REN-A1 (auditoría 28, mecánico): `topeDerivadoDelPlan` acota con
+        // `Math.max(derivado, piso)`, así que un plan chico puede "derivarse"
+        // y aun así devolver EXACTAMENTE el piso. Rotularlo 'plan' en ese caso
+        // es mentir sobre de dónde salió el techo — la alerta
+        // `presupuesto_ia.tope_tenant` lleva ese rótulo tal cual a Javier.
+        if (derivadoUsd > piso + 1e-9) {
+          tope = { topeUsd: derivadoUsd, origen: 'plan' };
+        } else {
+          tope = { topeUsd: derivadoUsd, origen: 'piso' };
+          // Evidencia para la decisión de dimensionamiento por plan (§5.6 del
+          // plan de auditoría): hoy no existe ningún log de que un plan quedó
+          // por debajo del piso. Se registra al llenar la caché (una vez por
+          // minuto por flota), no por reserva.
+          logger.info('presupuesto_llm.tope_plan_bajo_piso', {
+            tenantId, limiteViajesMes: n, derivadoUsd, pisoUsd: piso,
+          });
+        }
+      }
     }
   } catch (e) {
     logger.error('presupuesto_llm.tope_tenant_ilegible', {
