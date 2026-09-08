@@ -164,10 +164,36 @@ vi.mock('@/lib/likida/cuadre/resumen', () => ({
   resumenCuadre: (_liq: unknown, cerrado: boolean) => `CUADRE REAL (cerrado=${cerrado})`,
 }));
 
-const avisarCierreAlJefe = vi.fn(async (_a: unknown): Promise<{ enviado: boolean; pdfEnviado?: boolean | null }> => ({ enviado: true }));
-vi.mock('./avisar_cierre', () => ({ avisarCierreAlJefe: (a: unknown) => avisarCierreAlJefe(a) }));
+type ResultadoAvisoJefeMock = {
+  enviado: boolean;
+  pdfEnviado?: boolean | null;
+  /** AG-A1 (auditoría 28, agentico.md:32): ver `avisar_cierre.ts`. */
+  pdfEstado?: 'enviado' | 'encolado' | 'definitivo' | null;
+  motivo?: string;
+};
+const avisarCierreAlJefe = vi.fn(async (_a: unknown): Promise<ResultadoAvisoJefeMock> => ({ enviado: true }));
+vi.mock('./avisar_cierre', async (original) => ({
+  // AG-A1: `pdfListoParaSellar`/`pdfEstadoDe` son puras (sin I/O) y se
+  // prueban aparte en `avisar_cierre.test.ts` — se dejan REALES aquí para que
+  // el cableado con `entregarCierrePendiente` sea el de verdad, y solo se
+  // sustituye `avisarCierreAlJefe` (que sí hace red/DB) por el mock.
+  ...(await original<Record<string, unknown>>()),
+  avisarCierreAlJefe: (a: unknown) => avisarCierreAlJefe(a),
+}));
 
-const { processInbound } = await import('./processor');
+// AG-A1-b: el sello «definitivo» dispara una alerta operativa UNA vez. No se
+// mockeaba `@/lib/observability/alerta` en este archivo porque nada la
+// afirmaba directamente — los demás casos ya la disparan (p. ej.
+// `pdf.no_entregado`) contra la implementación real, que es un no-op seguro
+// sin `ALERTA_EMAIL` (ver el comentario de cabecera de `alerta.ts`). Aquí sí
+// hace falta espiarla.
+const alertarOperador = vi.fn(async (..._args: unknown[]) => {});
+vi.mock('@/lib/observability/alerta', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  alertarOperador: (...a: unknown[]) => alertarOperador(...a),
+}));
+
+const { processInbound, olvidarReentregasCierre } = await import('./processor');
 const { PartialExecutionError } = await import('@/lib/llm/openrouter');
 
 const listo = { from: '5219993700779', type: 'text' as const, text: 'listo', timestampMs: 1788534000000, waMessageId: 'wa1' };
@@ -216,7 +242,13 @@ beforeEach(() => {
   });
   cuadrarDesdeDB.mockReset(); cuadrarDesdeDB.mockResolvedValue({ totalComprobado: 1234 });
   avisarCierreAlJefe.mockClear();
+  alertarOperador.mockClear();
   sellarEntregaLiquidacion.mockClear();
+  // AG-A1-d: el techo de reentregas es un Map de módulo (mismo patrón que
+  // `olvidarRafagas`) y varios casos de este archivo reutilizan el mismo
+  // `liquidacionId` ('L1'): sin este reset, un caso contamina el conteo del
+  // siguiente.
+  olvidarReentregasCierre();
   vi.stubGlobal('fetch', fetchSpy);
   fetchSpy.mockClear();
   process.env.WHATSAPP_ACCESS_TOKEN = 'tok-de-prueba';
@@ -477,13 +509,20 @@ describe('C1 — el reintento sin viaje abierto no niega un cierre reciente', ()
     expect(dichos).not.toMatch(/pídeselo a tu contralor/i);
   });
 
-  it('AGEN-4: con los dos sellos puestos NO repite nada: ni documento ni aviso al jefe, y lo dice', async () => {
+  // AG-A1-f (auditoría 28, agentico.md:32): antes esto SEGUÍA llamando a
+  // `entregarCierrePendiente` (que resolvía ambas patas en 'ya_entregado'/
+  // 'ya_avisado' sin red, por los sellos ya puestos) y el chofer leía «ya te
+  // lo había mandado». Ahora el llamador filtra el caso «los dos sellos
+  // puestos» ANTES de invocarla — mismo resultado observable (nada de red,
+  // nada de log de reentrega), pero con un texto corto y distinto.
+  it('AGEN-4/AG-A1-f: con los dos sellos puestos NO repite nada: ni documento ni aviso al jefe, y lo dice', async () => {
     liquidacionReciente.mockResolvedValue({ ...cerradaSinEntregar(), entregadaOperadorEn: '2026-09-01T10:41:20Z', avisadaOficinaEn: '2026-09-01T10:41:25Z' });
     await processInbound(listo);
     expect(documentos()).toHaveLength(0);
     expect(avisarCierreAlJefe).not.toHaveBeenCalled();
     expect(sellarEntregaLiquidacion).not.toHaveBeenCalled();
-    expect(textos().join(' | ')).toMatch(/ya te lo había mandado/i);
+    expect(textos().join(' | ')).toMatch(/ya quedó liquidado/i);
+    expect(textos().join(' | ')).not.toMatch(/No tienes un viaje abierto para liquidar/i);
   });
 
   it('AGEN-4: sin `pdf_url` no se firma un objeto inexistente; el jefe se avisa igual (sin PDF) y al chofer se le dice que el PDF no se generó', async () => {
@@ -545,6 +584,62 @@ describe('C1 — el reintento sin viaje abierto no niega un cierre reciente', ()
     await processInbound(listo);
     expect(sellarEntregaLiquidacion.mock.calls.map((c) => c[2])).not.toContain('entregada_operador_en');
     expect(textos().join(' | ')).toMatch(/no se te pudo entregar/i);
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 28 · AG-A1 (ALTO, reincidente desde la 26, agentico.md:32) —
+  // el sello de grano grueso de la 25 (arriba) resolvía «el PDF llegó o no»,
+  // pero dejaba fuera dos casos que TAMPOCO se arreglan reintentando desde
+  // el chat: `encolado` (el outbox ya tiene el payload) y `definitivo` (Meta
+  // rechazó con un código que nunca va a cambiar, p. ej. 131030). Sin esto,
+  // cada «gracias» del chofer volvía a firmar Storage y a pegarle a la Graph
+  // API — hasta por 24 h — sobre algo que ya no iba a resolverse solo.
+  // ═══════════════════════════════════════════════════════════════════════
+  it('AG-A1-b: PDF del jefe ENCOLADO (red caída, sin código) también sella avisada_oficina_en', async () => {
+    liquidacionReciente.mockResolvedValue(cerradaSinEntregar());
+    avisarCierreAlJefe.mockResolvedValueOnce({ enviado: true, pdfEnviado: false, pdfEstado: 'encolado' });
+    await processInbound(listo);
+    expect(sellarEntregaLiquidacion.mock.calls.map((c) => c[2])).toContain('avisada_oficina_en');
+    expect(alertarOperador).not.toHaveBeenCalledWith('cierre.pdf_jefe_definitivo', expect.anything());
+  });
+
+  it('AG-A1-b: PDF del jefe DEFINITIVO (código no reintentable) sella avisada_oficina_en y alerta UNA vez', async () => {
+    liquidacionReciente.mockResolvedValue(cerradaSinEntregar());
+    avisarCierreAlJefe.mockResolvedValueOnce({
+      enviado: true, pdfEnviado: false, pdfEstado: 'definitivo',
+      motivo: 'WhatsApp rechazó el documento: número inválido (131030)',
+    });
+    await processInbound(listo);
+    expect(sellarEntregaLiquidacion.mock.calls.map((c) => c[2])).toContain('avisada_oficina_en');
+    expect(alertarOperador).toHaveBeenCalledTimes(1);
+    expect(alertarOperador).toHaveBeenCalledWith('cierre.pdf_jefe_definitivo', expect.objectContaining({ viaje: 'v1' }));
+  });
+
+  it('AG-A1-e: PDF del CHOFER encolado (falla de red, sin código) sella entregada_operador_en', async () => {
+    liquidacionReciente.mockResolvedValue(cerradaSinEntregar());
+    // Sin `codigo`: el mismo camino de red que `sendDocument` ya encola por
+    // su cuenta (ver `meta/client.ts`) antes de devolver `{ok:false}`.
+    fetchSpy.mockImplementationOnce(async () => { throw new Error('fetch failed'); });
+    await processInbound(listo);
+    expect(sellarEntregaLiquidacion.mock.calls.map((c) => c[2])).toContain('entregada_operador_en');
+    expect(textos().join(' | ')).toMatch(/liquidado/i);
+  });
+
+  // AUDITORÍA 28 · AG-A1-d — el techo EN PROCESO. Una flota sin teléfono de
+  // oficina nunca va a sellar `avisada_oficina_en` (nadie recibió nada), así
+  // que sin techo cada «gracias» del chofer dentro de las 24 h repetiría el
+  // intento de avisar al jefe (y su log de error) para siempre.
+  it('AG-A1-d: técho en proceso — tras el techo, ya no se vuelve a llamar avisarCierreAlJefe para la misma liquidación', async () => {
+    liquidacionReciente.mockResolvedValue(cerradaSinEntregar());
+    avisarCierreAlJefe.mockResolvedValue({ enviado: false, motivo: 'Esa flota no tiene un teléfono de oficina registrado.', pdfEnviado: null, pdfEstado: null });
+
+    await processInbound(listo);
+    await processInbound(listo);
+    await processInbound(listo);
+
+    // TECHO_REENTREGAS_POR_PROCESO = 2: la 3ª vuelta ya no llama.
+    expect(avisarCierreAlJefe).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith('cierre.reentrega_agotada', expect.objectContaining({ liq: 'L1' }));
   });
 
   it('sin liquidación reciente, el mensaje de siempre (regresión)', async () => {

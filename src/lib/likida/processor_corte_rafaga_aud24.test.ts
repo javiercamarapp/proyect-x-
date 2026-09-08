@@ -20,6 +20,16 @@ const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 vi.mock('@/lib/logger', () => ({ logger }));
 vi.mock('@/lib/agents/run', () => ({ runAgent: vi.fn() }));
 
+// AG-B1 (auditoría 28, agentico.md:38): el corte por falta de reloj registra
+// el costo del WhatsApp con el tenant de la bandeja. Este archivo NO mockeaba
+// `@/lib/likida/costos`: sin el mock, un `registrarCostoWhatsApp` con tenant
+// real intentaría tocar la base de verdad.
+const registrarCostoWhatsApp = vi.fn();
+vi.mock('@/lib/likida/costos', () => ({
+  registrarCosto: vi.fn(), registrarCostoWhatsApp: (...a: unknown[]) => registrarCostoWhatsApp(...a),
+  faseDeModelo: vi.fn(() => 'cuadre'), vincularCostosALiquidacion: vi.fn(),
+}));
+
 const salientes: { to: string; body: string }[] = [];
 const fetchSpy = vi.fn(async (_url: string, init?: RequestInit) => {
   const b = JSON.parse(String(init?.body ?? '{}')) as { to: string; text?: { body: string } };
@@ -40,6 +50,7 @@ const sinReloj = { inicioInvocacionMs: Date.now() - 118_000 };
 beforeEach(() => {
   salientes.length = 0;
   logger.info.mockReset(); logger.warn.mockReset(); logger.error.mockReset();
+  registrarCostoWhatsApp.mockClear();
   vi.stubGlobal('fetch', fetchSpy);
   fetchSpy.mockClear();
   process.env.WHATSAPP_ACCESS_TOKEN = 'tok-de-prueba';
@@ -83,5 +94,35 @@ describe('AGEN-A2 — el corte por falta de reloj cierra SOLO la libreta del cho
     expect(await processInbound(fotoDeB, sinReloj)).toBe('sin_tiempo');
     expect(salientes).toHaveLength(0);
     expect(rafaga.bandejasAbiertas().map((b) => b.viajeId)).toEqual(['V-A']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28 · AG-B1 (BAJO, 5ª ronda, agentico.md:38) — `cerrarRafagasPorCorte`
+// mandaba el resumen con `sendText` directo, sin `registrarCostoWhatsApp`. La
+// bandeja ahora guarda el `tenantId` (aditivo, junto al teléfono) y el corte
+// lo usa para no dejar ese mensaje fuera del costo por flota/viaje.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AG-B1 — el corte registra el costo de WhatsApp con el tenant de la bandeja', () => {
+  it('registrarCostoWhatsApp se llama con el tenant y el viaje de la bandeja que cerró', async () => {
+    rafaga.anotarFoto('V-B', true, TEL_B, 't-b');
+    rafaga.anotarIncidencia('V-B', { tipo: 'fallo_tecnico' });
+
+    expect(await processInbound(fotoDeB, sinReloj)).toBe('sin_tiempo');
+
+    expect(salientes).toHaveLength(1);
+    expect(registrarCostoWhatsApp).toHaveBeenCalledTimes(1);
+    expect(registrarCostoWhatsApp).toHaveBeenCalledWith('t-b', 'V-B');
+  });
+
+  it('sin tenantId en la bandeja (llamador viejo), NO se registra costo — pero el mensaje sí sale', async () => {
+    // Mismo caso que las pruebas de arriba: `anotarFoto` sin el 4º argumento.
+    rafaga.anotarFoto('V-B', true, TEL_B);
+    rafaga.anotarIncidencia('V-B', { tipo: 'fallo_tecnico' });
+
+    expect(await processInbound(fotoDeB, sinReloj)).toBe('sin_tiempo');
+
+    expect(salientes).toHaveLength(1);
+    expect(registrarCostoWhatsApp).not.toHaveBeenCalled();
   });
 });
