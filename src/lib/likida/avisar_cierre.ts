@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { acotada } from './presupuesto';
-import { sendDocument } from '@/lib/meta/client';
+import { sendDocument, esReintentableMeta } from '@/lib/meta/client';
 import { avisarOficina, parametrosAvisoOficina } from '@/lib/meta/aviso_oficina';
 import { appUrl } from '@/lib/env';
 import { alertarOperador } from '@/lib/observability/alerta';
@@ -58,6 +58,62 @@ export interface ResultadoAvisoCierre {
    * reintente el PDF en vez de darlo por entregado para siempre.
    */
   pdfEnviado: boolean | null;
+  /**
+   * AG-A1 (auditoría 28, agentico.md:32) — LO MISMO que `pdfEnviado`, pero con
+   * el detalle que decide si el llamador puede sellar sin martillar Meta en
+   * cada «gracias» del chofer:
+   *   · `'enviado'`    — Meta aceptó el documento.
+   *   · `'encolado'`   — no salió, pero `sendDocument` YA lo metió a
+   *     `wa_outbox` (red caída, o un código de `esReintentableMeta`): el
+   *     outbox lo reintenta solo, y sellar aquí no pierde el PDF.
+   *   · `'definitivo'` — Meta lo rechazó con un código NO reintentable (p.
+   *     ej. 131030, destinatario fuera de la lista de pruebas): reintentarlo
+   *     desde el chat nunca va a funcionar, así que el llamador puede sellar
+   *     y avisar UNA vez en vez de repetir el intento por cada mensaje.
+   *   · `null` — no se pasó `urlPdf` a esta llamada (nada que enviar aquí), o
+   *     `sendDocument` lanzó de verdad (excepción, no un `{ok:false}` — caso
+   *     que en teoría ya no ocurre, ver el comentario de más abajo).
+   */
+  pdfEstado: 'enviado' | 'encolado' | 'definitivo' | null;
+}
+
+/**
+ * ¿Ya se puede sellar la entrega del PDF del jefe? (AG-A1)
+ *
+ * `!pdfUrl` — nunca hubo nada que mandar aquí: no hay nada pendiente.
+ * `pdfEnviado === true` — Meta lo aceptó (compatibilidad con el contrato
+ * viejo, por si un llamador construye el resultado a mano, como hacen varias
+ * pruebas que mockean `avisarCierreAlJefe` entero).
+ * `pdfEstado === 'encolado' | 'definitivo'` — no llegó, pero no hay ningún
+ * reintento del CHAT que lo vaya a arreglar: el outbox lo tiene, o Meta ya
+ * dijo que no. Machacar `entregarCierrePendiente` sobre esto no ayuda, solo
+ * gasta Storage y Graph API una vez por «gracias».
+ */
+export function pdfListoParaSellar(
+  pdfUrl: string | null | undefined,
+  rj: Pick<ResultadoAvisoCierre, 'pdfEnviado' | 'pdfEstado'>,
+): boolean {
+  if (!pdfUrl) return true;
+  if (rj.pdfEnviado === true) return true;
+  return rj.pdfEstado === 'encolado' || rj.pdfEstado === 'definitivo';
+}
+
+/**
+ * El estado del PDF a partir de lo que YA devolvió `sendDocument` — sin
+ * volver a decidir si Meta lo aceptó, solo a traducirlo (AG-A1).
+ *
+ * EXPORTADA: el mismo contrato de `sendDocument` (`{ok, codigo?}`) lo usan
+ * DOS llamadores — el PDF del jefe (aquí abajo) y el PDF del CHOFER
+ * (`entregarCierrePendiente`, processor.ts). Un solo lugar decide qué
+ * significa cada `codigo`, para que los dos lean lo mismo.
+ */
+export function pdfEstadoDe(r: { ok: boolean; codigo?: number }): 'enviado' | 'encolado' | 'definitivo' {
+  if (r.ok) return 'enviado';
+  // Sin código: fue el catch de red de `sendDocument` (fetch nunca contestó),
+  // y ESE camino ya encola el payload antes de devolver `{ok:false}` — ver
+  // `meta/client.ts`. No hay nada "definitivo" que decir de un socket caído.
+  if (r.codigo === undefined) return 'encolado';
+  return esReintentableMeta(r.codigo) ? 'encolado' : 'definitivo';
 }
 
 /**
@@ -131,7 +187,7 @@ export async function avisarCierreAlJefe(args: {
     // ERROR y no WARN: esta flota no se va a enterar de NINGÚN cierre hasta que
     // alguien capture el teléfono, y no hay otro lugar donde se note.
     logger.error('cierre.sin_telefono_de_jefe', { tenantId: args.tenantId, viaje: args.viajeId });
-    return { enviado: false, motivo: 'Esa flota no tiene un teléfono de oficina registrado.', pdfEnviado: null };
+    return { enviado: false, motivo: 'Esa flota no tiene un teléfono de oficina registrado.', pdfEnviado: null, pdfEstado: null };
   }
 
   // ── DUEÑO-OPERADOR: UN SOLO NÚMERO, UN SOLO AVISO ───────────────────────
@@ -155,12 +211,12 @@ export async function avisarCierreAlJefe(args: {
       // pdfEnviado:true — no se intenta OTRO envío (es justo lo que este
       // caso evita), pero el papel YA lo tiene por el hilo del chofer: no
       // hay nada pendiente que el sello deba dejar para reintentar.
-      return { enviado: true, motivo: 'el jefe y el chofer son el mismo número: ya lo recibió por su propio hilo', pdfEnviado: true };
+      return { enviado: true, motivo: 'el jefe y el chofer son el mismo número: ya lo recibió por su propio hilo', pdfEnviado: true, pdfEstado: 'enviado' };
     }
   }
 
   const resumen = await resumenDeCierre(args.tenantId, args.viajeId);
-  if (!resumen) return { enviado: false, motivo: 'No se encontró la liquidación cerrada.', pdfEnviado: null };
+  if (!resumen) return { enviado: false, motivo: 'No se encontró la liquidación cerrada.', pdfEnviado: null, pdfEstado: null };
 
   const { texto, requiereDecision } = armarAvisoJefe(resumen);
 
@@ -205,6 +261,7 @@ export async function avisarCierreAlJefe(args: {
   // faltaba era que este hecho saliera de la función, porque antes se
   // perdía en el log y `enviado: true` lo tapaba entero.
   let pdfEnviado: boolean | null = null;
+  let pdfEstado: ResultadoAvisoCierre['pdfEstado'] = null;
   if (args.urlPdf) {
     // En su propio try: el texto ya salió, y perder el adjunto no debe borrar
     // el aviso que sí llegó.
@@ -222,8 +279,14 @@ export async function avisarCierreAlJefe(args: {
       const r = await sendDocument(tel, args.urlPdf, `liquidacion-${resumen.folio}.pdf`,
         `Liquidación de ${resumen.operador} — ${resumen.folio}`);
       pdfEnviado = r.ok;
+      pdfEstado = pdfEstadoDe(r);
       if (!r.ok) logger.warn('cierre.pdf_al_jefe_falló', { viaje: args.viajeId, err: r.error });
     } catch (e) {
+      // Excepción de verdad, no un `{ok:false}` — en teoría ya no debería
+      // ocurrir (ver el comentario de arriba), así que no se le atribuye un
+      // estado que no se puede sustentar: se queda `null`, y el llamador NO
+      // sella (AG-A1-b) — es justo la excepción "transitoria por naturaleza"
+      // que el diseño acepta dejar sin sellar.
       pdfEnviado = false;
       logger.warn('cierre.pdf_al_jefe_falló', { viaje: args.viajeId, err: e instanceof Error ? e.message : String(e) });
     }
@@ -232,8 +295,8 @@ export async function avisarCierreAlJefe(args: {
   // El fallo del texto se reporta DESPUÉS de intentar el PDF: el llamador
   // sigue viendo `enviado: false` (y loguea `cierre.jefe_no_avisado`), pero
   // el documento ya se intentó mandar de todos modos.
-  if (motivoTexto) return { enviado: false, motivo: motivoTexto, fueraDeVentana, pdfEnviado };
+  if (motivoTexto) return { enviado: false, motivo: motivoTexto, fueraDeVentana, pdfEnviado, pdfEstado };
 
-  logger.info('cierre.avisado_al_jefe', { viaje: args.viajeId, requiereDecision, via, pdfEnviado });
-  return via ? { enviado: true, via, pdfEnviado } : { enviado: true, pdfEnviado };
+  logger.info('cierre.avisado_al_jefe', { viaje: args.viajeId, requiereDecision, via, pdfEnviado, pdfEstado });
+  return via ? { enviado: true, via, pdfEnviado, pdfEstado } : { enviado: true, pdfEnviado, pdfEstado };
 }

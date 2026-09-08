@@ -93,7 +93,7 @@ import { atenderComandoAdmin } from './admin_comandos_wa';
 import { atenderConfirmacion, aceptarPorActividad } from './confirmar_viaje';
 import { enviarBriefingInicio } from './briefing_inicio_wa';
 import { transcribirNotaDeVoz, RESPUESTA_NO_ENTENDI, RESPUESTA_SIN_PRESUPUESTO } from './voz_transcrita';
-import { avisarCierreAlJefe } from './avisar_cierre';
+import { avisarCierreAlJefe, pdfListoParaSellar, pdfEstadoDe } from './avisar_cierre';
 import { rutaPdfOperador } from './liquidacion/rutas_pdf';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
@@ -1063,15 +1063,85 @@ const COLOFON_SIN_PRESUPUESTO = 'Hoy tu flota ya agotó su cupo de IA, así que 
 // al jefe. Ahora lee los dos sellos de la 0279 y ENTREGA lo que falte: el PDF
 // del operador si nunca salió, el aviso a la oficina si nunca salió. Lo
 // sellado no se repite. Best-effort en cada pata, nunca lanza.
+//
+// AUDITORÍA 28 · AG-A1 (ALTO, reincidente desde la 26, agentico.md:32) — lo
+// que NO llegaba a sellarse se REPETÍA: un PDF rechazado por Meta con un
+// código NO reintentable (131030, número fuera de la lista de pruebas de
+// Meta) volvía a firmar Storage y a pegarle a la Graph API en CADA «gracias»
+// del chofer durante 24 h (`VENTANA_LIQUIDACION_RECIENTE_MS`), y lo mismo con
+// `alertarOperador` cuando la flota no tenía teléfono de oficina o su ventana
+// de 24 h estaba cerrada sin plantilla. El arreglo tiene dos piezas:
+//   · lo que SÍ se puede sellar sin mentir, se sella: `pdfListoParaSellar`
+//     (avisar_cierre.ts) trata `encolado` (el outbox ya lo tiene) y
+//     `definitivo` (Meta ya dijo que no) como resuelto — con una alerta UNA
+//     sola vez para el caso definitivo, antes de sellar;
+//   · lo que NO se puede sellar sin mentir (nadie recibió nada: sin teléfono
+//     de oficina, ventana cerrada sin plantilla) tiene un TECHO POR PROCESO
+//     — ver `TECHO_REENTREGAS_POR_PROCESO`.
 // ═══════════════════════════════════════════════════════════════════════════
 type EntregaPendiente = {
   pdf: 'mandado' | 'ya_entregado' | 'sin_pdf' | 'fallo';
   jefe: 'avisado' | 'ya_avisado' | 'fallo';
 };
 
+/**
+ * AG-A1 — techo POR PROCESO a las reentregas de una misma liquidación.
+ *
+ * `entregarCierrePendiente` solo la llama el reintento del «listo» sin viaje
+ * abierto, y SOLO cuando queda algo sin sellar (el llamador ya filtra el
+ * caso "los dos sellos están puestos" antes de invocarla). Sin este techo,
+ * un caso que NO se puede sellar sin mentir —flota sin teléfono de oficina,
+ * ventana de 24 h cerrada sin plantilla— repite Storage + Graph API +
+ * `alertarOperador` en cada mensaje del chofer, por hasta 24 h.
+ *
+ * ES UN LÍMITE POR PROCESO, no persistente: una invocación serverless NUEVA
+ * arranca en cero y vuelve a intentar hasta el techo — no evita el martilleo
+ * entre invocaciones frías, solo dentro de la misma. Un contador que
+ * sobreviviera entre invocaciones exigiría una columna nueva en
+ * `liquidacion` (p. ej. `reentregas_intentadas`): eso es una migración y
+ * queda fuera de este lote.
+ */
+const TECHO_REENTREGAS_POR_PROCESO = 2;
+const intentosReentrega = new Map<string, number>();
+/** Mismo criterio de desalojo que `MAX_VIAJES` en `intake/rafaga.ts`: un
+ *  techo al tamaño del Map para que un proceso de vida larga no lo deje
+ *  crecer sin límite. */
+const MAX_LIQUIDACIONES_CON_TECHO = 500;
+
+/** `true` si esta liquidación ya agotó su techo de reentregas EN ESTE
+ *  PROCESO. Cuenta el intento actual como parte del techo. */
+function reentregaAgotada(liquidacionId: string): boolean {
+  const previos = intentosReentrega.get(liquidacionId) ?? 0;
+  if (previos >= TECHO_REENTREGAS_POR_PROCESO) return true;
+  if (!intentosReentrega.has(liquidacionId) && intentosReentrega.size >= MAX_LIQUIDACIONES_CON_TECHO) {
+    const vieja = intentosReentrega.keys().next();
+    if (!vieja.done) intentosReentrega.delete(vieja.value);
+  }
+  intentosReentrega.set(liquidacionId, previos + 1);
+  return false;
+}
+
+/** Solo para pruebas: el Map es de módulo y se comparte entre casos — mismo
+ *  patrón que `olvidarRafagas` en `intake/rafaga.ts`. */
+export function olvidarReentregasCierre(): void {
+  intentosReentrega.clear();
+}
+
 async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, liq: LiquidacionReciente): Promise<EntregaPendiente> {
   const admin = supabaseAdmin();
   const ctx = { tenant: op.tenantId, viaje: liq.viajeId, liq: liq.liquidacionId, reentrega: true };
+
+  // El llamador (rama «sin viaje abierto») ya filtró el caso «los dos sellos
+  // están puestos» y solo entra aquí cuando queda algo pendiente — así que
+  // este techo gobierna la función ENTERA: si se agotó, ni el PDF del chofer
+  // ni el aviso al jefe se vuelven a intentar en este proceso.
+  if (reentregaAgotada(liq.liquidacionId)) {
+    logger.warn('cierre.reentrega_agotada', { ...ctx, techo: TECHO_REENTREGAS_POR_PROCESO });
+    return {
+      pdf: !liq.pdfUrl ? 'sin_pdf' : (liq.entregadaOperadorEn ? 'ya_entregado' : 'fallo'),
+      jefe: liq.avisadaOficinaEn ? 'ya_avisado' : 'fallo',
+    };
+  }
 
   let pdf: EntregaPendiente['pdf'];
   if (!liq.pdfUrl) {
@@ -1084,14 +1154,27 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
       const firma = await acotada(admin.storage.from('liquidaciones').createSignedUrl(rutaPdfOperador(liq.pdfUrl, op.tenantId, liq.viajeId), TTL_FIRMA_PDF_SEGUNDOS), 'createSignedUrl.reentrega');
       if (firma.error || !firma.data?.signedUrl) throw new Error(firma.error?.message ?? 'storage no devolvió URL firmada');
       const r = await sendDocument(telefono, firma.data.signedUrl, 'liquidacion.pdf', 'Aquí está tu liquidación 📄');
-      if (!r.ok) {
-        logger.error('pdf.no_entregado', { ...ctx, codigo: r.codigo, error: r.error });
-        await alertarOperador('pdf.no_entregado', { ...ctx, codigo: r.codigo, error: r.error });
-        pdf = 'fallo';
-      } else {
+      const estado = pdfEstadoDe(r);
+      if (r.ok) {
         await registrarCostoWhatsApp(op.tenantId, liq.viajeId);
         await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en', liq.pdfUrl);
         pdf = 'mandado';
+      } else if (estado === 'encolado') {
+        // AG-A1-e: `sendDocument` YA metió el payload (con la misma URL
+        // firmada) a `wa_outbox` — el outbox lo reintenta solo, y sellar
+        // aquí no pierde el PDF; evita que el siguiente «gracias» vuelva a
+        // firmar Storage sobre algo que ya está en camino.
+        logger.info('pdf.encolado', { ...ctx, codigo: r.codigo });
+        await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'entregada_operador_en', liq.pdfUrl);
+        pdf = 'mandado';
+      } else {
+        // `definitivo`: Meta lo rechazó para siempre. NO se sella —no se
+        // entregó de verdad, y el texto de abajo (`'fallo'`) le dice la
+        // verdad al chofer— pero el techo de arriba impide que esto se
+        // repita en cada mensaje.
+        logger.error('pdf.no_entregado', { ...ctx, codigo: r.codigo, error: r.error, estado });
+        await alertarOperador('pdf.no_entregado', { ...ctx, codigo: r.codigo, error: r.error, estado });
+        pdf = 'fallo';
       }
     } catch (e) {
       logger.error('pdf.no_entregado', { ...ctx, err: e instanceof Error ? e.message : String(e), codigo: codigoDeError(e) });
@@ -1112,12 +1195,20 @@ async function entregarCierrePendiente(op: ResolvedOperador, telefono: string, l
         else urlPdfJefe = firma.data.signedUrl;
       }
       const rj = await avisarCierreAlJefe({ tenantId: op.tenantId, viajeId: liq.viajeId, urlPdf: urlPdfJefe, telefonoOperador: telefono });
-      // AUDITORÍA 25 (MEDIO, agentico.md:526): mismo candado que el camino
-      // feliz — si había PDF del contralor (`liq.pdfUrl`) y no llegó, no se
-      // sella. Ésta es precisamente la reentrega (AGEN-4): si sella aquí sin
-      // el PDF, ya no queda ningún turno futuro que lo reintente.
-      const pdfJefeOk = !liq.pdfUrl || rj.pdfEnviado === true;
+      // AG-A1-b: ya no exige `pdfEnviado === true` a secas. `pdfListoParaSellar`
+      // también acepta `encolado` (el outbox lo tiene) y `definitivo` (Meta
+      // ya dijo que no) como resuelto — sin esto, cada «gracias» repetía el
+      // texto «requiere tu decisión» al contralor y otro intento del PDF
+      // (auditoría 28, AG-A1; es el "se duplicó el sistema" que
+      // `avisar_cierre.ts` ya documentaba).
+      const pdfJefeOk = pdfListoParaSellar(liq.pdfUrl, rj);
       if (rj.enviado && pdfJefeOk) {
+        if (rj.pdfEstado === 'definitivo') {
+          // Se avisa UNA vez —queda sellado, no se repite— y el motivo va al
+          // log: el ejemplar del contralor no llegó y nadie más lo va a decir.
+          logger.error('cierre.pdf_jefe_definitivo', { ...ctx, motivo: rj.motivo });
+          await alertarOperador('cierre.pdf_jefe_definitivo', { ...ctx, motivo: rj.motivo });
+        }
         await sellarEntregaLiquidacion(op.tenantId, liq.liquidacionId, 'avisada_oficina_en', liq.pdfUrl);
         jefe = 'avisado';
       } else {
@@ -1143,6 +1234,20 @@ function mensajeCierreConfirmado(e: EntregaPendiente): string {
     case 'fallo': return `${cabeza} El PDF no se te pudo entregar por el chat; pídeselo a tu contralor: él ya lo tiene en el panel. 🙏`;
   }
 }
+
+/**
+ * AG-A1-f — cuando el reintento del «listo» encuentra un cierre reciente con
+ * los DOS sellos (0279) ya puestos, no hay nada que entregar: no se llama a
+ * `entregarCierrePendiente` (ni Storage, ni Graph API, ni un log de
+ * "cierre_confirmado" que sugiera que se hizo algo) y se contesta esto.
+ *
+ * NO es el caso C1 de la auditoría 21 (el chofer que se quedó SIN su PDF
+ * porque el ciclo murió antes de `entregarCierrePendiente`): éste es el caso
+ * en que YA se le entregó todo — sellos puestos por este mismo mecanismo o
+ * por el camino feliz — y lo único honesto es decírselo sin repetir trabajo
+ * que ya se hizo.
+ */
+const MENSAJE_CIERRE_YA_ENTREGADO = 'Tu último viaje ya quedó liquidado ✅ y ya te mandé lo tuyo. No tienes ninguno abierto ahorita.';
 
 /** TTL de las URLs firmadas de los PDF (segundos). Ver AGEN-9: el outbox
  *  reintenta a ≥ 5 min, así que una firma de 60 s nacía muerta. */
@@ -2102,6 +2207,16 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
       try {
         const reciente = await liquidacionRecienteDe(op.tenantId, op.operadorId);
         if (reciente) {
+          // AG-A1-f: si al ENTRAR los dos sellos ya estaban puestos, no hay
+          // nada que entregar — ni Storage, ni Graph API, ni un aviso al
+          // jefe que ya se mandó. Contestar la verdad corta y NO llamar a
+          // `entregarCierrePendiente` es lo que evita que cada «gracias»
+          // dentro de las 24 h repita ese trabajo sobre un cierre que ya
+          // quedó resuelto por completo.
+          if (reciente.entregadaOperadorEn && reciente.avisadaOficinaEn) {
+            await sendText(msg.from, MENSAJE_CIERRE_YA_ENTREGADO);
+            return;
+          }
           logger.info('sin_viaje.cierre_confirmado', { tenant: op.tenantId, operador: op.operadorId, viaje: reciente.viajeId, liq: reciente.liquidacionId });
           // AGEN-4: se ENTREGA lo que ese cierre dejó pendiente (PDF al
           // chofer, aviso al jefe) y se narra lo que de verdad pasó.
@@ -4598,11 +4713,27 @@ async function procesarTurno(msg: InboundMessage, reloj: Presupuesto, soltarClai
         // `entregarCierrePendiente` nunca volvía a intentar el PDF: el
         // ejemplar que el contralor necesita para su contador se perdía
         // para siempre detrás de un sello que decía "ya avisado".
-        const pdfJefeOk = !pdfContralorGenerado || rj.pdfEnviado === true;
+        //
+        // AG-A1-b (auditoría 28, agentico.md:32): `rj.pdfEnviado === true` a
+        // secas dejaba fuera dos casos que TAMPOCO se van a arreglar solos
+        // desde este chat — `encolado` (el outbox ya tiene el payload) y
+        // `definitivo` (Meta lo rechazó para siempre, p. ej. 131030) — y esos
+        // dos NO se sellaban: el «gracias» siguiente volvía a mandar el texto
+        // «requiere tu decisión» y a reintentar el PDF sobre lo mismo.
+        const pdfJefeOk = !pdfContralorGenerado
+          || rj.pdfEnviado === true
+          || rj.pdfEstado === 'encolado'
+          || rj.pdfEstado === 'definitivo';
         if (!rj.enviado) logger.warn('cierre.jefe_no_avisado', { viaje: viajeId, motivo: rj.motivo });
         else if (!pdfJefeOk) logger.warn('cierre.jefe_avisado_sin_pdf', { viaje: viajeId, teniaUrlFirmada: urlPdfJefe != null });
-        // AGEN-4: sello — el reintento de un «listo» no vuelve a avisar.
-        else await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en', pdfPathCerrado);
+        else {
+          if (rj.pdfEstado === 'definitivo') {
+            logger.error('cierre.pdf_jefe_definitivo', { viaje: viajeId, motivo: rj.motivo });
+            await alertarOperador('cierre.pdf_jefe_definitivo', { viaje: viajeId, tenant: op.tenantId, motivo: rj.motivo });
+          }
+          // AGEN-4: sello — el reintento de un «listo» no vuelve a avisar.
+          await sellarEntregaLiquidacion(op.tenantId, liqIdCerrada, 'avisada_oficina_en', pdfPathCerrado);
+        }
       } catch (e) {
         logger.error('cierre.aviso_jefe_falló', { viaje: viajeId, err: e instanceof Error ? e.message : String(e) });
       }
