@@ -18084,3 +18084,66 @@ begin
   raise exception E'HUERFANO_VINCULO_0322 mismo=% vinculado=% secuestro=% permisos=%   (esperado t / t / t / t)',
     mismo, vinculado, secuestro_bloqueado, permisos;
 end $$;
+
+-- ── 267. El agregado fiscal no cuenta copias del mismo comprobante (mig. 0355) ──
+--
+-- FIS-A3 (auditoría 28): dos fotos del MISMO ticket (mismo folio, mismo
+-- monto, sin CFDI) coincidían en las 26 dimensiones de agrupación y se
+-- sumaban como si fueran dos comprobantes reales. Mismo criterio que
+-- copiasDeComprobante (engine.ts) y sumar_combustible_ejercicio (0349):
+-- folio_norm/monto para el camino sin CFDI, (cfdi_uuid, cfdi_orden) para el
+-- camino con CFDI — el segundo NO se puede sembrar con una copia real porque
+-- uq_gasto_cfdi_uuid ya la prohíbe a nivel de índice único (mismo límite que
+-- documentó 0349), así que aquí solo se ejercita el camino por folio.
+-- Esperado: FISCAL_SIN_COPIAS_0355 n=t monto=t iva=t distingue-distinto=t
+do $$
+declare
+  ta uuid; oa uuid; va uuid;
+  j jsonb; n_celda int; monto_celda numeric; iva_celda numeric;
+  n_ok boolean; monto_ok boolean; iva_ok boolean; distingue boolean;
+begin
+  insert into tenant (nombre) values ('ZZZ VERIF 0355') returning id into ta;
+  insert into operador (tenant_id, nombre, telefono) values (ta, 'ZZZ 0355', '5215559990355') returning id into oa;
+  insert into viaje (tenant_id, operador_id, folio, estatus, fecha_inicio, anticipo)
+    values (ta, oa, 'ZZZ-0355', 'abierto', current_date - 3, 1000) returning id into va;
+
+  -- Misma foto, tomada dos veces: mismo folio, mismo monto, mismo IVA.
+  insert into gasto (tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm, iva_traslado)
+  values
+    (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F1', 'ZZZ-0355-F1', 48),
+    (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F1', 'ZZZ-0355-F1', 48);
+
+  j := gastos_fiscales_agregados_tenant(ta, null, null, 2000, 750,
+         array['alimentacion','viaticos'], '{}'::date[],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
+
+  select (x->>'n')::int, (x->>'monto')::numeric, (x->>'iva')::numeric
+    into n_celda, monto_celda, iva_celda
+    from jsonb_array_elements(j) x where x->>'concepto' = 'caseta';
+
+  n_ok     := n_celda = 1;
+  monto_ok := monto_celda = 348;
+  iva_ok   := iva_celda = 48;
+
+  -- Un folio DISTINTO, mismo monto: no es copia, debe sumar aparte.
+  insert into gasto (tenant_id, viaje_id, concepto, monto, fecha, folio, folio_norm, iva_traslado)
+  values (ta, va, 'caseta', 348, current_date - 2, 'ZZZ-0355-F2', 'ZZZ-0355-F2', 48);
+
+  j := gastos_fiscales_agregados_tenant(ta, null, null, 2000, 750,
+         array['alimentacion','viaticos'], '{}'::date[],
+         p_claves_combustible => array['15101505','15101514','15101515'],
+         p_vigente_desde => '2026-04-24'::date, p_exigible_desde => null::date,
+         p_umbral_renglones_ajenos => 0.15,
+         p_patron_bar => '\y(bar|bares|cantina|cervecer[ií]a|pulquer[ií]a|antro|cabaret|table\s*dance|vinos\s+y\s+licores)\y',
+         p_hoy => current_date);
+
+  select (x->>'n')::int into n_celda from jsonb_array_elements(j) x where x->>'concepto' = 'caseta';
+  distingue := n_celda = 2;
+
+  raise exception E'FISCAL_SIN_COPIAS_0355 n=% monto=% iva=% distingue-distinto=%   (esperado t / t / t / t)',
+    n_ok, monto_ok, iva_ok, distingue;
+end $$;
