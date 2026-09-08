@@ -128,7 +128,7 @@ export function decidir({ asunto, codigo, prefijosCodigo = null, health }) {
     if (faltantes.length > 0) {
       return bloquear(
         `la base no tiene aplicada(s) ${faltantes.length} migración(es) del repo: ${faltantes.slice(0, 12).join(', ')}${faltantes.length > 12 ? '…' : ''}. ` +
-        'Aplícalas primero (scripts/aplicar-migraciones-y-humos.sh), confirma /api/health y vuelve a pushear con [deploy].',
+        'Aplícalas primero (scripts/aplicar-migraciones-y-humos.sh, que ahora verifica el conjunto completo contra `migraciones_aplicadas()`), confirma /api/health y vuelve a pushear con [deploy].',
       );
     }
     return { construir: true, nivel: 'ok', motivo: `base ${m.base} tiene aplicado el CONJUNTO completo de migraciones del código (${prefijosCodigo.length}): se construye.` };
@@ -140,7 +140,7 @@ export function decidir({ asunto, codigo, prefijosCodigo = null, health }) {
   if (atras > 0) {
     return bloquear(
       `la base está en ${m.base} y el código que vas a publicar llega a ${codigo}: faltan ${atras} migración(es) (${siguiente(m.base)}..${codigo}). ` +
-      'Aplícalas primero (scripts/aplicar-migraciones-y-humos.sh), confirma /api/health con migracion.atras=0 y vuelve a pushear con [deploy].',
+      'Aplícalas primero (scripts/aplicar-migraciones-y-humos.sh, que ahora verifica el conjunto completo contra `migraciones_aplicadas()`), confirma /api/health con migracion.atras=0 y vuelve a pushear con [deploy].',
     );
   }
   return { construir: true, nivel: 'ok', motivo: `base ${m.base} a la par del código ${codigo} (cotejo por máximo, health anterior a esta ronda): se construye.` };
