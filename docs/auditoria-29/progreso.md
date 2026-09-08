@@ -27,3 +27,39 @@ Diario de la ronda. Una línea por acción, con su sha cuando la hay. Se escribe
 
 Lanzados en un solo mensaje, contexto fresco, uno por rubro, ninguno toca código.
 
+## Estado de producción — MEDIDO por el orquestador, no inferido
+
+La 28 dejó abierto: «producción corre `4f94490` (3-sep, 231 commits atrás)
+contra el esquema `0347`; publicar exige una mano humana». Verificado hoy
+contra la API de GitHub, corrida **34212560163** (`salud-produccion.yml`,
+schedule, 8-sep 09:54 UTC, `head_sha=7bcc319`), **en rojo**:
+
+```
+http=503 estado=degraded crons=degraded
+migracion={"base":"0347","codigo":"0347","atras":0, ...}
+desplegado=d56e626 ultimo_[deploy]=d56e626
+Producción corre el último [deploy] (d56e626) o uno posterior.
+cadencia: declarada=30min real=268min (corrida anterior: 2026-09-08T05:26:06Z)
+Ya hay un issue abierto (#365); no se duplica.
+```
+
+Tres lecturas, y las tres importan:
+
+1. **La deriva de esquema SE CERRÓ.** `base=0347`, `codigo=0347`, `atras=0`, y
+   el cotejo dice que producción corre el último `[deploy]`. La mano humana
+   ocurrió: el CRÍTICO estrella de la 28 (código viejo contra esquema nuevo, la
+   RPC fiscal rota) **ya no aplica**. Se acredita a quien lo publicó, no a este
+   repo.
+2. **Producción sigue en rojo, por OTRA causa.** `crons=degraded` con HTTP 503.
+   El pulso lleva rojo desde el 7-sep 19:20 (**issue #365 abierto ~15 h**). El
+   #344 de la 28 lo cerró `javiercamarapp` a mano el 7-sep 18:12, y el pulso
+   volvió a abrir uno solo una hora después: la cadena de alarma **funciona**.
+3. **Producción corre `d56e626` y `master` va en `7bcc319`.** Los **43 commits**
+   de arreglos de la auditoría 28 **no están publicados**: ninguno lleva la
+   bandera en el asunto. Es exactamente el modo de falla silencioso que
+   documenta CLAUDE.md — el push se ve normal en GitHub y el sitio se queda
+   atrás sin avisar. **Publicar sigue siendo una mano humana.**
+
+También medido: la cadencia real del pulso fue de **268 min** contra los 30
+declarados (el medidor de OP-A2, `861d09d`, **funciona y avisó**).
+
