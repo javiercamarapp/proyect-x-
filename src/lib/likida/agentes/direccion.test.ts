@@ -198,7 +198,7 @@ describe('especialistas_incidente: ni un teléfono que no esté en la base', () 
     hayLesionados: null as boolean | null, unidadMovible: null as boolean | null,
     reconocidaEn: null, nivelEscalado: 0,
     operadorId: 'o1', operadorNombre: 'ZZZ Operador', unidadEconomico: 'U-01',
-    flota: 'Flota ZZZ', poliza: null, proveedores: [], contactosFamilia: [],
+    flota: 'Flota ZZZ', poliza: null, proveedores: [],
   };
 
   it('sin nada capturado NO inventa un número y dice por qué eso importa', () => {
@@ -214,11 +214,14 @@ describe('especialistas_incidente: ni un teléfono que no esté en la base', () 
     expect(c).toContain('no significa «no hay»');
   });
 
-  // AUDITORÍA 25 (ALTO, REINCIDENTE): el dato de salud (¿hay lesionados?) y
-  // el nombre/parentesco del familiar viajaban COMPLETOS hacia
-  // `cola_aprobacion` — una tabla sin alcance de purga ni de ARCO. Mismo
-  // criterio que la descripción y el teléfono, ya redactados en la 24: se
-  // remite al expediente en vez de reproducirlos.
+  // AUDITORÍA 25 (ALTO, REINCIDENTE) → AUDITORÍA 28 LEG-A5 (ALTO,
+  // REINCIDENTE): el dato de salud (¿hay lesionados?) y el nombre/parentesco
+  // del familiar viajaban hacia `cola_aprobacion` — una tabla sin alcance de
+  // purga ni de ARCO. La 25 ocultó el VALOR; la 28 corrige que la sola
+  // EXISTENCIA de un renglón (que solo aparecía con `hayLesionados === true`)
+  // ya delataba el dato de salud. Ahora `aQuienLlamar` ya no conoce a la
+  // familia (su único consumidor es este parte, grep verificado) y el parte
+  // imprime SIEMPRE la misma línea neutra.
   it('con lesionados confirmados, el parte NO afirma el dato de salud — remite al expediente', () => {
     const c = armarParteIncidente({ ...inc, hayLesionados: true }, [], HOY);
     expect(c).not.toContain('SÍ, CONFIRMADO en el expediente');
@@ -232,34 +235,28 @@ describe('especialistas_incidente: ni un teléfono que no esté en la base', () 
     expect(c).toContain('Ya se contestó en el expediente');
   });
 
-  it('sobre un NULL NO propone avisarle a la familia, aunque haya contactos', () => {
-    const t = aQuienLlamar({
-      ...inc,
-      contactosFamilia: [{ nombre: 'Fam', telefono: '+520000000000', parentesco: 'esposa', avisarSiLesionados: true }],
-    });
-    expect(t).toHaveLength(0);
+  it('aQuienLlamar ya NO devuelve contactos familiares bajo NINGÚN valor de hayLesionados (AUD-28 LEG-A5): su único consumidor es el parte, que usa una línea fija', () => {
+    for (const hayLesionados of [true, false, null] as const) {
+      const t = aQuienLlamar({ ...inc, hayLesionados });
+      expect(t.map((x) => x.quien).join(' ')).not.toMatch(/familia/i);
+    }
   });
 
-  it('con lesionados CONFIRMADOS la familia va PRIMERO, y solo la marcada — SIN su nombre ni parentesco (AUD-25)', () => {
-    const t = aQuienLlamar({
-      ...inc, hayLesionados: true,
+  it('el parte del incidente es TEXTUALMENTE IDÉNTICO con lesionados confirmados o descartados: la sola EXISTENCIA de la línea de contactos no delata el dato de salud (AUD-28 LEG-A5)', () => {
+    const base = {
+      ...inc,
       poliza: { aseguradora: 'ZZZ Seguros', numeroPoliza: 'P-1', telefono: '+528000000000', vigenciaHasta: '2027-01-01' },
-      contactosFamilia: [
-        { nombre: 'Fam sí', telefono: '+521111111111', parentesco: 'esposa', avisarSiLesionados: true },
-        { nombre: 'Fam no', telefono: '+522222222222', parentesco: 'primo', avisarSiLesionados: false },
-      ],
-    });
-    // AUDITORÍA 25 (ALTO, REINCIDENTE): el nombre y el parentesco del
-    // familiar NO deben aparecer — esta pieza va a `cola_aprobacion`, sin
-    // alcance de purga ni de ARCO.
-    expect(t[0].quien).not.toContain('Fam sí');
-    expect(t[0].quien).toContain('familia de');
-    expect(t.map((x) => x.quien).join(' ')).not.toContain('Fam no');
-    expect(t.map((x) => x.quien).join(' ')).not.toMatch(/esposa|primo/);
-    expect(t[1].quien).toContain('ZZZ Seguros');
-    // El teléfono sigue siendo el real (lo consume `armarParteIncidente`,
-    // que lo redirige él mismo al expediente).
-    expect(t[0].numero).toBe('+521111111111');
+    };
+    const conLesionados = { ...base, hayLesionados: true as boolean | null };
+    const sinLesionados = { ...base, hayLesionados: false as boolean | null };
+    const parteCon = armarParteIncidente(conLesionados, aQuienLlamar(conLesionados), HOY);
+    const parteSin = armarParteIncidente(sinLesionados, aQuienLlamar(sinLesionados), HOY);
+    // Diff vacío en todo lo que toque a contactos/familia — de hecho, en TODO
+    // el parte: nada más depende de `hayLesionados` salvo el renglón «¿Hay
+    // lesionados?», que ya dice el mismo texto para true y false (ver arriba).
+    expect(parteCon).toEqual(parteSin);
+    expect(parteCon).toContain('Contactos de emergencia del operador');
+    expect(parteCon).not.toMatch(/familia/i);
   });
 
   it('un proveedor sin verificar se rotula CAPTURADO PERO NO VERIFICADO', () => {

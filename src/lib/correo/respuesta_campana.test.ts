@@ -133,7 +133,29 @@ describe('procesarRespuestaCampana', () => {
     expect(anonimiza?.payload).toMatchObject({ contacto_nombre: null, telefono: null, correo: null });
   });
 
-  it('una BAJA de un remitente que solo era COPIA no anonimiza el contacto de cabecera (es de otra persona)', async () => {
+  // ═══════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 28, LEG-M3 (MEDIO, REINCIDENTE, docs/auditoria-28/legal.md:40):
+  // la 25 solo borraba tres de las SEIS tablas que `purgar_prospecto_persona`
+  // (0258) ya tenía decidido tocar. Esta sección cubre las tres que faltaban
+  // y las dos vías de entrada (respuesta de correo y liga de un clic).
+  // ═══════════════════════════════════════════════════════════════════════
+
+  it('LEG-M3: una BAJA de contacto principal completa el inventario de 0258 — borra cola_aprobacion y anonimiza dossier y toque', async () => {
+    respuestas.set('prospecto', [{ data: [{ id: 'pr-1' }], error: null }]);
+    respuestas.set('prospecto_contacto', [{ data: null, error: null }]);
+    await procesarRespuestaCampana({ from: 'Laura <laura@transportesdelnorte.mx>', subject: 'BAJA', text: '' });
+
+    const borraPiezas = deletes.find((d) => d.tabla === 'cola_aprobacion');
+    expect(borraPiezas?.filtros).toMatchObject({ prospecto_id: 'pr-1' });
+    const anonimizaDossier = updates.find((u) => u.tabla === 'prospecto_dossier');
+    expect(anonimizaDossier?.filtros).toMatchObject({ prospecto_id: 'pr-1' });
+    expect(anonimizaDossier?.payload).toMatchObject({ telefonos: null, datos: null });
+    const anonimizaToque = updates.find((u) => u.tabla === 'prospecto_toque');
+    expect(anonimizaToque?.filtros).toMatchObject({ prospecto_id: 'pr-1' });
+    expect(anonimizaToque?.payload).toMatchObject({ resumen: null });
+  });
+
+  it('una BAJA de un remitente que solo era COPIA no anonimiza el contacto de cabecera ni el dossier, ni borra piezas (son de otra persona) — pero SÍ anonimiza el toque, que es del prospecto', async () => {
     respuestas.set('prospecto', [{ data: [], error: null }]);
     respuestas.set('prospecto_correo', [{ data: [{ prospecto_id: 'pr-7' }], error: null }]);
     respuestas.set('prospecto_contacto', [{ data: null, error: null }]);
@@ -141,6 +163,49 @@ describe('procesarRespuestaCampana', () => {
 
     expect(deletes.some((d) => d.tabla === 'prospecto_persona' && d.filtros.prospecto_id === 'pr-7')).toBe(true);
     expect(updates.find((u) => u.tabla === 'prospecto')).toBeUndefined();
+    expect(updates.find((u) => u.tabla === 'prospecto_dossier')).toBeUndefined();
+    expect(deletes.find((d) => d.tabla === 'cola_aprobacion')).toBeUndefined();
+    const anonimizaToque = updates.find((u) => u.tabla === 'prospecto_toque');
+    expect(anonimizaToque?.filtros).toMatchObject({ prospecto_id: 'pr-7' });
+    expect(anonimizaToque?.payload).toMatchObject({ resumen: null });
+  });
+
+  it('LEG-M3: el historial de una BAJA no lleva el asunto que la persona escribió — texto fijo "Pidió BAJA"', async () => {
+    respuestas.set('prospecto', [{ data: [{ id: 'pr-1' }], error: null }]);
+    respuestas.set('prospecto_contacto', [{ data: null, error: null }]);
+    await procesarRespuestaCampana({ from: 'g@empresa.mx', subject: 'Ya no me interesa, BAJA por favor', text: '' });
+
+    const contacto = inserts.find((i) => i.tabla === 'prospecto_contacto');
+    expect(contacto?.payload.resumen).toBe('Pidió BAJA');
+    expect(contacto?.payload.resumen).not.toContain('Ya no me interesa');
+  });
+
+  it('una respuesta que NO pide baja SÍ lleva el asunto en el historial (sin cambio de comportamiento)', async () => {
+    respuestas.set('prospecto', [{ data: [{ id: 'pr-1' }], error: null }]);
+    respuestas.set('prospecto_contacto', [{ data: null, error: null }]);
+    await procesarRespuestaCampana({ from: 'g@empresa.mx', subject: 'Me interesa', text: 'cuéntame más' });
+
+    const contacto = inserts.find((i) => i.tabla === 'prospecto_contacto');
+    expect(contacto?.payload.resumen).toContain('Me interesa');
+  });
+
+  it('LEG-M3: borrarDatosPersonaPorBajaPorCorreo (la liga de un clic) llega a las SEIS tablas igual que la respuesta por correo', async () => {
+    respuestas.set('prospecto', [{ data: [{ id: 'pr-9' }], error: null }]);
+    await borrarDatosPersonaPorBajaPorCorreo('otra@empresa.mx');
+
+    expect(deletes.some((d) => d.tabla === 'prospecto_persona' && d.filtros.prospecto_id === 'pr-9')).toBe(true);
+    expect(deletes.some((d) => d.tabla === 'prospecto_correo' && d.filtros.prospecto_id === 'pr-9')).toBe(true);
+    expect(deletes.some((d) => d.tabla === 'cola_aprobacion' && d.filtros.prospecto_id === 'pr-9')).toBe(true);
+    expect(updates.some((u) => u.tabla === 'prospecto' && u.filtros.id === 'pr-9')).toBe(true);
+    expect(updates.some((u) => u.tabla === 'prospecto_dossier' && u.filtros.prospecto_id === 'pr-9')).toBe(true);
+    expect(updates.some((u) => u.tabla === 'prospecto_toque' && u.filtros.prospecto_id === 'pr-9')).toBe(true);
+  });
+
+  it('LEG-M3: ninguna de las tres tablas nuevas rompe el mejor esfuerzo — un fallo en cualquiera no lanza', async () => {
+    respuestas.set('cola_aprobacion', [{ data: null, error: { message: 'base caída' } }]);
+    respuestas.set('prospecto_dossier', [{ data: null, error: { message: 'base caída' } }]);
+    respuestas.set('prospecto_toque', [{ data: null, error: { message: 'base caída' } }]);
+    await expect(borrarDatosPersonaPorBaja('pr-1', 'x@y.mx', true)).resolves.toBeUndefined();
   });
 
   it('una respuesta que NO pide baja no borra ni anonimiza nada', async () => {
