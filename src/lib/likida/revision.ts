@@ -6,18 +6,36 @@
 // revisión» era un recorte de las 50 más recientes (FE-5) y una lectura nítida
 // pero mal ($8,000 → $800, WA-3) no tenía por dónde corregirse.
 //
-// Este archivo es el ÚNICO lector/escritor de `liquidacion.revision` en la app:
-//   · `colaRevision` — la cola por antigüedad, por llave `(created_at, id)`,
-//     con `count` real y los filtros que un contralor usa (operador, unidad,
-//     terminal, fecha, estado del cuadre);
-//   · `revisarLiquidacion` — aprobar / ajustar / rechazar, SIEMPRE por la RPC
-//     `revisar_liquidacion` (la tabla rebota cualquier otro camino, LR003);
-//     al rechazar, avisa al chofer por WhatsApp (best-effort: el envío ya cae
-//     al outbox si Meta no contesta).
+// AUDITORÍA 28, ARQ-B4 (BAJO, reincidente 26/27) — este encabezado decía «el
+// ÚNICO lector/escritor de `liquidacion.revision` en la app», y solo la mitad
+// era cierta:
 //
-// La escritura NO re-cuadra: un ajuste mueve `gasto.monto` y el total por la
-// delta, y la RPC lo dice así. Un segundo motor de cuadre en SQL o aquí sería
-// «dos cálculos» (CLAUDE.md).
+//   · ESCRITOR sí es único: `grep -rn "rpc('revisar_liquidacion'" src` da
+//     SOLO `revision.ts` (abajo, en `revisarLiquidacion`) — la RPC
+//     `revisar_liquidacion` es el único camino y la tabla rebota cualquier
+//     otro (LR003). `revision_escritor_unico.test.ts` lo vigila.
+//   · LECTOR no lo es: 25 archivos de producción mencionan `revision`, y al
+//     menos SIETE la LEEN para decidir dinero o pintura —
+//     `api/export/poliza/route.ts`, `api/v1/liquidaciones/route.ts`,
+//     `api/export/liquidaciones/periodo.ts`, `analytics.ts`,
+//     `liquidacion/pdf.ts`, `processor.ts` y `fiscal.ts`. Si agregas un
+//     estado nuevo a `RevisionLiquidacion`, ESTOS son los sitios que deciden
+//     con él — un autor que solo mirara este archivo y agregara su rama
+//     «aquí» los dejaba sin ella, que fue exactamente cómo nació el hallazgo
+//     de `?revision=` de la auditoría 25.
+//
+// Este archivo es el ÚNICO ESCRITOR de `liquidacion.revision` en la app
+// (siempre vía `revisarLiquidacion` → RPC `revisar_liquidacion`), y también
+// implementa `colaRevision` — la cola por antigüedad, por llave
+// `(created_at, id)`, con `count` real y los filtros que un contralor usa
+// (operador, unidad, terminal, fecha, estado del cuadre) — pero NO es el
+// único lector: los siete archivos de arriba también leen `revision` para
+// pintar o decidir.
+//
+// La escritura SÍ re-cuadra: un ajuste mueve `gasto.monto` y el total por la
+// delta, con el MISMO motor — `recalcularParaAjuste` (importado abajo) llama
+// `cuadrarDesdeDB` en `revision_recalculo.ts`. Es UN cálculo, no dos («dos
+// cálculos» es justo lo que CLAUDE.md prohíbe).
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from '@/lib/supabase/admin';

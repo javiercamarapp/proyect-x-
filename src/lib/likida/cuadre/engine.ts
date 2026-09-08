@@ -465,8 +465,20 @@ export const REVISAR: TipoDiferencia[] = [...new Set<TipoDiferencia>([...NO_DEDU
  * abajo documenta haber eliminado del lado fiscal, resucitada en otro archivo.
  *
  * `diferencias` es una vista PARCIAL de la decisión; esta función es la decisión.
+ *
+ * AUDITORÍA 28, ARQ-B2 (BAJO, reincidente 25/26/27). La firma solo pedía lo
+ * que de verdad lee (`cfdiUuid`, y lo que `pagoPendiente` ya pide de `g`; el
+ * `tipo` de cada diferencia) para que `estadoRenglon` (dashboard/[id]/vista.tsx)
+ * pudiera llamarla con el objeto ligero que ya tenía a mano —sin arrastrar un
+ * `Gasto`/`Diferencia` completos— en vez de reconstruir el veredicto con un
+ * `Set` propio que ya había divergido dos veces. Cero cambio de
+ * comportamiento: `Pick`/`ReadonlyArray<Pick<…>>` son supertipos de lo que ya
+ * se pasaba.
  */
-export function cubetaDe(g: Gasto, suyas: Diferencia[]): Cubeta {
+export function cubetaDe(
+  g: Pick<Gasto, 'cfdiUuid' | 'formaPago' | 'pagadoEn'>,
+  suyas: ReadonlyArray<Pick<Diferencia, 'tipo'>>,
+): Cubeta {
   if (suyas.some((d) => NO_DEDUCIBLE_ISR.includes(d.tipo))) return 'no_deducible';
   if (suyas.some((d) => POR_CONFIRMAR.includes(d.tipo))) return 'por_confirmar';
   // A CRÉDITO Y SIN PAGAR NO ES DEDUCIBLE TODAVÍA (FIS-6, ver `pagoPendiente`).

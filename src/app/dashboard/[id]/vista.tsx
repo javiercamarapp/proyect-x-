@@ -2,8 +2,9 @@ import type { ReactNode } from 'react';
 import { AlertTriangle, Check } from 'lucide-react';
 import { StatusPill, type Estado } from '@/app/admin/ui/kit';
 import { mxn, fechaHoraMx } from '@/lib/formato';
-// Las cubetas del motor, importadas — nunca copiadas. Ver `TIPOS_MALOS` abajo.
-import { NO_DEDUCIBLE_ISR, POR_CONFIRMAR, pagoPendiente } from '@/lib/likida/cuadre/engine';
+// La cubeta del motor, importada — nunca reconstruida. Ver `estadoRenglon` abajo.
+import { cubetaDe } from '@/lib/likida/cuadre/engine';
+import type { TipoDiferencia } from '@/types/likida';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // LAS PIEZAS DEL DETALLE DE LIQUIDACIÓN v2 (22-ago-2026).
@@ -160,23 +161,27 @@ export function etiquetaFormaPago(clave?: string): string {
 export type EstadoRenglon = { estado: Estado; etiqueta: string; validado?: boolean };
 
 /**
- * Los tipos que el motor declara NO deducibles. **No es una lista de aquí.**
+ * AUDITORÍA 18-c3, ARQ-C3-1 (CRÍTICO) — y AUDITORÍA 28, ARQ-B2 (BAJO,
+ * reincidente 25/26/27). `engine.ts` dice sobre `cubetaDe` que es «LA ÚNICA
+ * definición de en qué cubeta cae un gasto … vive aquí, exportada, para que
+ * nadie la reconstruya», y cuenta el bug que costó cuando `pdf.ts` la
+ * reconstruyó. Este archivo lo hizo lo mismo dos veces:
  *
- * AUDITORÍA 18-c3, ARQ-C3-1 (CRÍTICO). `engine.ts` dice sobre `cubetaDe` que es
- * «LA ÚNICA definición de en qué cubeta cae un gasto … vive aquí, exportada,
- * para que nadie la reconstruya», y cuenta el bug que costó cuando `pdf.ts` la
- * reconstruyó. Este archivo lo hizo otra vez: tenía un `Set` a mano que no
- * coincidía con ninguna de las dos listas del motor. Le faltaba `rfc_receptor`
- * (una factura al RFC del operador salía «Por revisar» en la tabla y «No
- * deducible» doce centímetros arriba) y le sobraba `combustible_efectivo`, que
- * el motor pone en POR CONFIRMAR porque es deducible hasta el 15% de la RFA
- * 2.9 — el mismo error que `engine.ts` documenta haber corregido una vez.
+ * - Primero (18-c3) con un `Set` a mano que no coincidía con ninguna de las
+ *   dos listas del motor. Le faltaba `rfc_receptor` (una factura al RFC del
+ *   operador salía «Por revisar» en la tabla y «No deducible» doce
+ *   centímetros arriba) y le sobraba `combustible_efectivo` (el motor lo
+ *   pone en POR CONFIRMAR, deducible hasta el 15% de la RFA 2.9).
+ * - Después (26/27), aunque el `Set` ya se importaba del motor, `pagoPendiente`
+ *   se preguntaba aparte y le faltaba el criterio de engine.ts:474 (`!g.cfdiUuid
+ *   → 'por_confirmar'`, «un ticket no es una factura»): un ticket de diésel
+ *   sin CFDI y sin diferencias caía a `{estado:'neutral', etiqueta:'Ticket'}`
+ *   mientras el bloque de deducibilidad de la MISMA hoja (que sí llama
+ *   `cubetaDe`) decía «Por confirmar» sobre el mismo comprobante.
  *
- * Se importa la constante del motor a propósito: una copia vuelve a divergir.
+ * AHORA `estadoRenglon` llama `cubetaDe` de verdad (no reconstruye ninguna
+ * lista) y solo pone el RÓTULO encima de lo que el motor ya decidió.
  */
-const TIPOS_MALOS = new Set<string>(NO_DEDUCIBLE_ISR);
-/** El tercer estado del motor: no es pérdida, es que todavía no se puede afirmar. */
-const TIPOS_POR_CONFIRMAR = new Set<string>(POR_CONFIRMAR);
 /**
  * Problemas del COMPROBANTE, no veredictos de deducibilidad. El motor no los
  * pone en ninguna de sus dos cubetas, así que la tabla tampoco puede afirmar
@@ -197,26 +202,51 @@ export const TIPOS_TOPE = new Set(['sobre_politica', 'viatico_excede_fiscal', 'e
  * por revisar › validado.
  */
 export function estadoRenglon(
+  // `estadoSat` es `string` a propósito, no `EstadoSat` (types/likida.ts): los
+  // llamadores de producción (`detalle.tsx`, `LiquidacionDetalle['gastos']`
+  // en analytics.ts) también lo declaran como `string` —viene de una consulta
+  // amplia, no del tipo estrecho de `Gasto`— así que un `Pick<Gasto, …>` aquí
+  // rompería esos llamadores por un campo que ni `cubetaDe` necesita. Los
+  // otros tres SÍ coinciden con `Gasto` porque `cubetaDe` los toma tal cual.
   g: { cfdiUuid?: string; estadoSat?: string; cfdiValido?: boolean; formaPago?: string; pagadoEn?: string },
   tipos: string[],
 ): EstadoRenglon {
-  if (tipos.some((t) => TIPOS_MALOS.has(t))) return { estado: 'bad', etiqueta: 'No deducible' };
+  // LA cubeta, no una reconstrucción: `cubetaDe` ya decide no_deducible /
+  // por_confirmar / deducible con las dos listas del motor, `pagoPendiente`
+  // (crédito sin REP) Y el criterio de «un ticket no es una factura»
+  // (`!g.cfdiUuid`). Aquí solo se traduce esa decisión a rótulo.
+  //
+  // `tipos` sigue siendo `string[]` (no `TipoDiferencia[]`): viene de
+  // `LiquidacionDetalle['diferencias']` (analytics.ts), que lo declara como
+  // `string` a propósito — es dato de BD, no un literal del código, y una
+  // liquidación vieja podría traer un tipo que el dominio actual ya no usa.
+  // El cast a `TipoDiferencia` es seguro porque `cubetaDe`/`NO_DEDUCIBLE_ISR`/
+  // `POR_CONFIRMAR` solo hacen `.includes()` contra sus listas: un tipo fuera
+  // del dominio simplemente no casa con ninguna, igual que hoy.
+  const cubeta = cubetaDe(g, tipos.map((tipo) => ({ tipo: tipo as TipoDiferencia })));
+  if (cubeta === 'no_deducible') return { estado: 'bad', etiqueta: 'No deducible' };
   const captura = tipos.find((t) => t in ETIQUETA_CAPTURA);
   if (captura) return { estado: 'warn', etiqueta: ETIQUETA_CAPTURA[captura] };
   if (tipos.includes('sin_cfdi')) return { estado: 'warn', etiqueta: 'Sin CFDI' };
   if (tipos.some((t) => TIPOS_TOPE.has(t))) return { estado: 'warn', etiqueta: 'Sobre tope' };
-  if (tipos.some((t) => TIPOS_POR_CONFIRMAR.has(t))) return { estado: 'warn', etiqueta: 'Por confirmar' };
+  // AUDITORÍA 28, ARQ-B2 (BAJO, reincidente 25/26/27): antes esta rama
+  // preguntaba `TIPOS_POR_CONFIRMAR.has(t)` (copia de la lista del motor) y,
+  // si no había diferencias, `pagoPendiente(g)` por separado (ARQ-25) — pero
+  // le faltaba el tercer motivo de `cubetaDe` (`!g.cfdiUuid`, engine.ts:474):
+  // un ticket de diésel sin CFDI y sin diferencias caía al «Ticket» neutral
+  // de abajo mientras el bloque de deducibilidad de la misma pantalla (que sí
+  // llama `cubetaDe`) decía «Por confirmar» sobre el mismo comprobante.
+  if (cubeta === 'por_confirmar') return { estado: 'warn', etiqueta: 'Por confirmar' };
   if (tipos.length > 0) return { estado: 'warn', etiqueta: 'Por revisar' };
-  // ARQ-25 (ALTO): `cubetaDe` (engine.ts) manda a `por_confirmar` un gasto a
-  // crédito (forma '99') sin REP aunque el motor no emita ninguna diferencia
-  // para él — el renglón no puede afirmar "CFDI vigente" sobre un comprobante
-  // que el motor todavía no cuenta como deducible. Se importa `pagoPendiente`
-  // del motor a propósito: la misma pregunta, la misma función.
-  if (pagoPendiente(g)) return { estado: 'warn', etiqueta: 'Por confirmar' };
   if (g.estadoSat === 'vigente') return { estado: 'ok', etiqueta: 'CFDI vigente', validado: true };
   if (g.cfdiValido) return { estado: 'ok', etiqueta: 'CFDI validado', validado: true };
-  if (g.cfdiUuid) return { estado: 'neutral', etiqueta: 'CFDI sin validar' };
-  return { estado: 'neutral', etiqueta: 'Ticket' };
+  // En este punto `cubeta` solo puede ser 'deducible' (no_deducible y
+  // por_confirmar ya se filtraron arriba), y `cubetaDe` manda CUALQUIER gasto
+  // sin CFDI a 'por_confirmar' (engine.ts:474) — así que `g.cfdiUuid` es
+  // siempre verdadero aquí. Un «Ticket» sin CFDI que el motor declare
+  // deducible no existe hoy (ver `estado_renglon.test.ts`); si algún camino
+  // nuevo lo produjera, esta rama tendría que distinguirlo de nuevo.
+  return { estado: 'neutral', etiqueta: 'CFDI sin validar' };
 }
 
 export function PillRenglon({ e }: { e: EstadoRenglon }) {
