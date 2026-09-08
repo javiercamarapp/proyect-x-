@@ -260,6 +260,22 @@ export function avisoSimplificado(r: DatosResponsable): string | null {
         ? `Sobre tu ubicación: tu empresa no tiene conectado un GPS con Likida, así que por ese medio no se recibe ninguna posición; si algún día conecta uno, este aviso cambia y el nuevo te llega por aquí. Lo que sí: si compartes tu ubicación por el chat, se guarda y la ve tu jefe. Se borra a los 90 días. Tu teléfono no se rastrea.`
         : `Sobre tu ubicación: si tu empresa tiene GPS en sus camiones, se recibe la *posición de la unidad* que manejas para medir los tiempos del viaje y enseñárselos a la empresa; si compartes tu ubicación por el chat, también se guarda y la ve tu jefe. Se borra a los 90 días. Tu teléfono no se rastrea.`;
 
+  // AUDITORÍA 28, LEG-A3 [ALTO]: este renglón (fr. II) omitía seis de las
+  // categorías que el INTEGRAL sí declara (:604-694 arriba) — notas de voz,
+  // contenido del chat, salud "si hay lesionados" (SENSIBLE), RFC/licencia,
+  // contacto de emergencia y cámara/telemetría. El simplificado y el integral
+  // de una misma flota no pueden declarar cosas distintas.
+  //
+  // La cámara/telemetría reutiliza la MISMA señal `gps` que el integral usa en
+  // :646/:649: solo se enumera con conector o sin poder medir (caso amplio);
+  // `sin_conector` no la declara porque, a diferencia del pin del chat, ese
+  // tratamiento SOLO existe por el conector — declararlo sería tan inexacto
+  // como omitirlo cuando sí ocurre.
+  const camara =
+    gps === 'sin_conector'
+      ? ``
+      : ` Con cámara o telemetría conectada: eventos de manejo (frenadas, choque, impacto, volcadura).`;
+
   return [
     `🔒 *Aviso de privacidad*`,
     ``,
@@ -274,7 +290,12 @@ export function avisoSimplificado(r: DatosResponsable): string | null {
     // `viaje.llegada_en/descarga_en/regreso_en` y ningún aviso los enunciaba.
     // Se nombran con las palabras que el chofer de verdad manda, porque eso es
     // lo que tiene que reconocer.
-    `Qué se trata: tu nombre y teléfono, las fotos de comprobantes de gasto que envíes por aquí (diésel, casetas, alimentación, hospedaje) con sus montos y fechas, los avisos del viaje que tú mandes ("ya llegué", "estoy descargando", "voy de regreso") con la hora de tu mensaje, y la posición GPS de la unidad que traes asignada.`,
+    `Qué se trata: tu nombre y teléfono; tus mensajes y notas de voz; fotos de comprobantes (diésel, casetas, alimentación, hospedaje) con montos y fechas; tu RFC y licencia (Carta Porte); tus avisos del viaje ("ya llegué", "estoy descargando", "voy de regreso") con la hora; tu contacto de emergencia si tu empresa lo captura; y la posición GPS de la unidad que traes asignada.${camara}`,
+    ``,
+    // Dato SENSIBLE (LFPDPPP art. 3 fr. VI): igual que el integral (:687), sin
+    // condicionarlo al GPS — la capacidad de reportar un accidente existe por
+    // el mismo chat, para cualquier flota.
+    `Dato sensible: si avisas de un accidente, se guarda si hubo lesionados y tu descripción.`,
     ``,
     // Fr. III — finalidades, DISTINGUIENDO. La fracción vigente no se conforma
     // con enumerarlas: pide separar las que requieren consentimiento. Y el
