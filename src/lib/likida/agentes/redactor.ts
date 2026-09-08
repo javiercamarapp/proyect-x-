@@ -25,7 +25,7 @@ import { acotada } from '../presupuesto';
 import { DatoInvalido } from '../errores';
 import { estaApagado } from '../interruptores';
 import { generateStructured, StructuredError } from '@/lib/llm/openrouter';
-import { createLlmBudget, type LlmBudget } from '@/lib/llm/budget';
+import { createLlmBudget, esErrorDePresupuesto, type LlmBudget } from '@/lib/llm/budget';
 import { encolarPieza, verificarFormatoCampana } from './cola';
 import { registrarCorrida, type DisparoCorrida } from './corridas';
 import { notasSinPersona } from '@/lib/likida/prospectos/seudonimo';
@@ -227,6 +227,16 @@ export function textoDelModelo(raw: string | undefined | null): string {
   return t === '' ? '(vacío — el modelo no devolvió texto)' : t;
 }
 
+/** El costo YA gastado en el intento que falló (`StructuredError.usage`), o 0
+ *  si el error no trae medición. Parámetro `unknown` A PROPÓSITO (TC-B3): un
+ *  `if (esErrorDePresupuesto(e))` estrecha `e` a `LlmBudgetExceededError`
+ *  —que no tiene `.usage`— aunque en tiempo de ejecución el objeto real sea
+ *  el `StructuredError` que lo ENVUELVE; pasarlo por esta función, con su
+ *  propio parámetro sin estrechar, deja mirar el `.usage` del envoltorio. */
+function costoDeIntentoFallido(e: unknown): number {
+  return e instanceof StructuredError ? e.usage?.cost ?? 0 : 0;
+}
+
 /** Valida la salida del schema y la deja lista para la cola. LANZA si la
  *  variante A no llega utilizable — una pieza malformada no entra a la cola, y
  *  el error lleva el texto EXACTO del modelo para poder diagnosticarlo.
@@ -417,13 +427,48 @@ export async function redactarCorreoFrio(
       costoUsd: r.cost, tokensIn: r.tokensIn, tokensOut: r.tokensOut, modelo: r.model,
     });
   } catch (e) {
+    // ── AUDITORÍA 28, TC-B3 ────────────────────────────────────────────────
+    // Antes CUALQUIER error de `generateStructured` —incluido el tope de
+    // presupuesto que `reserveLlmBudget` lanza dentro de su ciclo de
+    // reintentos— se aplanaba en el mismo `DatoInvalido` genérico de abajo.
+    // El runner (`agentes/runner.ts`) mira si el error ES un tope de
+    // presupuesto para CORTAR el lote sin culpar al modelo, pero nunca veía
+    // otra cosa que `DatoInvalido`: ese chequeo era código muerto y el tope
+    // de dinero se contaba como "el modelo no está contestando"
+    // (`fallosModeloSeguidos`), disparando `redactor.fallos_seguidos` — una
+    // alerta que culpa al modelo por quedarse sin presupuesto.
+    //
+    // `esErrorDePresupuesto` (budget.ts) reconoce el tope AUNQUE venga
+    // envuelto: el ciclo de reintentos de `generateStructured` aplasta el
+    // fallo de `reserveLlmBudget` en un `StructuredError` con `cause` (no
+    // distingue tipos de error al reenvolver — el mismo problema que ese
+    // archivo ya documenta para `generateWithTools`), así que un
+    // `instanceof LlmBudgetExceededError` directo aquí seguiría fallando. Se
+    // propaga `e` TAL CUAL (no `DatoInvalido`): el runner reconoce el tope
+    // con la MISMA función, sin depender de que el envoltorio coincida.
+    if (esErrorDePresupuesto(e)) {
+      // `costoDeIntentoFallido` recibe `unknown` a propósito: el predicado de
+      // arriba estrecha `e` a `LlmBudgetExceededError` (que no trae `.usage`),
+      // pero el objeto real puede ser el `StructuredError` que lo ENVUELVE
+      // (ver el comentario de arriba) — pasarlo por una función con su propio
+      // parámetro `unknown` evita que ese estrechamiento tape el `.usage` del
+      // envoltorio.
+      await registrarCorrida(null, 'redactor', {
+        inicio, fin: new Date(), estado: 'fallo', disparo,
+        costoUsd: costoDeIntentoFallido(e),
+        resumen: { prospecto: prospectoId },
+        error: 'El presupuesto del run se agotó antes de que el modelo respondiera — no es una falla del modelo.',
+      });
+      throw e;
+    }
+
     // El texto CRUDO del modelo viaja en el StructuredError — es lo único que
     // permite saber por qué no se pudo leer una salida, y era exactamente lo
     // que faltó para diagnosticar los tres fallos de la primera pasada.
     const rawDelError = e instanceof StructuredError ? textoDelModelo(e.raw) : null;
     // La llamada se cobra aunque falle (`usage` viaja en el error): tirar ese
     // costo dejaría al techo diario ciego justo en el modo que más gasta.
-    const gastado = e instanceof StructuredError ? e.usage?.cost ?? 0 : 0;
+    const gastado = costoDeIntentoFallido(e);
     await registrarCorrida(null, 'redactor', {
       inicio, fin: new Date(), estado: 'fallo', disparo, costoUsd: gastado,
       resumen: { prospecto: prospectoId },

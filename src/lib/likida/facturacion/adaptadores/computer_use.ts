@@ -103,9 +103,20 @@ const PROHIBIDOS = /partido|donativ|dona[rc]|suscrib|newsletter|public|acepto.*p
  * No hay forma de conocer de antemano el selector real del botón de emitir
  * de cada uno de los 37 portales (lo descubre el modelo en el inventario de
  * CADA portal), así que se reconoce por el mismo tipo de heurística que
- * `PROHIBIDOS` ya usa: palabras de la ACCIÓN de emitir en el propio selector
- * — el id/name que el portal le puso, o el texto del botón que `inventario()`
- * mete en el selector cuando no hay id/name (`button:has-text("Emitir…")`).
+ * `PROHIBIDOS` ya usa: palabras de la ACCIÓN de emitir.
+ *
+ * AUDITORÍA 28, TC-B4: este regex por sí solo NO ve el texto del botón. Solo
+ * cuando el portal NO le puso id/name a su botón, `inventario()` mete el
+ * texto DENTRO del selector (`button:has-text("Emitir…")`) y el regex lo
+ * atrapa. Un portal con `<button id="btnSubmit">Timbrar</button>` produce
+ * `s: '#btnSubmit'` — el regex sobre ESE selector nunca ve la palabra
+ * "Timbrar", y `clic('#btnSubmit')` se apretaba SIN pasar por
+ * `clicDeEmision`: justo el bypass que este candado dice cerrar. Por eso
+ * `esBotonDeEmision` (más abajo) también busca, en el ÚLTIMO inventario
+ * mostrado al modelo, el botón cuyo `s` coincide con el selector pedido y
+ * cotejar el regex contra SU `texto` — el inventario YA trae ambos campos
+ * por separado (:194-200) para exactamente este caso.
+ *
  * Deliberadamente NO incluye "factura" a secas: "ver factura" o "descargar
  * factura" son botones legítimos para `clic` y un falso positivo aquí no
  * bloquea el clic — lo enruta por `reclamarEmision`, que lo marcaría
@@ -153,8 +164,16 @@ function valoresDisponibles(campos: CampoListo[], r: DatosReceptorPortal): Recor
   return v;
 }
 
+/** Lo que `inventario()` lee del DOM: campos, botones (selector + texto por
+ *  separado — TC-B4 depende de tenerlos así) y el texto visible de la página. */
+export interface InventarioPortal {
+  campos: Array<{ s: string; tipo: string; etiqueta: string; placeholder: string; valorActual: string; opciones: string[] }>;
+  botones: Array<{ s: string; texto: string }>;
+  texto: string;
+}
+
 /** El inventario del formulario que el modelo tiene enfrente. */
-async function inventario(pagina: PaginaPlaywright): Promise<string> {
+async function inventario(pagina: PaginaPlaywright): Promise<InventarioPortal> {
   const inv = await pagina.pagina.evaluate(() => {
     const visible = (el: Element) => {
       const r = (el as HTMLElement).getBoundingClientRect();
@@ -203,7 +222,7 @@ async function inventario(pagina: PaginaPlaywright): Promise<string> {
     const texto = (document.body.innerText ?? '').replace(/\n{2,}/g, '\n').slice(0, 1200);
     return { campos, botones, texto };
   });
-  return JSON.stringify(inv);
+  return inv;
 }
 
 /**
@@ -313,6 +332,28 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
       abierta = p;
       await p.abrir(this.portal);
 
+      // ── AUDITORÍA 28, TC-B4 ──────────────────────────────────────────────
+      // El ÚLTIMO inventario mostrado al modelo — lo que hace que
+      // `esBotonDeEmision` pueda mirar el TEXTO de un botón cuyo selector es
+      // un id/name que no dice nada ("#btnSubmit"). Se actualiza en cada
+      // llamada a `inventario()` a través de `verInventario`.
+      let ultimoInventario: InventarioPortal = { campos: [], botones: [], texto: '' };
+      const verInventario = async (): Promise<InventarioPortal> => {
+        ultimoInventario = await inventario(p);
+        return ultimoInventario;
+      };
+      // El botón físico de emisión se reconoce por CUALQUIERA de dos vías:
+      // el regex sobre el selector (portales sin id/name, donde `inventario()`
+      // mete el texto DENTRO del selector), o el regex sobre el TEXTO del
+      // botón del último inventario cuyo `s` coincide con el selector pedido
+      // (portales CON id/name, donde el selector no dice nada del botón).
+      // Antes solo existía la primera vía — ver la cabecera de
+      // `BOTON_DE_EMISION` — y un `<button id="btnSubmit">Timbrar</button>`
+      // se apretaba con `clic('#btnSubmit')` sin pasar por el candado.
+      const esBotonDeEmision = (selector: string): boolean =>
+        BOTON_DE_EMISION.test(selector)
+        || ultimoInventario.botones.some((b) => b.s === selector && BOTON_DE_EMISION.test(b.texto));
+
       // ── LAS MANOS. En `ensayo`, `emitir` NO entra en la lista. ──────────
       const tools: OpenAI.Chat.ChatCompletionTool[] = [
         herramienta('escribir', 'Escribe en un campo el valor que corresponde a una clave conocida.', {
@@ -346,9 +387,9 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
           await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: false, error: e instanceof Error ? e.message : String(e) });
           throw e;
         }
-        const inv = await inventario(p);
+        const inv = await verInventario();
         await sellarEmision(this.op.tenantId, efectoId, reclamo, { ok: true });
-        return `EMITIDO. Inventario nuevo: ${inv}`;
+        return `EMITIDO. Inventario nuevo: ${JSON.stringify(inv)}`;
       };
 
       const ejecutar = async (nombre: string, args: Record<string, unknown>): Promise<string> => {
@@ -377,9 +418,9 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
             // emisión, `clic` NO es distinto de `emitir` — exige el mismo
             // candado, sin excepción por el nombre de la tool. Un botón
             // normal ("validar", "siguiente"…) sigue apretándose tal cual.
-            if (BOTON_DE_EMISION.test(selector)) return clicDeEmision(selector);
+            if (esBotonDeEmision(selector)) return clicDeEmision(selector);
             await p.hacerClic(selector);
-            return `clic en ${selector}. Inventario nuevo: ${await inventario(p)}`;
+            return `clic en ${selector}. Inventario nuevo: ${JSON.stringify(await verInventario())}`;
           }
           case 'emitir':
             return clicDeEmision(selector);
@@ -402,7 +443,7 @@ export class AdaptadorComputerUse implements AdaptadorPortal {
           content: `Portal: ${this.comercio} (${this.portal})
 Modo: ${modo}${modo === 'ensayo' ? ' — llena todo pero NO existe herramienta de emitir; termina cuando el formulario esté completo.' : ''}
 Valores disponibles (clave: valor): ${JSON.stringify(valores)}
-Inventario inicial: ${await inventario(p)}`,
+Inventario inicial: ${JSON.stringify(await verInventario())}`,
         }],
         tools,
         toolExecutor: async (nombre, args) => {
@@ -427,7 +468,7 @@ Inventario inicial: ${await inventario(p)}`,
       // El UUID se busca en lo que el modelo leyó Y en la página, no solo en su
       // resumen: un modelo que "cree" haber emitido sin UUID es exactamente el
       // caso que `emitidoSinConfirmar` existe para no repetir.
-      uuid = extraerUuid(r.finalText) ?? extraerUuid(await inventario(p)) ?? undefined;
+      uuid = extraerUuid(r.finalText) ?? extraerUuid(JSON.stringify(await verInventario())) ?? undefined;
 
       const captura = await p.captura().catch(() => undefined);
       logger.info('portal.computer_use', {

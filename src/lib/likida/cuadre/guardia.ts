@@ -7,13 +7,17 @@
 //    transcribir mal un número al narrarlo, así que se REEMPLAZA por el resumen
 //    determinístico del motor (autoritativo). Cierra el hueco "tool llamada pero
 //    número narrado incorrecto".
-//  - Si NO llamó cuadrar_viaje NI consultar_politica pero hay cifras → números
-//    ungrounded (inventados). Se da el cuadre real de la DB.
-//  - Si solo consultó política y hay cifras → se COTEJA cifra por cifra contra
-//    lo que la tool devolvió. Antes bastaba con que la llamada existiera, y eso
-//    era una puerta trasera: consultar la política —barata y siempre
-//    disponible— desbloqueaba narrar cualquier número, incluido un cuadre
-//    inventado colado en la misma frase que un tope real.
+//  - Si NO llamó cuadrar_viaje NI ninguna tool de consulta (consultar_politica
+//    o estado_viaje) pero hay cifras → números ungrounded (inventados). Se da
+//    el cuadre real de la DB.
+//  - Si solo consultó (política y/o estado_viaje) y hay cifras → se COTEJA
+//    cifra por cifra contra lo que la tool devolvió. Antes bastaba con que la
+//    llamada existiera, y eso era una puerta trasera: consultar la política
+//    —barata y siempre disponible— desbloqueaba narrar cualquier número,
+//    incluido un cuadre inventado colado en la misma frase que un tope real.
+//    (AUDITORÍA 28, TC-M4: `estado_viaje` es la otra tool de solo-lectura que
+//    el ayudante llama para responder "¿cuánto llevo?" — respalda cifras
+//    igual que consultar_politica, con el mismo cotejo fail-closed.)
 //  - FAIL-CLOSED: si no se puede calcular el cuadre real, NO se envían cifras;
 //    se responde neutral en vez de arriesgar un número inventado.
 
@@ -49,7 +53,22 @@ export async function guardiaCifras(
   // que nadie iba a generar, y el panel del contralor no tenía esa liquidación.
   // Es el mismo hecho que `processor.ts` llama `closed`, calculado igual.
   const cerro = toolCalls.some((t) => t.toolName === 'guardar_liquidacion' && !t.error);
+  // ── AUDITORÍA 28, TC-M4 ─────────────────────────────────────────────────
+  // `consultar_politica` no era la única tool de solo-lectura capaz de
+  // respaldar una cifra: `estado_viaje` (tools.ts) devuelve anticipo,
+  // comprobado, `copias_excluidas`, `por_concepto` y litros de diésel — el
+  // prompt del ayudante ORDENA llamarla ante cualquier mensaje abierto y
+  // narrar esos números. Antes, si el modelo llamaba SOLO `estado_viaje`
+  // (sin `consultar_politica`), la guardia caía a :103-132 y sustituía la
+  // respuesta por un recálculo `best_effort` sin desglose — se pagaba la
+  // tool, el modelo la citaba bien, y la guardia la tiraba de todos modos.
+  // Que el texto sobreviva no debe depender de una tool que no tiene nada
+  // que ver con lo que se está narrando.
+  const consultoEstadoViaje = toolCalls.some((t) => t.toolName === 'estado_viaje' && !t.error);
   const consultoPolitica = toolCalls.some((t) => t.toolName === 'consultar_politica' && !t.error);
+  // Cualquiera de las dos tools de solo-consulta puede respaldar una cifra;
+  // el cotejo de :88-101 sigue siendo fail-closed cifra por cifra.
+  const consultoRespaldo = consultoPolitica || consultoEstadoViaje;
 
   // ── AUDITORÍA 7, CRÍTICO AG-3 — DOS FOTOGRAFÍAS DISTINTAS DE LA BASE ────────
   //
@@ -82,10 +101,11 @@ export async function guardiaCifras(
   // Cuando hubo cuadre, la respuesta ES sobre el cuadre y se sustituye siempre.
   if (!cuadro && !tieneCifrasDeDinero(reply)) return { reply, forzado: false };
 
-  // Cifras de política sin ser un cuadre: se respetan SOLO las que de verdad
-  // salieron de la tool. Basta una cifra sin respaldo para no confiar en el
-  // texto completo — no se puede tachar el número malo y mandar el resto.
-  if (!cuadro && consultoPolitica) {
+  // Cifras de consulta (política o estado del viaje) sin ser un cuadre: se
+  // respetan SOLO las que de verdad salieron de la tool. Basta una cifra sin
+  // respaldo para no confiar en el texto completo — no se puede tachar el
+  // número malo y mandar el resto.
+  if (!cuadro && consultoRespaldo) {
     // Cantidad en palabras: se detecta que habla de dinero pero no hay número que
     // cotejar. Lista vacía significaría "todo respaldado", así que hay que
     // distinguir "verificado y correcto" de "no se pudo verificar".
