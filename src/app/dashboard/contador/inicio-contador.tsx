@@ -556,7 +556,16 @@ async function BloqueDesglose({ pResumenFiscal, periodoFiscal }: {
                 // coincidir con liquidaciones antiguas. La cifra que SÍ
                 // coincide con cada PDF es "IVA acreditable de tus
                 // liquidaciones", arriba.
-                ? 'LIVA art. 5 — incluye combustible en efectivo al 15% del acumulado de HOY: puede diferir de lo firmado en PDFs viejos (ver "de tus liquidaciones", arriba)'
+                //
+                // AUDITORÍA 28, ARQ-A4 (ALTO, rótulo): esto solo avisaba de
+                // la deriva TEMPORAL (el acumulado sigue creciendo). Hay una
+                // segunda razón, presente incluso comparando el mismo día: el
+                // motor reparte el IVA POR COMPROBANTE y su tasa no es
+                // uniforme (16%/8% frontera), mientras esta cifra aplica UNA
+                // proporción agregada a todos por igual (ver el doc-comment
+                // de `proporcionCombustible15` en fiscal.ts). Es una
+                // ESTIMACIÓN, no una reproducción exacta del PDF.
+                ? 'LIVA art. 5 — incluye combustible en efectivo al 15% del acumulado de HOY, prorrateado en AGREGADO (estimación, no viaje por viaje): puede diferir de lo firmado en PDFs viejos y de tasas de IVA no uniformes (ver "de tus liquidaciones", arriba)'
                 : 'LIVA art. 5 — solo el IVA desglosado en CFDI que lo sostiene'} />
             <StatCard icono={<FileX2 width={15} height={15} strokeWidth={1.75} />}
               etiqueta="IVA desglosado que NO se acredita" valor={resumenFiscal.ivaNoAcreditable} formato="mxn"

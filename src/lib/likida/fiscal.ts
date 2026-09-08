@@ -35,7 +35,6 @@ import { round2, hoyMx, inicioDiaMx, finDiaMx } from '@/lib/formato';
 import { identificarComercio } from './facturacion/identificar';
 import { COMERCIOS } from './facturacion/comercios';
 import { calcularCaducidad, type Plazo } from './facturacion/caducidad';
-import { evaluarTope15, type ResultadoTope15 } from './periodo/combustible';
 import {
   proporcionAlimentacionPorGasto, diasSobreTope, CONCEPTOS_CON_TOPE_ALIMENTACION,
 } from './cuadre/tope_alimentacion';
@@ -527,17 +526,34 @@ export async function opcionesFiscalesDelPeriodo(
  * que `proporcionesDeducibles` (`cuadre/engine.ts`) resuelve por comprobante
  * DENTRO de un viaje, aquí resuelta en AGREGADO sobre el ejercicio completo.
  *
- * Por qué el agregado reproduce la cifra del motor al centavo (y no una
- * aproximación): la asignación del motor es `dentro_i = min(monto_i,
- * tope − previoAcumulado)`, y la SUMA de `dentro_i` sobre cualquier orden de
- * comprobantes es siempre `min(efectivoTotal, tope)` — es aritmética de un
- * acumulador con techo, no depende de en qué orden se cerraron los viajes.
- * Con eso, tratar TODO el efectivo del ejercicio como un solo comprobante
- * sintético y pasarlo por `proporcionesDeducibles` da la MISMA proporción
- * agregada que sumar el resultado real del motor viaje por viaje — exacta
- * cuando `gastos` cubre el ejercicio completo (periodo 'ejercicio', el panel
- * por omisión); una estimación ponderada por el resto de los periodos, que
- * siguen siendo mejores que el `?? 1` que acreditaba el IVA completo.
+ * AUDITORÍA 27/28, ARQ-A4 (ALTO, rótulo): esta nota decía que el agregado
+ * reproduce la cifra del motor "al centavo" — es verdad para el MONTO
+ * deducible, FALSO para el IVA que aquí se calcula.
+ *
+ * Para el MONTO deducible sí es exacto: la asignación del motor es
+ * `dentro_i = min(monto_i, tope − previoAcumulado)`, y la SUMA de `dentro_i`
+ * sobre cualquier orden de comprobantes es siempre `min(efectivoTotal, tope)`
+ * — aritmética de un acumulador con techo, no depende de en qué orden se
+ * cerraron los viajes.
+ *
+ * Para el IVA esto es una ESTIMACIÓN, no una reproducción exacta. El motor
+ * reparte el excedente POR COMPROBANTE (`engine.ts` — `dentro / g.monto`), y
+ * el IVA de cada comprobante depende de SU tasa (`ivaTraslado`), que no es
+ * uniforme (16% general, 8% frontera). Esta función, en cambio, aplica UNA
+ * proporción agregada a TODOS los comprobantes por igual. Cuando las tasas no
+ * son uniformes o el orden de cierre de los viajes cambia el reparto, la
+ * cifra de este panel difiere de la suma real del motor viaje por viaje —
+ * ejemplo verificado: dos CFDI de $100,000 (16% y 8% de frontera) sobre un
+ * ejercicio de $1,000,000 dan aquí $15,900.38 y en el motor $17,496.81 o
+ * $14,303.96 según cuál viaje cerró primero (docs/auditoria-27/
+ * arquitectura.md:200-206). `combustible15SujetoADeriva` (abajo) avisa de la
+ * deriva TEMPORAL —el acumulado del ejercicio sigue creciendo— pero NO de
+ * ésta: la deriva por tasa/orden existe incluso comparando el mismo día.
+ * Exacta cuando `gastos` cubre el ejercicio completo Y las tasas son
+ * uniformes (el caso común, pero no el único); estimación ponderada en el
+ * resto, que sigue siendo mejor que el `?? 1` que acreditaba el IVA completo.
+ * NO SE CAMBIA EL CÁLCULO aquí: qué hacer con la deriva por tasa/orden es
+ * decisión de negocio pendiente.
  */
 function proporcionCombustible15(o: OpcionesFiscales): number {
   if (!o.combustibleEjercicio) return 0;
@@ -1221,17 +1237,13 @@ export function resumirCombustibleCasetas(gastos: GastoFiscal[]): ResumenCombust
   });
 }
 
-/** El 15% de la RFA 2026 regla 2.9, calculado sobre los gastos ya leídos. */
-export function tope15DeGastos(gastos: GastoFiscal[], o: OpcionesFiscales): ResultadoTope15 {
-  let efectivo = 0, totalCombustible = 0;
-  for (const g of gastos) {
-    if (!esCombustible(g, o)) continue;
-    if (!(g.monto > 0)) continue;
-    totalCombustible += g.monto;
-    if (medioNoAdmitidoCombustible(formaPagoEfectiva(g))) efectivo += g.monto;
-  }
-  return evaluarTope15({ efectivo, totalCombustible });
-}
+// AUDITORÍA 28, FIS-B2 (BAJO, reincidente): `tope15DeGastos` se retiró de
+// aquí. No tenía llamador en producción — solo sus propias pruebas — y lo
+// vivo del 15% en el panel del contador es `combustibleEjercicioDe` (arriba,
+// vía `getAcumuladoCombustible`, el MISMO acumulado que usa el motor) y
+// `proporcionCombustible15` (abajo); en el chat, `evaluarTope15` se llama
+// directo desde `tools.ts` con el acumulado real. `normas/rfa-2026-2.9.yaml`
+// (`usado_en_codigo`) se corrigió para citar lo vivo.
 
 // ── Retenciones ────────────────────────────────────────────────────────────
 
