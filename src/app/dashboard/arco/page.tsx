@@ -25,11 +25,12 @@ const RUTA = '/dashboard/arco';
 // AUDITORÍA 28, LEG-A6 [ALTO]: la lista era CERRADA y le faltaban tres
 // categorías que la RPC (0286/0290) SÍ deja intactas — ver el comentario de
 // `ejecutarCancelacionArco` (repo.ts) con las tablas y migraciones exactas:
-// eventos de cámara/telemetría ligados al operador (180/365 días, mig. 0335),
-// su contacto de emergencia (sobrevive porque la cancelación ANONIMIZA al
-// operador, no lo borra — 0198 solo hace cascada al BORRARLO) y su registro
-// de jornada (0241). Se mantiene sincronizada con el texto de repo.ts.
-const ALCANCE_CANCELACION = 'Se sustituyeron el nombre y el teléfono del registro operativo y se eliminaron sus conversaciones. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud, la documentación fiscal, los eventos de cámara y telemetría ligados a su persona (180 días, o 365 si fueron graves), su contacto de emergencia y su registro de jornada laboral. Esas categorías requieren revisión con el responsable de privacidad: la ejecución automática no las alcanza.';
+// eventos de cámara/telemetría ligados al operador (180/365 días, mig. 0335)
+// y su registro de jornada (0241). LEG-M5 (0356) cerró la tercera: el
+// contacto de emergencia (un TERCERO, no el titular) ya NO sobrevive — la
+// cancelación lo borra, no requiere revisión aparte. Se mantiene
+// sincronizada con el texto de repo.ts.
+const ALCANCE_CANCELACION = 'Se sustituyeron el nombre y el teléfono del registro operativo, se eliminaron sus conversaciones y el contacto de emergencia registrado sobre su persona. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud, la documentación fiscal, y los eventos de cámara, telemetría (180 días, o 365 si fueron graves) y jornada laboral ligados a su persona. Esas categorías requieren revisión con el responsable de privacidad: la ejecución automática no las alcanza.';
 
 /**
  * AUDITORÍA 24 — las tres acciones de esta pantalla se gateaban con
