@@ -69,6 +69,12 @@ const nombresDeTools = () => funciones(capturadoTools).map((t) => t.function.nam
 const escrito: Array<[string, string]> = [];
 const clicado: string[] = [];
 
+// AUDITORÍA 28, TC-B4: el inventario que "el DOM" le devuelve al adaptador.
+// `null` = el default de siempre (sin botones); las pruebas del candado por
+// TEXTO lo sobrescriben para simular un botón con id/name (`s` no dice nada,
+// el texto sí).
+let inventarioFalso: { campos: unknown[]; botones: Array<{ s: string; texto: string }>; texto: string } | null = null;
+
 /** Una página falsa con las mismas manos que la real. */
 const paginaFalsa = () => ({
   abrir: vi.fn(async () => {}),
@@ -77,7 +83,7 @@ const paginaFalsa = () => ({
   hacerClic: vi.fn(async (s: string) => { clicado.push(s); }),
   captura: vi.fn(async () => 'captura.jpg'),
   cerrar: vi.fn(async () => {}),
-  pagina: { evaluate: vi.fn(async () => ({ campos: [], botones: [], texto: '' })) },
+  pagina: { evaluate: vi.fn(async () => inventarioFalso ?? { campos: [], botones: [], texto: '' }) },
 });
 
 const RECEPTOR = {
@@ -96,6 +102,7 @@ const armar = () => new AdaptadorComputerUse({
 beforeEach(() => {
   escrito.length = 0; clicado.length = 0;
   guion = []; textoFinal = ''; capturadoTools = []; capturadoExecutor = null;
+  inventarioFalso = null;
   claimMutation.mockReset().mockResolvedValue({ kind: 'execute', token: 'tok-1' });
   completeMutation.mockReset().mockResolvedValue(undefined);
   failMutation.mockReset().mockResolvedValue(undefined);
@@ -319,6 +326,48 @@ describe('TC-CANDADO-CLIC-BYPASS: `clic` sobre el botón de emisión lleva el MI
     await armar().facturar(CAMPOS, 'emitir');
 
     expect(clicado).toEqual(['a:has-text("Descargar factura")']);
+    expect(claimMutation).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, TC-B4 — el candado de arriba solo miraba el REGEX sobre el
+// SELECTOR. Eso alcanza cuando el portal no le puso id/name al botón
+// (`inventario()` mete el texto DENTRO del selector), pero un
+// `<button id="btnSubmit">Timbrar</button>` produce `s: '#btnSubmit'`: el
+// regex sobre ESE selector nunca ve la palabra "Timbrar", y `clic('#btnSubmit')`
+// se apretaba sin pasar por el candado — justo el bypass que TC-CANDADO-CLIC-
+// BYPASS decía cerrar.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('TC-B4: el candado también reconoce el botón de emisión por su TEXTO en el inventario (no solo por el selector)', () => {
+  it('un botón con id/name (selector mudo) SÍ pasa por el candado si su texto dice "Timbrar"', async () => {
+    inventarioFalso = { campos: [], botones: [{ s: '#btnSubmit', texto: 'Timbrar' }], texto: '' };
+    guion = [{ tool: 'clic', args: { selector: '#btnSubmit' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(claimMutation).toHaveBeenCalledTimes(1);
+    expect(clicado).toEqual(['#btnSubmit']);
+    expect(completeMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL — un botón con id/name cuyo texto NO es de emisión sigue sin candado', async () => {
+    inventarioFalso = { campos: [], botones: [{ s: '#siguiente', texto: 'Siguiente' }], texto: '' };
+    guion = [{ tool: 'clic', args: { selector: '#siguiente' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toEqual(['#siguiente']);
+    expect(claimMutation).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL — un botón DISTINTO con texto de emisión no contamina el candado de un selector que no es el suyo', async () => {
+    // El cotejo es por `s === selector`, no "algún botón del inventario dice
+    // Timbrar": un selector que no coincide con NINGÚN botón de emisión del
+    // inventario no debe activar el candado por casualidad.
+    inventarioFalso = { campos: [], botones: [{ s: '#btnSubmit', texto: 'Timbrar' }], texto: '' };
+    guion = [{ tool: 'clic', args: { selector: '#otroBoton' } }];
+    await armar().facturar(CAMPOS, 'emitir');
+
+    expect(clicado).toEqual(['#otroBoton']);
     expect(claimMutation).not.toHaveBeenCalled();
   });
 });
