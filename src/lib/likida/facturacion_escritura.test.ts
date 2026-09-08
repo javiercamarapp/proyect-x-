@@ -40,6 +40,18 @@ describe('validarFactura — el total no se teclea, se calcula', () => {
     expect(f.total).toBe(0.3);
   });
 
+  it('FIS-M3: sin retención (el caso de hoy) el cálculo no cambia', () => {
+    const f = validarFactura(FACTURA_OK);
+    expect(f.retencion).toBe(0);
+    expect(f.total).toBe(11600);
+  });
+
+  it('FIS-M3: con retención del 4%, el total la descuenta', () => {
+    const f = validarFactura({ ...FACTURA_OK, retencion: '400' });
+    expect(f.retencion).toBe(400);
+    expect(f.total).toBe(11200);
+  });
+
   it('acepta coma decimal y separador de millares, como se teclea en México', () => {
     const f = validarFactura({ ...FACTURA_OK, subtotal: '10,000.50', iva: '1,600.08' });
     expect(f.subtotal).toBe(10000.5);
