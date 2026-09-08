@@ -260,6 +260,22 @@ export function avisoSimplificado(r: DatosResponsable): string | null {
         ? `Sobre tu ubicación: tu empresa no tiene conectado un GPS con Likida, así que por ese medio no se recibe ninguna posición; si algún día conecta uno, este aviso cambia y el nuevo te llega por aquí. Lo que sí: si compartes tu ubicación por el chat, se guarda y la ve tu jefe. Se borra a los 90 días. Tu teléfono no se rastrea.`
         : `Sobre tu ubicación: si tu empresa tiene GPS en sus camiones, se recibe la *posición de la unidad* que manejas para medir los tiempos del viaje y enseñárselos a la empresa; si compartes tu ubicación por el chat, también se guarda y la ve tu jefe. Se borra a los 90 días. Tu teléfono no se rastrea.`;
 
+  // AUDITORÍA 28, LEG-A3 [ALTO]: este renglón (fr. II) omitía seis de las
+  // categorías que el INTEGRAL sí declara (:604-694 arriba) — notas de voz,
+  // contenido del chat, salud "si hay lesionados" (SENSIBLE), RFC/licencia,
+  // contacto de emergencia y cámara/telemetría. El simplificado y el integral
+  // de una misma flota no pueden declarar cosas distintas.
+  //
+  // La cámara/telemetría reutiliza la MISMA señal `gps` que el integral usa en
+  // :646/:649: solo se enumera con conector o sin poder medir (caso amplio);
+  // `sin_conector` no la declara porque, a diferencia del pin del chat, ese
+  // tratamiento SOLO existe por el conector — declararlo sería tan inexacto
+  // como omitirlo cuando sí ocurre.
+  const camara =
+    gps === 'sin_conector'
+      ? ``
+      : ` Con cámara o telemetría conectada: eventos de manejo (frenadas, choque, impacto, volcadura).`;
+
   return [
     `🔒 *Aviso de privacidad*`,
     ``,
@@ -274,7 +290,12 @@ export function avisoSimplificado(r: DatosResponsable): string | null {
     // `viaje.llegada_en/descarga_en/regreso_en` y ningún aviso los enunciaba.
     // Se nombran con las palabras que el chofer de verdad manda, porque eso es
     // lo que tiene que reconocer.
-    `Qué se trata: tu nombre y teléfono, las fotos de comprobantes de gasto que envíes por aquí (diésel, casetas, alimentación, hospedaje) con sus montos y fechas, los avisos del viaje que tú mandes ("ya llegué", "estoy descargando", "voy de regreso") con la hora de tu mensaje, y la posición GPS de la unidad que traes asignada.`,
+    `Qué se trata: tu nombre y teléfono; tus mensajes y notas de voz; fotos de comprobantes (diésel, casetas, alimentación, hospedaje) con montos y fechas; tu RFC y licencia (Carta Porte); tus avisos del viaje ("ya llegué", "estoy descargando", "voy de regreso") con la hora; tu contacto de emergencia si tu empresa lo captura; y la posición GPS de la unidad que traes asignada.${camara}`,
+    ``,
+    // Dato SENSIBLE (LFPDPPP art. 3 fr. VI): igual que el integral (:687), sin
+    // condicionarlo al GPS — la capacidad de reportar un accidente existe por
+    // el mismo chat, para cualquier flota.
+    `Dato sensible: si avisas de un accidente, se guarda si hubo lesionados y tu descripción.`,
     ``,
     // Fr. III — finalidades, DISTINGUIENDO. La fracción vigente no se conforma
     // con enumerarlas: pide separar las que requieren consentimiento. Y el
@@ -636,17 +657,24 @@ export function avisoIntegral(r: DatosIntegral): SeccionAviso[] {
         // cabecera de ese archivo: "Eventos y posiciones comparten
         // proveedor, credencial y cadencia"). Se reutiliza la señal `gps`
         // por eso — no es un tratamiento con su propio conector, es el mismo
-        // con otro tipo de dato. NO se promete un plazo de borrado fijo para
-        // estos eventos: hoy no existe una purga automática que lo ejecute, y
-        // este archivo ya tiene un hallazgo (LEG-6) por prometer un "90 días"
-        // que ningún código cumplía — no se repite el error aquí. Mismo
-        // criterio que la categoría de salud, dos párrafos abajo: se declara
-        // la finalidad y el límite reales, no una cifra que nadie ejecuta.
+        // con otro tipo de dato.
+        //
+        // AUDITORÍA 28, LEG-B1 [BAJO]: este párrafo cerraba con "hoy no
+        // tienen una fecha de borrado automático", que era cierto cuando se
+        // escribió (LEG-6: no prometer un plazo que nadie ejecuta) pero dejó
+        // de serlo el día que la mig. 0335 dio de alta
+        // `purgar_evento_seguridad_flota(180, 365, …)` en
+        // `mantenimiento_de_datos` (cron `/api/cron/purgar`): 180 días para
+        // los eventos `not grave`, 365 para los `grave` (choque, impacto,
+        // volcadura — `esEventoGrave`, conectores/eventos_seguridad.ts). Una
+        // promesa que dejó de cumplirse por FALTA de código es tan falsa como
+        // una que nunca se cumplió; se actualiza al plazo real en vez de
+        // repetir la frase vieja.
         gps === 'conectado'
-          ? `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Hoy no tienen una fecha de borrado automático.`
+          ? `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Se conservan **180 días**; si el evento fue grave (choque, impacto o volcadura), se conservan **365 días**. Después se borran solos.`
           : gps === 'sin_conector'
             ? `Tu empresa **no tiene conectado un sistema de cámara o telemetría** con Likida, así que por ese medio no se recibe ningún evento sobre cómo conduces; si algún día lo conecta, este aviso cambia y el nuevo te llega por WhatsApp.`
-            : `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Hoy no tienen una fecha de borrado automático.`,
+            : `La **conducta al volante que reporta la cámara o el sistema de telemetría de tu camión**, cuando tu empresa tiene ese servicio conectado con Likida: frenadas bruscas, uso del celular al manejar, distracción, colisión, impacto o volcadura, con la hora y la posición del camión en ese momento, y una liga al video en el sistema del proveedor cuando él la entrega. **Se usan para atender un accidente o incidente grave de tu unidad** —abrir el expediente de asistencia y avisar a tu empresa— y, mientras tanto, quedan disponibles para que tu empresa revise cómo conduces. Se conservan **180 días**; si el evento fue grave (choque, impacto o volcadura), se conservan **365 días**. Después se borran solos.`,
         // AUDITORÍA EXTERNA 16-AGO-2026 (P2): la versión anterior decía "no
         // se usa para nada", y el flujo real es más matizado — la foto viaja
         // COMPLETA al motor de lectura (no se puede enmascarar una imagen
@@ -684,7 +712,20 @@ export function avisoIntegral(r: DatosIntegral): SeccionAviso[] {
         // silencio: es una afirmación falsa firmada, con evidencia en la base.
         // Se declara lo que sí ocurre, con su finalidad y su límite, y se
         // conserva la promesa que sí es cierta para las demás categorías.
-        `**Un dato de salud, y solo uno:** si avisas por el chat de un accidente o una emergencia, se guarda **si hay personas lesionadas** y el texto con el que lo describes, para poder escalarlo a tu empresa y atenderlo. No se usa para tu liquidación ni para evaluarte. **Fuera de ese caso no se piden ni se conservan datos sensibles:** ni origen racial o étnico, ni creencias, ni afiliación sindical, ni preferencias sexuales, ni datos biométricos. Cada foto se procesa completa por el motor de lectura para extraer los campos del comprobante; si en ella aparece por accidente algo sensible (un ticket de farmacia, por ejemplo), un filtro lo detecta y lo excluye: **no se guarda como dato, no participa en tu liquidación**, y la imagen que no respalda ningún gasto se elimina sola del almacenamiento. **Lo que no se puede borrar ni pidiéndolo:** la foto que ya es comprobante de un gasto — esa se conserva por obligación fiscal (CFF art. 30). Lo que sí puedes pedir es que se **desligue de tu persona**, y eso es lo que la cancelación ejecuta.`,
+        //
+        // AUDITORÍA 28, LEG-M4 [MEDIO]: esta frase seguía prometiendo, para el
+        // ejemplo del ticket de farmacia, que el filtro lo excluye ENTERO
+        // ("no se guarda como dato, no participa en tu liquidación"). Falso:
+        // `intake/sanitizar.ts` (`sanitizarProducto`) SOLO descarta el campo
+        // `producto` cuando reconoce vocabulario de salud; `rfc_emisor`,
+        // `ocr_extra.emisor` (el nombre del comercio, saneado con
+        // `sanitizarTexto`, no con `sanitizarProducto` — `intake/ocr.ts:644`),
+        // el monto, la fecha y la imagen SÍ se guardan (`repo.ts` `addGasto`)
+        // y el gasto SÍ entra al cuadre; `facturacion/pendientes.ts` lo
+        // enseña al contralor como `textoTicket`. Se declara el tratamiento
+        // real: qué se descarta, qué se conserva y por qué, con la
+        // recomendación honesta que se sigue de eso.
+        `**Un dato de salud, y solo uno:** si avisas por el chat de un accidente o una emergencia, se guarda **si hay personas lesionadas** y el texto con el que lo describes, para poder escalarlo a tu empresa y atenderlo. No se usa para tu liquidación ni para evaluarte. **Fuera de ese caso no se piden ni se conservan datos sensibles:** ni origen racial o étnico, ni creencias, ni afiliación sindical, ni preferencias sexuales, ni datos biométricos. Cada foto se procesa completa por el motor de lectura para extraer los campos del comprobante; si en ella aparece por accidente algo sensible —un ticket de farmacia, por ejemplo—, el filtro descarta la línea del **producto** (el medicamento) cuando la reconoce, pero **el nombre del comercio, su RFC, el monto, la fecha y la imagen sí se guardan**, porque son tu comprobante fiscal: ese gasto entra a tu liquidación igual que cualquier otro. Por eso, si un ticket no es un gasto de la flota, lo más seguro es no mandarlo como comprobante. La imagen que no respalda ningún gasto se elimina sola del almacenamiento. **Lo que no se puede borrar ni pidiéndolo:** la foto que ya es comprobante de un gasto — esa se conserva por obligación fiscal (CFF art. 30). Lo que sí puedes pedir es que se **desligue de tu persona**, y eso es lo que la cancelación ejecuta.`,
         // AUDITORÍA 24 (LEG-8, MEDIO, reincidente ×3): `grep 'familiar|contacto
         // de emergencia'` en los dos avisos daba 0 — el nombre 24, teléfono y
         // parentesco del contacto de emergencia (`contacto_emergencia`, 0198)

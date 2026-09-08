@@ -42,14 +42,24 @@ describe('LEG-3 · el aviso integral enumera los eventos de cámara/telemetría'
     expect(t).toMatch(/no admite oposición/i);
   });
 
-  it('NO promete un plazo de borrado que ningún código ejecuta (mismo error que LEG-6)', () => {
+  it('AUDITORÍA 28 (LEG-B1): promete el plazo REAL que 0335 ya ejecuta, no "90 días" ni el silencio viejo', () => {
+    // La 0335 dio de alta `purgar_evento_seguridad_flota(180, 365, …)` en
+    // `mantenimiento_de_datos` (cron `/api/cron/purgar`): 180 días para los
+    // eventos leves, 365 para los `grave` (choque, impacto, volcadura). La
+    // aserción vieja ("no tienen fecha de borrado") se escribió cuando ningún
+    // código purgaba (LEG-6: no prometer un plazo que nadie ejecuta) — ahora
+    // sería la MISMA mentira en sentido contrario: silenciar un borrado que sí
+    // corre. Sigue prohibido "90 días", porque ese es el plazo de `posicion`
+    // (purgar_posicion), no el de los eventos de cámara.
     const t = textoCompleto('conectado');
-    // No debe atarse "90 días" a los eventos de cámara: esa purga no existe.
     const parrafoCamara = avisoIntegral({ ...BASE, gps: 'conectado' })
       .find((s) => s.fundamento === 'LFPDPPP art. 15 fr. II')!
       .parrafos.find((p) => /cámara|telemetría/i.test(p))!;
     expect(parrafoCamara).not.toMatch(/90 días/);
-    expect(t).toMatch(/no tienen una fecha de borrado automático/i);
+    expect(t).not.toMatch(/no tienen una fecha de borrado automático/i);
+    expect(t).toMatch(/180 días/);
+    expect(t).toMatch(/365 días/);
+    expect(t).toMatch(/grave/i);
   });
 
   it('sin conector: no declara un tratamiento de cámara que no ocurre', () => {

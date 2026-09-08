@@ -307,7 +307,7 @@ export async function verificarAvisoDePrivacidad(): Promise<void> {
     }
     logger.error('startup.aviso_privacidad', {
       motivo: sondeo.motivo,
-      msg: `La liga del aviso de privacidad integral NO abre (${sondeo.motivo}). El aviso simplificado se la manda igual al operador, y es además el único canal para ejercer derechos ARCO (LFPDPPP art. 15 fr. V y 16 fr. II). Publica el aviso integral en una URL que resuelva y actualiza \`tenant.url_aviso_privacidad\`.`,
+      msg: `La liga del aviso de privacidad integral (${datos.urlAvisoIntegral}) NO abre (${sondeo.motivo}). El aviso simplificado se la manda igual al operador, y es además el único canal para ejercer derechos ARCO (LFPDPPP art. 15 fr. V y 16 fr. II). Si la flota capturó una liga propia en \`tenant.url_aviso_privacidad\`, corrígela ahí; si esta es la página alojada por Likida (\`/aviso/${tenantId}\`), revisa que esté sirviendo.`,
     });
   } catch (e) {
     // Igual que los sondeos de migración: sin env/DB durante el build, no rompe.

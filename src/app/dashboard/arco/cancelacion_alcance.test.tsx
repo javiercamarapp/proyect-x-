@@ -33,6 +33,16 @@ function exigirAlcance(texto: string) {
   expect(texto).toMatch(/nombre.*teléfono/);
   expect(texto).toMatch(/conversaciones/);
   for (const dato of ['identificador', 'correo', 'referencia', 'documentación fiscal', 'privacidad']) expect(texto).toContain(dato);
+  // AUDITORÍA 28, LEG-A6 [ALTO]: la lista era CERRADA y le faltaban tres
+  // categorías que la RPC (0286/0290) SÍ deja intactas — cámara/telemetría
+  // (evento_seguridad_flota, purga 180/365 días, mig. 0335), el contacto de
+  // emergencia (sobrevive porque la cancelación ANONIMIZA, no borra, al
+  // operador — 0198 solo hace cascada al BORRARLO) y el registro de jornada
+  // (0241). Se exigen en los TRES textos (WhatsApp, resultado de la acción y
+  // la advertencia previa al botón), todos pasados por esta misma función.
+  expect(texto).toMatch(/cámara|telemetría/i);
+  expect(texto).toMatch(/contacto de emergencia/i);
+  expect(texto).toMatch(/jornada/i);
   expect(texto).not.toMatch(/quedó anonimizado|desligad[ao]s?.*(?:persona|titular)|sin vincularse a tu persona|ya no están ligados/);
 }
 beforeEach(() => {

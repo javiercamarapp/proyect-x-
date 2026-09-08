@@ -148,3 +148,55 @@ describe('avisoIntegral — fr. II y fr. III, medidas por flota', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, LEG-A3 [ALTO]: el simplificado (fr. II) omitía seis categorías
+// que el integral SÍ declara — voz, mensajes, salud (SENSIBLE), RFC/licencia,
+// contacto de emergencia y cámara/telemetría. El simplificado y el integral de
+// una misma flota no pueden declarar cosas distintas.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('avisoSimplificado — LEG-A3: ya enumera lo que el integral declara', () => {
+  it('menciona voz, contenido de mensajes, RFC y licencia, en cualquier estado', () => {
+    for (const gps of ['conectado', 'sin_conector', 'no_medible'] as const) {
+      const a = avisoSimplificado(conGps(gps))!;
+      expect(a).toMatch(/notas? de voz/i);
+      expect(a).toMatch(/mensajes/i);
+      expect(a).toMatch(/RFC/);
+      expect(a).toMatch(/licencia/i);
+    }
+  });
+
+  it('declara el dato de salud "si hay lesionados" marcado como sensible, sin condicionarlo al GPS', () => {
+    for (const gps of ['conectado', 'sin_conector', 'no_medible'] as const) {
+      const a = avisoSimplificado(conGps(gps))!;
+      expect(a).toMatch(/sensible/i);
+      expect(a).toMatch(/lesionados/i);
+      expect(a).toMatch(/accidente/i);
+    }
+  });
+
+  it('declara el contacto de emergencia, en cualquier estado', () => {
+    for (const gps of ['conectado', 'sin_conector', 'no_medible'] as const) {
+      expect(avisoSimplificado(conGps(gps))!).toMatch(/contacto de emergencia/i);
+    }
+  });
+
+  it('la cámara/telemetría reutiliza la MISMA señal que el integral: se calla sin conector', () => {
+    const conConector = avisoSimplificado(conGps('conectado'))!;
+    const sinConector = avisoSimplificado(conGps('sin_conector'))!;
+    const noMedible = avisoSimplificado(conGps('no_medible'))!;
+    expect(conConector).toMatch(/cámara|telemetría/i);
+    expect(noMedible).toMatch(/cámara|telemetría/i);
+    // Sin conector NO hay tratamiento de cámara: declararlo sería tan
+    // inexacto como omitirlo cuando sí ocurre.
+    expect(sinConector).not.toMatch(/cámara|telemetría/i);
+  });
+
+  it('el párrafo de ubicación no_medible sigue byte-idéntico pese a los añadidos', () => {
+    // El invariante que `aviso_gps_por_flota.test.ts` ya fijaba arriba: el
+    // renglón de `sobreUbicacion` no se toca al enumerar las categorías nuevas.
+    expect(avisoSimplificado(conGps('no_medible'))).toContain(
+      'Sobre tu ubicación: si tu empresa tiene GPS en sus camiones, se recibe la *posición de la unidad* que manejas para medir los tiempos del viaje y enseñárselos a la empresa; si compartes tu ubicación por el chat, también se guarda y la ve tu jefe. Se borra a los 90 días. Tu teléfono no se rastrea.',
+    );
+  });
+});

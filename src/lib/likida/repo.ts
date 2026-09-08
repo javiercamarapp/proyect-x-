@@ -4,7 +4,8 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { logger } from '@/lib/logger';
 import { round2 } from '@/lib/formato';
-import type { DatosIntegral, SenalGps } from './privacidad';
+import { appUrl } from '@/lib/env';
+import { revisarAvisoIntegral, type DatosIntegral, type SenalGps } from './privacidad';
 import { CONECTORES_GPS } from './conectores/gps';
 import { acotada } from './presupuesto';
 import { traerTodo, conteo } from './pg';
@@ -1294,10 +1295,31 @@ export async function getDatosResponsable(
     .maybeSingle(), 'getDatosResponsable');
   if (error) throw new Error(`getDatosResponsable: ${error.message}`);
   if (!data) return null;
+  // AUDITORÍA 28, LEG-A2 [ALTO]: `url_aviso_privacidad` no tiene un solo
+  // escritor (ninguna pantalla de /admin ni /dashboard la captura), así que
+  // con la columna vacía el simplificado cerraba en "la empresa aún no lo
+  // publica" y ARCO caía a "no tengo a dónde mandarte" — mientras
+  // `/aviso/<tenantId>` (src/app/aviso/[tenant]/page.tsx) YA renderiza el
+  // integral para cualquier flota con razón social. El puntero se seguía
+  // leyendo de una columna pensada para la URL PROPIA de la flota y nadie
+  // cerró el círculo con la URL calculable que ya existe.
+  //
+  // Si la flota capturó una liga y pasa la revisión de forma, gana la suya
+  // (el responsable puede alojar su propio aviso). Si no —vacía o
+  // `inservible`— se usa la página que Likida ya aloja por encargo. En
+  // desarrollo `appUrl()` puede resolver a `localhost`, que
+  // `revisarAvisoIntegral` marca `inservible` (no tiene TLD): el simplificado
+  // cae entonces a su texto degradado, que sigue siendo honesto — no hay
+  // integral público en un entorno local, y decirlo es mejor que fingir una
+  // liga que nadie puede abrir desde WhatsApp.
+  const columna = (data.url_aviso_privacidad as string) ?? '';
+  const urlAvisoIntegral = revisarAvisoIntegral(columna) === 'ok'
+    ? columna
+    : `${appUrl()}/aviso/${tenantId}`;
   const r = {
     razonSocial: (data.razon_social as string) ?? '',
     domicilio: (data.domicilio_fiscal as string) ?? '',
-    urlAvisoIntegral: (data.url_aviso_privacidad as string) ?? '',
+    urlAvisoIntegral,
     contactoPrivacidad: (data.contacto_privacidad as string | null) ?? null,
     // Nunca lanza: sus fallos ya son `no_medible` (caso amplio) adentro.
     gps: await gpsPromise,
@@ -1756,9 +1778,21 @@ export async function ejecutarCancelacionArco(
   if (!telefono) return { ok: true, avisada: false, errorAviso: 'sin teléfono del titular' };
   try {
     const { enviarRespuestaArco } = await import('@/lib/meta/client');
+    // AUDITORÍA 28, LEG-A6 [ALTO]: esta lista era CERRADA y le faltaban tres
+    // categorías que `ejecutar_arco_cancelacion` (0286/0290, texto 0340) SÍ
+    // deja intactas: los eventos de cámara/telemetría ligados al operador
+    // (`evento_seguridad_flota`, 0324 le añadió `operador_id`; se purga sola
+    // a 180/365 días — `purgar_evento_seguridad_flota`, mig. 0335), su
+    // contacto de emergencia (`contacto_emergencia`, 0198 — cascada solo si
+    // se BORRA al operador, y la cancelación lo ANONIMIZA, así que la fila
+    // sobrevive con nombre y teléfono del familiar) y su registro de jornada
+    // (`jornada_dia`/`jornada_asiento`, 0241 — `operador_id not null`, texto
+    // libre en `detalle`). La 0340 solo corrigió el texto por defecto de la
+    // RPC, que repite la misma lista incompleta — eso queda para la serie de
+    // migraciones, no para este lote.
     const aviso = await enviarRespuestaArco(
       telefono,
-      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud y la documentación fiscal. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
+      'Se sustituyeron tu nombre y tu teléfono en el registro operativo y se eliminaron tus conversaciones. Se conservan: tu identificador de operador, el correo de tu cuenta, la referencia del titular en la solicitud, la documentación fiscal, los eventos de cámara y telemetría ligados a tu persona (se borran solos a los 180 días, o 365 si fueron graves), tu contacto de emergencia y tu registro de jornada laboral. La flota debe revisar esos datos y los pasos pendientes con su responsable de privacidad.',
     );
     return aviso.ok ? { ok: true, avisada: true } : { ok: true, avisada: false, errorAviso: aviso.error };
   } catch (e) {

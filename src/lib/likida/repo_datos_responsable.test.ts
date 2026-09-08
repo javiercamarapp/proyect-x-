@@ -67,3 +67,44 @@ describe('getDatosResponsable — sin razón social o domicilio, no hay responsa
     expect(await getDatosResponsable('t1')).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, LEG-A2 [ALTO]: `url_aviso_privacidad` no tenía un solo
+// escritor — ninguna pantalla de /admin ni /dashboard la captura — así que con
+// la columna vacía el simplificado se degradaba y ARCO no tenía a dónde
+// mandar, mientras `/aviso/<tenantId>` YA renderiza el integral para toda
+// flota con razón social. `getDatosResponsable` ahora deriva la URL: gana la
+// de la flota si pasa `revisarAvisoIntegral`; si no, cae a la página alojada.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('getDatosResponsable — LEG-A2: la URL del integral se deriva, no se lee a secas', () => {
+  const TENANT = '11111111-1111-1111-1111-111111111111';
+
+  it('columna vacía → URL alojada (/aviso/<tenantId>)', async () => {
+    fila = { razon_social: 'FLOTA SA DE CV', domicilio_fiscal: 'Calle 1, Mérida', url_aviso_privacidad: '', contacto_privacidad: null };
+    const r = await getDatosResponsable(TENANT);
+    expect(r?.urlAvisoIntegral).toBe(`https://app.likida.ai/aviso/${TENANT}`);
+  });
+
+  it('columna inservible de forma (localhost, sin TLD) → URL alojada', async () => {
+    // `revisarAvisoIntegral` es una revisión de FORMA, no de existencia:
+    // `flotademo.mx` (el NXDOMAIN real de producción) la pasa igual —
+    // `aviso_integral.test.ts` ya lo deja escrito. Aquí se usa un caso que sí
+    // falla la FORMA (sin dominio de primer nivel), que es lo único que esta
+    // función puede detectar sin salir a la red.
+    fila = { razon_social: 'FLOTA SA DE CV', domicilio_fiscal: 'Calle 1, Mérida', url_aviso_privacidad: 'https://intranet/aviso', contacto_privacidad: null };
+    const r = await getDatosResponsable(TENANT);
+    expect(r?.urlAvisoIntegral).toBe(`https://app.likida.ai/aviso/${TENANT}`);
+  });
+
+  it('columna con marcador de relleno (pendiente) → URL alojada', async () => {
+    fila = { razon_social: 'FLOTA SA DE CV', domicilio_fiscal: 'Calle 1, Mérida', url_aviso_privacidad: 'https://flota.mx/aviso-pendiente', contacto_privacidad: null };
+    const r = await getDatosResponsable(TENANT);
+    expect(r?.urlAvisoIntegral).toBe(`https://app.likida.ai/aviso/${TENANT}`);
+  });
+
+  it('columna válida → gana la propia de la flota, no la alojada', async () => {
+    fila = { razon_social: 'FLOTA SA DE CV', domicilio_fiscal: 'Calle 1, Mérida', url_aviso_privacidad: 'https://flotareal.mx/privacidad', contacto_privacidad: null };
+    const r = await getDatosResponsable(TENANT);
+    expect(r?.urlAvisoIntegral).toBe('https://flotareal.mx/privacidad');
+  });
+});

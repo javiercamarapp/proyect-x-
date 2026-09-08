@@ -22,7 +22,14 @@ const ETIQUETA_TIPO: Record<string, string> = {
 
 type Params = { tenant?: string; vista?: string; rol?: string };
 const RUTA = '/dashboard/arco';
-const ALCANCE_CANCELACION = 'Se sustituyeron el nombre y el teléfono del registro operativo y se eliminaron sus conversaciones. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud y la documentación fiscal. Requieren revisión de privacidad para determinar los pasos pendientes.';
+// AUDITORÍA 28, LEG-A6 [ALTO]: la lista era CERRADA y le faltaban tres
+// categorías que la RPC (0286/0290) SÍ deja intactas — ver el comentario de
+// `ejecutarCancelacionArco` (repo.ts) con las tablas y migraciones exactas:
+// eventos de cámara/telemetría ligados al operador (180/365 días, mig. 0335),
+// su contacto de emergencia (sobrevive porque la cancelación ANONIMIZA al
+// operador, no lo borra — 0198 solo hace cascada al BORRARLO) y su registro
+// de jornada (0241). Se mantiene sincronizada con el texto de repo.ts.
+const ALCANCE_CANCELACION = 'Se sustituyeron el nombre y el teléfono del registro operativo y se eliminaron sus conversaciones. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud, la documentación fiscal, los eventos de cámara y telemetría ligados a su persona (180 días, o 365 si fueron graves), su contacto de emergencia y su registro de jornada laboral. Esas categorías requieren revisión con el responsable de privacidad: la ejecución automática no las alcanza.';
 
 /**
  * AUDITORÍA 24 — las tres acciones de esta pantalla se gateaban con
@@ -249,9 +256,10 @@ export default async function ArcoPage({ searchParams }: { searchParams: Promise
                             </FormaConAviso>
                             <span className="text-xs" style={{ color: 'var(--muted)' }}>
                               Sustituye nombre y teléfono del registro operativo y elimina conversaciones. Se conservan
-                              el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud
-                              y la documentación fiscal; requieren revisión de privacidad para determinar los pasos pendientes.
-                              No se puede deshacer la eliminación de conversaciones.
+                              el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud,
+                              la documentación fiscal, los eventos de cámara y telemetría ligados a su persona (180 días, o 365
+                              si fueron graves), su contacto de emergencia y su registro de jornada laboral; esas categorías
+                              requieren revisión con el responsable de privacidad. No se puede deshacer la eliminación de conversaciones.
                             </span>
                           </div>
                         ) : (
