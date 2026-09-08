@@ -10,6 +10,13 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
+// ARQ-M3 (auditoría 28): investigador.ts ya NO tiene su propia lista de redes
+// privadas — usa `hostNoPublico`/`esIpPublica` de `lib/http/destino_publico.ts`
+// (la misma que `conectores/credenciales.ts`). `hostPublico` resuelve DNS,
+// así que se mockea aquí para probar el caso de direcciones MIXTAS sin red real.
+const dnsDoble = vi.hoisted(() => ({ lookup: vi.fn() }));
+vi.mock('node:dns/promises', () => ({ lookup: dnsDoble.lookup }));
+
 // AGB-3: builder real por tabla, con una cola de respuestas por tabla — el
 // mismo patrón que enviador.test.ts — para poder ejercer `candidatosSinDossier`
 // (antes el mock trivial `from: () => ({})` bastaba porque nada la probaba).
@@ -136,7 +143,8 @@ describe('textoVisible y enlacesInstitucionales — el rastreo mínimo', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // AUDITORÍA FABLE CICLO 5 — c5-4 (compuerta de dominio) y c5-11 (SSRF).
 // ═══════════════════════════════════════════════════════════════════════════
-const { separarPorDominio, esIpPrivada, MAX_CORREOS_EMPRESA } = await import('./investigador');
+const { separarPorDominio, hostPublico, MAX_CORREOS_EMPRESA } = await import('./investigador');
+const { esIpPublica } = await import('@/lib/http/destino_publico');
 
 describe('c5-4 — la compuerta de dominio: correos de terceros JAMÁS entran a la lista de envío', () => {
   const correo = (c: string) => ({ correo: c, contacto_nombre: null, puesto: null, fuente: 'https://www.empresa.mx/contacto' });
@@ -175,20 +183,66 @@ describe('c5-4 — la compuerta de dominio: correos de terceros JAMÁS entran a 
   });
 });
 
-describe('c5-11 — la frontera SSRF: IPs privadas jamás se visitan', () => {
+describe('c5-11 — la frontera SSRF, ahora a través del predicado COMPARTIDO (ARQ-M3)', () => {
+  // Antes esta suite fijaba la lista de redes privadas escrita a mano de
+  // investigador.ts (`esIpPrivada`, ya borrada). Ahora investigador.ts usa
+  // `hostNoPublico`/`esIpPublica` de `lib/http/destino_publico.ts` — la misma
+  // frontera que `conectores/credenciales.ts` — así que esta suite prueba ESA
+  // frontera compartida y ya no necesita reinventarla en `destino_publico.test.ts`.
   it('clasifica las privadas/loopback/link-local como privadas', () => {
     for (const ip of ['127.0.0.1', '10.0.0.5', '172.16.9.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '0.0.0.0', '::1', 'fd00::1', 'fe80::1']) {
-      expect(esIpPrivada(ip), ip).toBe(true);
+      expect(esIpPublica(ip), ip).toBe(false);
     }
   });
   it('las públicas pasan', () => {
     for (const ip of ['8.8.8.8', '104.18.32.7', '201.150.36.1', '2607:f8b0::1']) {
-      expect(esIpPrivada(ip), ip).toBe(false);
+      expect(esIpPublica(ip), ip).toBe(true);
     }
   });
   it('172.15 y 172.32 NO son privadas (el /12 es exacto)', () => {
-    expect(esIpPrivada('172.15.0.1')).toBe(false);
-    expect(esIpPrivada('172.32.0.1')).toBe(false);
+    expect(esIpPublica('172.15.0.1')).toBe(true);
+    expect(esIpPublica('172.32.0.1')).toBe(true);
+  });
+
+  it('los tres casos DIVERGENTES de la auditoría 28 ahora se RECHAZAN (antes pasaban con la lista vieja de investigador.ts)', () => {
+    // 100.64.0.1 (CGNAT, RFC 6598): con la lista vieja de investigador.ts era
+    // "pública" (solo miraba 0/10/127/169.254/172.16-31/192.168); con la
+    // frontera compartida es privada (V4_ESPECIALES incluye 100.64.0.0/10).
+    // ::ffff:169.254.169.254 (metadatos del cloud, IPv4-mapped) y
+    // 64:ff9b::7f00:1 (NAT64 de 127.0.0.1): la lista vieja solo miraba
+    // prefijos IPv6 concretos (fc/fd/fe8-b/::ffff:127./10./192.168.) y las
+    // dejaba pasar; la frontera compartida exige unicast global ordinario
+    // (2000::/3) y ninguna de las dos cae ahí.
+    for (const ip of ['100.64.0.1', '::ffff:169.254.169.254', '64:ff9b::7f00:1']) {
+      expect(esIpPublica(ip), ip).toBe(false);
+    }
+  });
+});
+
+describe('hostPublico — la frontera SSRF que bajarPagina consulta antes de cada fetch', () => {
+  it('rechaza si CUALQUIERA de las direcciones que el DNS resuelve es privada (rebinding parcial)', async () => {
+    dnsDoble.lookup.mockResolvedValueOnce([
+      { address: '8.8.8.8', family: 4 },
+      { address: '169.254.169.254', family: 4 },
+    ]);
+    await expect(hostPublico('mixto.example')).resolves.toBe(false);
+  });
+
+  it('acepta cuando TODAS las direcciones que el DNS resuelve son públicas', async () => {
+    dnsDoble.lookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
+    await expect(hostPublico('publico.example')).resolves.toBe(true);
+  });
+
+  it('un DNS que no contesta cuenta como no-permitido — fail closed', async () => {
+    dnsDoble.lookup.mockRejectedValueOnce(new Error('ENOTFOUND'));
+    await expect(hostPublico('caido.example')).resolves.toBe(false);
+  });
+
+  it('rechaza de entrada por sufijo/host reservado, sin llamar al DNS', async () => {
+    dnsDoble.lookup.mockClear();
+    await expect(hostPublico('localhost')).resolves.toBe(false);
+    await expect(hostPublico('algo.internal')).resolves.toBe(false);
+    expect(dnsDoble.lookup).not.toHaveBeenCalled();
   });
 });
 
