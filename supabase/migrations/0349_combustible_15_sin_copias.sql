@@ -24,6 +24,18 @@
 -- corrección mecánica: se deja señalada, no se adivina.
 begin;
 
+-- `unaccent` ya está disponible en producción (extensión preinstalada por
+-- Supabase, verificado con pg_proc antes de escribir esta migración), pero
+-- una base virgen (CI, `ci-postgres.yml`) no la trae por defecto — la
+-- migración debe crearla ella misma para ser reaplicable desde cero.
+-- CON schema explícito: la función de abajo fija `search_path` a
+-- 'public','pg_catalog' — si la extensión cayera en `extensions` (el
+-- default de Supabase para varias, ver 0154/0160/0236), `unaccent(text)`
+-- no resolvería dentro de la función. Producción ya la tiene en `public`
+-- (verificado con pg_proc antes de escribir esta migración); esto solo
+-- lo replica para una base virgen.
+create extension if not exists unaccent with schema public;
+
 CREATE OR REPLACE FUNCTION public.sumar_combustible_ejercicio(p_tenant uuid, p_anio int, p_claves text[])
 returns table (total numeric, efectivo numeric)
 language sql
