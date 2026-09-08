@@ -339,10 +339,10 @@ vi.mock('./qa-oraculos', () => ({
 import {
   crearCorrida, ejecutarPasada, ejecutarCorridaRapida, mezclarEventos,
   patronesDeFallo, fraseFallosMismaFirma, MIN_FALLOS_MISMA_FIRMA,
-  instalarInterceptorSalidaMeta, contextoQa,
+  instalarInterceptorSalidaMeta, contextoQa, limpiarTenant,
 } from './qa-motor';
 import { guardarCorrida, leerCorrida, leerFotosDeCorrida } from './qa-storage';
-import { reservaPorFotoMs, TECHO_PASADA_MS, type ParametrosCorrida } from './qa-tipos';
+import { reservaPorFotoMs, TECHO_PASADA_MS, type ParametrosCorrida, type CorridaQA } from './qa-tipos';
 import { TOPE_CORRIDA_USD } from '../../../scripts/qa-agentes/config.qa';
 
 const uuidFoto = (i: number) => `aaaaaaaa-0000-4000-8000-${String(i).padStart(12, '0')}`;
@@ -1070,5 +1070,155 @@ describe('AUD28 · BE-A4 (QA): cada processInbound del arnés manda timestampMs 
     for (const llamada of llamadas) {
       expect(llamada).toContain('timestampMs');
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUD28 · DAT-M2 [MEDIO] — `limpiarTenant` en modo borrar: el ORDEN real.
+//
+// `qa-motor.test.ts` corre SIEMPRE con `retencion: 'conservar'` (ver
+// `parametros()` arriba): ninguna de las pruebas de encima ejercita
+// `limpiarTenant`. Un doble a la medida —más barato que montar el carril
+// completo solo para llegar a la limpieza— basta para fijar el ORDEN: dos
+// tablas sin cascada (0088/0089) primero, el `delete` del tenant después, y
+// Storage / `wa_mensaje_procesado` SOLO si el tenant ya no existe.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('AUD28 · DAT-M2: limpiarTenant en modo borrar respeta el orden', () => {
+  const TENANT_ID = 'aaaaaaaa-0000-4000-8000-00000000dat2';
+
+  /** Doble mínimo, propio de esta prueba: registra en `orden` cada DELETE (no
+   *  los SELECT de conteo, que son ruido para la aserción de orden) y cada
+   *  `storage.<bucket>.<método>`, en el momento en que `limpiarTenant` los
+   *  invoca — que, al ser todo `await` secuencial, es el orden real de
+   *  ejecución. */
+  function dbLimpieza(opts: {
+    filas?: Record<string, Fila[]>;
+    erroresDelete?: Record<string, string>;
+    noBorrarEnDelete?: Set<string>;
+    orden: string[];
+  }) {
+    const filas: Record<string, Fila[]> = { ...(opts.filas ?? {}) };
+    filas.tenant ??= [{ id: TENANT_ID, nombre: 'ZZZ QA dat-m2' }];
+
+    const from = (tabla: string) => {
+      const preds: Array<(f: Fila) => boolean> = [];
+      let modo: 'select' | 'delete' = 'select';
+      let cabeza = false;
+      const b: Record<string, unknown> = {};
+      const yo = () => b as never;
+      b.select = (_c?: unknown, o?: { head?: boolean }) => { if (o?.head) cabeza = true; return yo(); };
+      b.eq = (c: string, v: unknown) => { preds.push((f) => f[c] === v); return yo(); };
+      b.like = () => yo();
+      b.delete = () => { modo = 'delete'; return yo(); };
+      b.maybeSingle = async () => {
+        const filtradas = (filas[tabla] ?? []).filter((f) => preds.every((p) => p(f)));
+        return { data: filtradas[0] ?? null, error: null };
+      };
+      b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => {
+        const ejecutar = () => {
+          if (modo === 'delete') {
+            opts.orden.push(`${tabla}.delete`);
+            if (opts.erroresDelete?.[tabla]) return { error: { message: opts.erroresDelete[tabla] } };
+            if (!opts.noBorrarEnDelete?.has(tabla)) {
+              const fuera = (filas[tabla] ?? []).filter((f) => preds.every((p) => p(f)));
+              filas[tabla] = (filas[tabla] ?? []).filter((f) => !fuera.includes(f));
+            }
+            return { error: null };
+          }
+          const filtradas = (filas[tabla] ?? []).filter((f) => preds.every((p) => p(f)));
+          return { data: cabeza ? null : filtradas, error: null, count: filtradas.length };
+        };
+        return Promise.resolve(ejecutar()).then(res, rej);
+      };
+      return b as never;
+    };
+
+    const bucket = (nombre: string) => ({
+      list: async () => { opts.orden.push(`storage.${nombre}.list`); return { data: [], error: null }; },
+      remove: async () => { opts.orden.push(`storage.${nombre}.remove`); return { data: [], error: null }; },
+    });
+
+    return { from, storage: { from: bucket } } as unknown as SupabaseClient;
+  }
+
+  function corridaDePrueba(): CorridaQA {
+    return {
+      ...crearCorrida('demo_guion', parametros([]), 'rapido'),
+      tenantId: TENANT_ID, tenantNombre: 'ZZZ QA dat-m2',
+    };
+  }
+
+  test('orden real: las dos tablas sin cascada, LUEGO el tenant, LUEGO Storage y wa_mensaje_procesado', async () => {
+    const orden: string[] = [];
+    // El escenario del hallazgo: el copiloto dejó una fila en chat_conversacion.
+    const db = dbLimpieza({ filas: { chat_conversacion: [{ tenant_id: TENANT_ID, id: 'c1' }] }, orden });
+
+    const mensaje = await limpiarTenant(db, corridaDePrueba());
+
+    expect(mensaje).toMatch(/^✅/);
+    expect(orden).toEqual([
+      'chat_conversacion.delete',
+      'cobranza_contacto.delete',
+      'tenant.delete',
+      'storage.comprobantes.list',
+      'storage.liquidaciones.list',
+      'wa_mensaje_procesado.delete',
+    ]);
+  });
+
+  test('si el DELETE del tenant falla, Storage NO se toca (la evidencia se conserva)', async () => {
+    const orden: string[] = [];
+    const db = dbLimpieza({
+      orden,
+      erroresDelete: { tenant: 'update or delete on table "tenant" violates foreign key constraint' },
+    });
+
+    const mensaje = await limpiarTenant(db, corridaDePrueba());
+
+    expect(mensaje).toMatch(/^❌ el DELETE del tenant falló/);
+    expect(orden).toEqual(['chat_conversacion.delete', 'cobranza_contacto.delete', 'tenant.delete']);
+    expect(orden.some((o) => o.startsWith('storage.'))).toBe(false);
+  });
+
+  test('si el DELETE de una tabla sin cascada falla, ni Storage ni el tenant se tocan', async () => {
+    const orden: string[] = [];
+    const db = dbLimpieza({ orden, erroresDelete: { cobranza_contacto: 'timeout' } });
+
+    const mensaje = await limpiarTenant(db, corridaDePrueba());
+
+    expect(mensaje).toMatch(/^❌ el DELETE de cobranza_contacto falló/);
+    expect(orden).toEqual(['chat_conversacion.delete', 'cobranza_contacto.delete']);
+  });
+
+  test('una fila que sobrevive al DELETE explícito de cobranza_contacto se nombra en las sobras', async () => {
+    const orden: string[] = [];
+    // El DELETE "tiene éxito" (sin error) pero, como en una réplica con
+    // retraso o una fila reinsertada a mitad de la limpieza, la fila sigue
+    // presente cuando se cuenta después — el escenario que la lista de
+    // sobras existe para atrapar.
+    const db = dbLimpieza({
+      filas: { cobranza_contacto: [{ tenant_id: TENANT_ID, id: 'k1' }] },
+      noBorrarEnDelete: new Set(['cobranza_contacto']),
+      orden,
+    });
+
+    const mensaje = await limpiarTenant(db, corridaDePrueba());
+
+    expect(mensaje).toMatch(/^⚠️ el tenant se borró pero quedaron sobras/);
+    expect(mensaje).toContain('cobranza_contacto: 1 filas');
+  });
+
+  test('con retencion "conservar", el carril rápido nunca llama limpiarTenant', async () => {
+    // Mismo camino real que el resto de la suite (parametros() fija
+    // retencion:'conservar'): confirma que la limpieza sigue sin dispararse.
+    const ids = sembrarBanco(1);
+    const corrida = crearCorrida('demo_guion', parametros(ids), 'rapido');
+    await ejecutarCorridaRapida(corrida);
+
+    // Con 'conservar' el motor deja dicho que CONSERVÓ el tenant a pedido —
+    // nunca el veredicto de `limpiarTenant` ('✅ … borrado' / '❌ …' / '⚠️ …').
+    expect(corrida.limpieza).not.toBeNull();
+    expect(corrida.limpieza).not.toMatch(/^(✅|❌|⚠️)/);
+    expect(corrida.limpieza).toContain('CONSERVADO');
   });
 });

@@ -440,11 +440,42 @@ async function pdfsDelTenant(db: SupabaseClient, tenantId: string): Promise<stri
 
 // ── Limpieza (siempre detrás de los guards del ejército) ────────────────────
 
-async function limpiarTenant(db: SupabaseClient, corrida: CorridaQA): Promise<string> {
+// AUD28 · DAT-M2 [MEDIO] — exportada SOLO para que qa-motor.test.ts pueda
+// ejercerla en modo borrar sin montar el carril completo (que siempre corre
+// con `retencion: 'conservar'`); no la llames desde fuera de este archivo o
+// de su prueba.
+export async function limpiarTenant(db: SupabaseClient, corrida: CorridaQA): Promise<string> {
   const tenantId = corrida.tenantId;
   if (!tenantId) return 'sin tenant que limpiar (la siembra no llegó a crear uno)';
   try {
     await exigirTenantZZZ(db, tenantId);
+
+    // AUD28 · DAT-M2: `chat_conversacion` (0088_chat_conversaciones.sql:20) y
+    // `cobranza_contacto` (0089_agente_cobranza.sql:47) son las DOS únicas
+    // tablas con `tenant_id` que NO llevan `on delete cascade` (las otras 90
+    // sí). Si el copiloto o el agente de cobranza dejaron una fila en este
+    // tenant de QA, el `delete from tenant` de abajo rebota con 23503 —y
+    // antes rebotaba DESPUÉS de haber borrado ya el Storage, perdiendo la
+    // evidencia sin motivo. Se borran explícitas, ANTES de tocar Storage o el
+    // tenant, para que un fallo aquí deje TODO intacto (Storage y tenant) y
+    // el mensaje señale a la culpable. Cuando la serie M4 agregue la FK con
+    // cascada a 0088/0089, estas dos líneas quedan redundantes pero
+    // inofensivas (no habrá filas que borrar).
+    for (const tabla of ['chat_conversacion', 'cobranza_contacto']) {
+      const { error } = await db.from(tabla).delete().eq('tenant_id', tenantId);
+      if (error) return `❌ el DELETE de ${tabla} falló: ${error.message} (Storage y tenant intactos)`;
+    }
+
+    // El `delete` del tenant va ANTES de tocar Storage: si falla (FK que no
+    // se haya previsto arriba, u otra), Storage se conserva intacto — la
+    // evidencia (fotos, PDFs) sigue apuntando a filas que siguen existiendo,
+    // en vez de quedar huérfana de un tenant que tampoco se pudo borrar.
+    const del = await db.from('tenant').delete().eq('id', tenantId);
+    if (del.error) return `❌ el DELETE del tenant falló: ${del.error.message} (Storage intacto)`;
+
+    // Storage y wa_mensaje_procesado SOLO llegan aquí si el tenant YA NO
+    // EXISTE: no hay riesgo de dejar filas huérfanas apuntando a objetos
+    // borrados, porque las filas mismas se fueron con la cascada.
     const notas: string[] = [];
     for (const bucket of ['comprobantes', 'liquidaciones']) {
       try {
@@ -466,15 +497,19 @@ async function limpiarTenant(db: SupabaseClient, corrida: CorridaQA): Promise<st
         notas.push(`storage/${bucket}: limpieza best-effort falló (${e instanceof Error ? e.message : e})`);
       }
     }
-    const del = await db.from('tenant').delete().eq('id', tenantId);
-    if (del.error) return `❌ el DELETE del tenant falló: ${del.error.message}`;
 
     const patron = `${prefijoMensajes(corrida.id)}%`;
     exigirPrefijoQA(patron);
     await db.from('wa_mensaje_procesado').delete().like('wa_message_id', patron);
 
+    // `qa_corrida` NO entra a esta lista a propósito: su FK a tenant es `set
+    // null` (datos.md:135), así que perder al tenant no la deja como sobra —
+    // queda desligada, que es justo lo que se pidió.
     const sobras: string[] = [];
-    for (const tabla of ['operador', 'unidad', 'viaje', 'gasto', 'liquidacion', 'comprobante_huerfano', 'wa_conversacion', 'llm_costo']) {
+    for (const tabla of [
+      'operador', 'unidad', 'viaje', 'gasto', 'liquidacion', 'comprobante_huerfano',
+      'wa_conversacion', 'llm_costo', 'chat_conversacion', 'cobranza_contacto',
+    ]) {
       const { count, error } = await db.from(tabla).select('*', { count: 'exact', head: true }).eq('tenant_id', tenantId);
       if (error) sobras.push(`${tabla}: no se pudo contar (${error.message})`);
       else if ((count ?? 0) > 0) sobras.push(`${tabla}: ${count} filas`);
