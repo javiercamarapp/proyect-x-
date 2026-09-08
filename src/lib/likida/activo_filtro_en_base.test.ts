@@ -60,6 +60,19 @@ const SITIOS: Array<{ archivo: string; funcion: string }> = [
   { archivo: 'src/lib/likida/agentes/notificaciones.ts', funcion: 'usuariosAvisables' },
 ];
 
+/** Accesos a `app_user` que NO son resolutores por rol y por eso quedan fuera
+ *  de SITIOS a propósito: traen una sola fila por llave primaria
+ *  (`.eq('id', x).maybeSingle()`, sin `.limit()`), así que no hay cupo que una
+ *  fila de baja pueda robarle a la viva — el filtro de `activo` en TS ya
+ *  alcanza. Igual que SITIOS, es una lista cerrada: un OCTAVO acceso sin
+ *  clasificar sigue rompiendo la prueba de abajo. */
+const EXCLUIDOS_POR_ID: Array<{ archivo: string; funcion: string }> = [
+  // AUDITORÍA 28, AG-A4: busca UNA cuenta por `id` (quien autorizó la
+  // coordinación), no "a quién le toca por rol" — no hay `.limit()` que una
+  // fila de baja pueda ganarle a la viva.
+  { archivo: 'src/lib/likida/contactos.ts', funcion: 'telefonoDeUsuario' },
+];
+
 const OR_ACTIVO = "or('activo.is.null,activo.eq.true')";
 
 describe('el filtro de `activo` sigue en la BASE, no solo en TS', () => {
@@ -82,16 +95,29 @@ describe('el filtro de `activo` sigue en la BASE, no solo en TS', () => {
     // (`grep -rn "from('app_user')"`): si aparece un SÉPTIMO resolutor de
     // destinatario, esta prueba no lo sabe evaluar y hay que agregarlo arriba
     // — no basta con que las seis de la lista sigan pasando.
-    const archivos = [...new Set(SITIOS.map((s) => s.archivo))];
+    const archivos = [...new Set([...SITIOS, ...EXCLUIDOS_POR_ID].map((s) => s.archivo))];
     for (const archivo of archivos) {
       const fuente = readFileSync(archivo, 'utf8');
-      const enEsteArchivo = SITIOS.filter((s) => s.archivo === archivo).length;
+      const enEsteArchivo = SITIOS.filter((s) => s.archivo === archivo).length
+        + EXCLUIDOS_POR_ID.filter((s) => s.archivo === archivo).length;
       const ocurrencias = (fuente.match(/from\('app_user'\)/g) ?? []).length;
       expect(
         ocurrencias,
-        `${archivo}: tiene ${ocurrencias} consulta(s) a \`app_user\` pero la lista de arriba solo cubre ${enEsteArchivo}. ` +
-        'Si la nueva es un resolutor de destinatario (rol -> a quién se le escribe/manda), agrégala a SITIOS.',
+        `${archivo}: tiene ${ocurrencias} consulta(s) a \`app_user\` pero las listas de arriba solo cubren ${enEsteArchivo}. ` +
+        'Si la nueva es un resolutor de destinatario (rol -> a quién se le escribe/manda), agrégala a SITIOS; ' +
+        'si es una búsqueda por `id` de una sola fila (sin `.limit()`), agrégala a EXCLUIDOS_POR_ID.',
       ).toBe(enEsteArchivo);
     }
+  });
+
+  it.each(EXCLUIDOS_POR_ID)('$funcion ($archivo) sigue siendo una búsqueda de una sola fila por `id`, sin `.limit()`', ({ archivo, funcion }) => {
+    // Si alguien la convierte en un resolutor multi-fila (por rol, con
+    // `.limit()`), el filtro de TS deja de alcanzar y esta excepción deja de
+    // ser válida — hay que moverla a SITIOS y darle el `.or()` de la base.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta sale de EXCLUIDOS_POR_ID, una constante fija de este archivo, no de ninguna entrada de usuario.
+    const fuente = readFileSync(archivo, 'utf8');
+    const cuerpo = cuerpoDeFuncion(fuente, funcion);
+    expect(cuerpo, `${funcion}: ya no busca por \`id\` — revisa si sigue mereciendo la excepción`).toMatch(/\.eq\(['"]id['"],/);
+    expect(cuerpo, `${funcion}: ganó un \`.limit()\` — una fila de baja ya puede robarle el cupo a la viva`).not.toMatch(/\.limit\(/);
   });
 });

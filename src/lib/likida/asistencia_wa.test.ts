@@ -322,7 +322,12 @@ describe('atenderAsistenciaChofer', () => {
     expect(cuerpo).toContain('NO le marques');
   });
 
-  it('modo mudo NO revela el fallo del aviso: la misma línea neutra aunque el jefe no recibiera', async () => {
+  // AUDITORÍA 28, MEDIO (AG-M2): antes esta rama devolvía la MISMA línea "ya lo
+  // sabe" aunque el aviso al jefe hubiera rebotado — un "más texto es más
+  // vibración" que se pasó de la vibración a la mentira. Sigue siendo UNA
+  // línea corta y neutra (nada de instrucciones largas al chofer en violencia
+  // activa), pero ahora es VERDADERA.
+  it('modo mudo SÍ dice la verdad del aviso: si el jefe no lo recibió, otra línea corta (no "ya lo sabe")', async () => {
     baseFeliz();
     sendButtons.mockResolvedValue(null);   // Meta rechazó
     sendText.mockResolvedValue(null);      // y el fallback de texto (c4-1) también
@@ -331,8 +336,9 @@ describe('atenderAsistenciaChofer', () => {
       texto: 'nos están asaltando',
       asistencia: { nivel: 'rojo', modoMudo: true },
     });
-    expect(r.respuesta).toBe('Recibido. Tu jefe ya lo sabe.');
-    // Pero la bitácora sí dice la verdad, para el post-mortem y la Fase 5.
+    expect(r.respuesta).toBe('Recibido. No pude avisar a tu jefe — si puedes, márcale tú.');
+    expect(r.respuesta).not.toContain('ya lo sabe');
+    // La bitácora también dice la verdad, para el post-mortem y la Fase 5.
     expect(escrituras.some((e) => e.clave === 'incidencia_evento.insert'
       && (e.payload as { tipo?: string }).tipo === 'aviso_jefe_fallido')).toBe(true);
   });
@@ -381,6 +387,20 @@ describe('atenderAsistenciaChofer', () => {
       asistencia: { nivel: 'rojo', modoMudo: false },
     });
     expect(r.respuesta).toContain('NO pude reenviárselo');
+  });
+
+  // AUDITORÍA 28, MEDIO (AG-M2): mismo candado de verdad en la rama de
+  // "mensaje adicional" (no escala) — el reenvío es el aviso, aquí.
+  it('92-D + AG-M2: en modo mudo, si el reenvío del mensaje adicional falla, NO dice "ya lo sabe"', async () => {
+    baseFeliz();
+    respuestas[SELECT_ABIERTA] = { data: [filaAbierta()], error: null };
+    enviarTexto.mockResolvedValue({ ok: false, error: 'número inválido', codigo: 131030 });
+    const r = await atenderAsistenciaChofer({
+      tenantId: 't1', viajeId: 'v1', operadorId: 'o1',
+      texto: 'sigue el choque',
+      asistencia: { nivel: 'rojo', modoMudo: true },
+    });
+    expect(r.respuesta).toBe('Recibido. No pude avisar a tu jefe — si puedes, márcale tú.');
   });
 
   it('92-D: "hay dos heridos" tras un "chocamos" sella hay_lesionados y el jefe SÍ se entera', async () => {
@@ -451,6 +471,35 @@ describe('atenderAsistenciaChofer', () => {
     // …y el jefe recibe un 🚨 NUEVO con botón (no un eco en la bitácora).
     expect(sendButtons).toHaveBeenCalled();
     expect(r.respuesta).toContain('Subí la gravedad');
+  });
+
+  // AUDITORÍA 28, MEDIO (AG-M2): la misma verdad en la rama de ESCALADA — el
+  // comentario del código ya prohibía "un ya lo sabe sin respaldo" pero el
+  // modo mudo lo devolvía igual.
+  it('92-C + AG-M2: escalada en modo mudo, con el aviso nuevo confirmado, dice "ya lo sabe"', async () => {
+    baseFeliz();
+    respuestas[SELECT_ABIERTA] = { data: [filaAbierta({ tipo: 'varado', prioridad: 'alta' })], error: null };
+    const r = await atenderAsistenciaChofer({
+      tenantId: 't1', viajeId: 'v1', operadorId: 'o1',
+      texto: 'nos están robando',
+      asistencia: { nivel: 'rojo', modoMudo: true },
+    });
+    expect(sendButtons).toHaveBeenCalled();
+    expect(r.respuesta).toBe('Recibido. Tu jefe ya lo sabe.');
+  });
+
+  it('92-C + AG-M2: escalada en modo mudo, si el aviso NUEVO rebota, dice la verdad (no "ya lo sabe")', async () => {
+    baseFeliz();
+    respuestas[SELECT_ABIERTA] = { data: [filaAbierta({ tipo: 'varado', prioridad: 'alta' })], error: null };
+    sendButtons.mockResolvedValue(null);
+    sendText.mockResolvedValue(null);
+    const r = await atenderAsistenciaChofer({
+      tenantId: 't1', viajeId: 'v1', operadorId: 'o1',
+      texto: 'nos están robando',
+      asistencia: { nivel: 'rojo', modoMudo: true },
+    });
+    expect(r.respuesta).toBe('Recibido. No pude avisar a tu jefe — si puedes, márcale tú.');
+    expect(r.respuesta).not.toContain('ya lo sabe');
   });
 
   it('92-C: el expediente con más de 72 h se cierra por antigüedad y el reporte nuevo abre limpio', async () => {

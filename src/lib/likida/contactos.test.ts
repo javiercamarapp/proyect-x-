@@ -20,6 +20,11 @@ function builder() {
   b.then = (ok: (v: unknown) => unknown) => Promise.resolve({
     data: errorSiguiente ? null : (TABLAS.app_user ?? []), error: errorSiguiente,
   }).then(ok);
+  // `telefonoDeUsuario` filtra por `id` exacto y lee una fila (maybeSingle) en
+  // vez del patrón array + `.find()` de las demás funciones de este archivo.
+  b.maybeSingle = async () => ({
+    data: errorSiguiente ? null : ((TABLAS.app_user ?? [])[0] ?? null), error: errorSiguiente,
+  });
   return b;
 }
 vi.mock('@/lib/supabase/admin', () => ({ supabaseAdmin: () => ({ from: () => builder() }) }));
@@ -40,7 +45,7 @@ const traerTodo = vi.hoisted(() => vi.fn(async (
 }));
 vi.mock('./pg', () => ({ traerTodo }));
 
-const { resolverCuentaOficina, TelefonoAmbiguo, telefonoJefeDe, telefonoParaDineroDe, telefonosJefe } = await import('./contactos');
+const { resolverCuentaOficina, TelefonoAmbiguo, telefonoJefeDe, telefonoParaDineroDe, telefonosJefe, telefonoDeUsuario } = await import('./contactos');
 
 beforeEach(() => { TABLAS.app_user = []; errorSiguiente = null; traerTodo.mockClear(); });
 
@@ -200,5 +205,37 @@ describe('BAJO (reauditoría 25) · telefonosJefe pagina en vez de recortarse en
     TABLAS.app_user = [{ tenant_id: 't-1', rol: 'flota_admin', telefono: '5219990000005', activo: true }];
     await telefonosJefe(['t-1']);
     expect(traerTodo).toHaveBeenCalledWith(expect.any(Function), 'telefonosJefe');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, ALTO (AG-A4) — `telefonoDeUsuario`: el teléfono de UN humano
+// puntual (quien autorizó una coordinación de proveedor), con el mismo
+// criterio de `activo` que el resto del archivo.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('telefonoDeUsuario — el teléfono de UN humano puntual', () => {
+  it('devuelve el teléfono cuando la cuenta está activa', async () => {
+    TABLAS.app_user = [{ telefono: '5219990001111', activo: true }];
+    expect(await telefonoDeUsuario('u-1', 't-1')).toBe('5219990001111');
+  });
+
+  it('null si la cuenta está dada de baja (activo=false), aunque tenga teléfono capturado', async () => {
+    TABLAS.app_user = [{ telefono: '5219990001111', activo: false }];
+    expect(await telefonoDeUsuario('u-1', 't-1')).toBeNull();
+  });
+
+  it('un `activo` ausente NO da de baja — solo el false explícito', async () => {
+    TABLAS.app_user = [{ telefono: '5219990001111' }];
+    expect(await telefonoDeUsuario('u-1', 't-1')).toBe('5219990001111');
+  });
+
+  it('null si no hay fila (usuario de otro tenant, o inexistente)', async () => {
+    TABLAS.app_user = [];
+    expect(await telefonoDeUsuario('u-1', 't-1')).toBeNull();
+  });
+
+  it('LANZA si la base falló (no se afirma "sin teléfono")', async () => {
+    errorSiguiente = { message: 'fetch failed' };
+    await expect(telefonoDeUsuario('u-1', 't-1')).rejects.toThrow(/fetch failed/);
   });
 });

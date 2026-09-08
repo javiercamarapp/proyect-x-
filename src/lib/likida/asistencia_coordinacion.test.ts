@@ -61,7 +61,11 @@ vi.mock('./presupuesto', async (orig) => ({
   acotada: (q: unknown) => q,
 }));
 const telefonoJefeDe = vi.fn();
-vi.mock('./contactos', () => ({ telefonoJefeDe: (...a: unknown[]) => telefonoJefeDe(...a) }));
+const telefonoDeUsuario = vi.fn();
+vi.mock('./contactos', () => ({
+  telefonoJefeDe: (...a: unknown[]) => telefonoJefeDe(...a),
+  telefonoDeUsuario: (...a: unknown[]) => telefonoDeUsuario(...a),
+}));
 const sendText = vi.fn();
 const sendButtons = vi.fn();
 vi.mock('@/lib/meta/client', () => ({
@@ -69,7 +73,10 @@ vi.mock('@/lib/meta/client', () => ({
   sendText: (...a: unknown[]) => sendText(...a),
   sendButtons: (...a: unknown[]) => sendButtons(...a),
 }));
-vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+const loggerWarn = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/logger', () => ({ logger: { info: vi.fn(), warn: loggerWarn, error: vi.fn() } }));
+const alertarOperador = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/lib/observability/alerta', () => ({ alertarOperador: (...a: unknown[]) => alertarOperador(...a) }));
 const listarProveedoresEmergencia = vi.fn();
 vi.mock('./emergencias', () => ({
   listarProveedoresEmergencia: (...a: unknown[]) => listarProveedoresEmergencia(...a),
@@ -101,7 +108,7 @@ const COO = '11111111-2222-3333-4444-555555555555';
 const JEFE = { tenantId: 't1', rol: 'flota_admin' as const, userId: 'u-jefe' };
 
 const SEL_INC = 'incidencia.select:id, tipo, estado, lat, lng, unidad_id, operador_id';
-const SEL_ACTIVAS = 'coordinacion_proveedor.select:id, tenant_id, incidencia_id, estado, proveedor_nombre, mensaje_preparado';
+const SEL_ACTIVAS = 'coordinacion_proveedor.select:id, tenant_id, incidencia_id, estado, proveedor_nombre, mensaje_preparado, autorizada_por';
 
 function proveedorVerificado(over: Record<string, unknown> = {}) {
   return {
@@ -380,6 +387,68 @@ describe('atenderMensajeProveedor', () => {
     expect(anotarEventoIncidencia).toHaveBeenCalledTimes(2);
     // NADA se cotizó: la atribución es del humano.
     expect(escrituras.filter((e) => e.clave === 'coordinacion_proveedor.claim')).toHaveLength(0);
+  });
+});
+
+// ── AUDITORÍA 28, ALTO (AG-A4): la cotización va a quien AUTORIZÓ ──────────
+
+describe('atenderMensajeProveedor — el destinatario correcto de la cotización', () => {
+  it('autorizó el flota_admin (A): la cotización va a SU teléfono, no al del encargado (jefe por rol)', async () => {
+    respuestas[SEL_ACTIVAS] = {
+      data: [{
+        id: COO, tenant_id: 't1', incidencia_id: INC, estado: 'contactado',
+        proveedor_nombre: 'Grúas El Güero', mensaje_preparado: 'msj', autorizada_por: 'u-flota-admin-A',
+      }],
+      error: null,
+    };
+    respuestas['coordinacion_proveedor.claim'] = { data: [{ id: COO }], error: null };
+    telefonoDeUsuario.mockResolvedValue('5215551110000');   // A: quien autorizó
+    telefonoJefeDe.mockResolvedValue('5215552220000');      // B: el encargado — NO debe usarse
+    sendButtons.mockResolvedValue('wamid.BTN');
+    const r = await atenderMensajeProveedor('5299911122233', 'llego en 40 min, son 1200');
+    expect(telefonoDeUsuario).toHaveBeenCalledWith('u-flota-admin-A', 't1');
+    const [tel] = sendButtons.mock.calls[0] as [string, string, unknown];
+    expect(tel).toBe('5215551110000');
+    expect(telefonoJefeDe).not.toHaveBeenCalled();
+    expect(r).toContain('le pasé su tiempo y precio al jefe');
+  });
+
+  it('autorizada_por sin teléfono o inactivo (null): cae a telefonoJefeDe', async () => {
+    respuestas[SEL_ACTIVAS] = {
+      data: [{
+        id: COO, tenant_id: 't1', incidencia_id: INC, estado: 'contactado',
+        proveedor_nombre: 'Grúas El Güero', mensaje_preparado: 'msj', autorizada_por: 'u-de-baja',
+      }],
+      error: null,
+    };
+    respuestas['coordinacion_proveedor.claim'] = { data: [{ id: COO }], error: null };
+    telefonoDeUsuario.mockResolvedValue(null);              // dado de baja o sin teléfono
+    telefonoJefeDe.mockResolvedValue('5215552220000');
+    sendButtons.mockResolvedValue('wamid.BTN');
+    const r = await atenderMensajeProveedor('5299911122233', 'llego en 40 min, son 1200');
+    const [tel] = sendButtons.mock.calls[0] as [string, string, unknown];
+    expect(tel).toBe('5215552220000');
+    expect(r).toContain('le pasé su tiempo y precio al jefe');
+  });
+
+  it('si el aviso de la cotización NO sale: warn, evento cotizacion_no_avisada, alertarOperador — y al proveedor no se le miente', async () => {
+    respuestas[SEL_ACTIVAS] = {
+      data: [{
+        id: COO, tenant_id: 't1', incidencia_id: INC, estado: 'contactado',
+        proveedor_nombre: 'Grúas El Güero', mensaje_preparado: 'msj', autorizada_por: null,
+      }],
+      error: null,
+    };
+    respuestas['coordinacion_proveedor.claim'] = { data: [{ id: COO }], error: null };
+    telefonoJefeDe.mockResolvedValue('5215552220000');
+    sendButtons.mockResolvedValue(null);   // Meta rechazó (ventana de 24h cerrada)
+    const r = await atenderMensajeProveedor('5299911122233', 'llego en 40 min, son 1200');
+    expect(loggerWarn).toHaveBeenCalledWith('coordinacion.cotizacion_no_avisada', expect.objectContaining({ coordinacion: COO }));
+    expect(anotarEventoIncidencia).toHaveBeenCalledWith('t1', INC, 'cotizacion_no_avisada', expect.objectContaining({ coordinacionId: COO }));
+    expect(alertarOperador).toHaveBeenCalledWith('coordinacion.cotizacion_no_avisada', expect.objectContaining({ codigo: 'cotizacion_no_avisada' }));
+    // La verdad, no la promesa vacía de antes.
+    expect(r).not.toContain('le confirma en breve');
+    expect(r).not.toContain('directamente en breve');
   });
 });
 

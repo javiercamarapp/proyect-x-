@@ -3,11 +3,12 @@ import { logger } from '@/lib/logger';
 import { acotada } from './presupuesto';
 import { strip_accents } from './cuadre/util';
 import { variantesTelefono } from './conv';
-import { telefonoJefeDe } from './contactos';
+import { telefonoJefeDe, telefonoDeUsuario } from './contactos';
 import type { RolOficina } from './contactos';
 import { sendText, sendButtons } from '@/lib/meta/client';
 import { puedeAsignar } from '@/lib/auth/permisos';
 import { mxn, hoyMx } from '@/lib/formato';
+import { alertarOperador } from '@/lib/observability/alerta';
 import { listarProveedoresEmergencia, telefonoE164Mx, type TipoProveedor } from './emergencias';
 import { armarCascada, type ProveedorRecomendado } from './asistencia_proveedor';
 import { anotarEventoIncidencia, cerrarCoordinacionesDeIncidencia, TIPOS_ASISTENCIA, type TipoAsistencia } from './asistencia_wa';
@@ -510,6 +511,29 @@ interface CoordinacionActiva {
   estado: string;
   proveedorNombre: string;
   mensajePreparado: string;
+  /** Quién autorizó ESTE contacto (`app_user.id`) — AUDITORÍA 28, AG-A4: el
+   *  destinatario primario de la cotización y de los mensajes adicionales. */
+  autorizadaPor: string | null;
+}
+
+/**
+ * El destinatario del aviso de una gestión con proveedor: PRIMERO quien
+ * autorizó el contacto (si sigue activo y tiene teléfono capturado) — es su
+ * dinero y su compromiso, y es a él a quien se le prometió «te lo paso con
+ * botones para confirmar». Solo si eso ya no es posible (dado de baja, sin
+ * teléfono, o la lectura falla) cae al jefe por ROL — el destinatario de
+ * ANTES del arreglo, que podía ser una persona distinta de quien autorizó.
+ */
+async function destinatarioAvisoCoordinacion(tenantId: string, autorizadaPor: string | null): Promise<string | null> {
+  if (autorizadaPor) {
+    try {
+      const directo = await telefonoDeUsuario(autorizadaPor, tenantId);
+      if (directo) return directo;
+    } catch (e) {
+      logger.warn('coordinacion.autorizada_por_ilegible', { tenant: tenantId, autorizadaPor, err: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return telefonoJefeDe(tenantId);
 }
 
 /**
@@ -522,7 +546,7 @@ interface CoordinacionActiva {
 async function activasDeTelefono(from: string): Promise<CoordinacionActiva[]> {
   const { data, error } = await acotada(supabaseAdmin()
     .from('coordinacion_proveedor')
-    .select('id, tenant_id, incidencia_id, estado, proveedor_nombre, mensaje_preparado')
+    .select('id, tenant_id, incidencia_id, estado, proveedor_nombre, mensaje_preparado, autorizada_por')
     .in('proveedor_telefono', variantesTelefono(from))
     .neq('estado', 'descartada')
     .order('created_at', { ascending: false })
@@ -535,6 +559,7 @@ async function activasDeTelefono(from: string): Promise<CoordinacionActiva[]> {
     estado: f.estado as string,
     proveedorNombre: f.proveedor_nombre as string,
     mensajePreparado: f.mensaje_preparado as string,
+    autorizadaPor: (f.autorizada_por as string) ?? null,
   }));
   if (todas.length === 0) return todas;
   const { data: incs, error: errInc } = await acotada(supabaseAdmin()
@@ -642,9 +667,12 @@ export async function atenderMensajeProveedor(
     await anotarEventoIncidencia(c.tenantId, c.incidenciaId, 'cotizacion_recibida', {
       coordinacionId: c.id, proveedor: c.proveedorNombre, etaMin, precio, texto: texto.slice(0, 500),
     });
+    // AUDITORÍA 28, ALTO (AG-A4): el destinatario primario es quien AUTORIZÓ
+    // este contacto (`c.autorizadaPor`), no el jefe por rol — si el dueño
+    // autorizó, la cotización con los botones de confirmar es SU decisión.
     let avisadoJefe = false;
     try {
-      const jefe = await telefonoJefeDe(c.tenantId);
+      const jefe = await destinatarioAvisoCoordinacion(c.tenantId, c.autorizadaPor);
       if (jefe) {
         const cuerpo =
           `${c.proveedorNombre} respondió sobre la emergencia:\n«${texto.replace(/\s+/g, ' ').trim().slice(0, 220)}»\n\n` +
@@ -659,10 +687,24 @@ export async function atenderMensajeProveedor(
     } catch (e) {
       logger.warn('coordinacion.jefe_no_avisado', { coordinacion: c.id, err: e instanceof Error ? e.message : String(e) });
     }
+    // AUDITORÍA 28, ALTO (AG-A4): si el aviso NO salió, nadie se enteraba —
+    // ni un `warn`, ni la bitácora, ni el operador de Likida. Ahora los tres
+    // se enteran, y al proveedor no se le promete un «confirma en breve» que
+    // nadie va a cumplir porque nadie recibió la cotización.
+    if (!avisadoJefe) {
+      logger.warn('coordinacion.cotizacion_no_avisada', { coordinacion: c.id, incidencia: c.incidenciaId, tenant: c.tenantId });
+      await anotarEventoIncidencia(c.tenantId, c.incidenciaId, 'cotizacion_no_avisada', {
+        coordinacionId: c.id, proveedor: c.proveedorNombre, etaMin, precio,
+      });
+      await alertarOperador('coordinacion.cotizacion_no_avisada', {
+        error: `Cotización de ${c.proveedorNombre} (tenant ${c.tenantId}, incidencia ${c.incidenciaId}) llegó y NADIE fue avisado por WhatsApp.`,
+        codigo: 'cotizacion_no_avisada',
+      });
+    }
     logger.info('coordinacion.cotizada', { coordinacion: c.id, etaMin, precio, avisadoJefe });
     return avisadoJefe
       ? 'Gracias — le pasé su tiempo y precio al jefe de tráfico; le confirmamos en breve. 🙏'
-      : 'Gracias — recibimos su respuesta. El jefe de tráfico le confirma directamente en breve.';
+      : 'Gracias — quedó registrado y se le va a contactar.';
   }
 
   // cotizada (mensaje adicional antes de la decisión) o confirmada (avisos de
@@ -673,7 +715,9 @@ export async function atenderMensajeProveedor(
   });
   let reenviado = false;
   try {
-    const jefe = await telefonoJefeDe(c.tenantId);
+    // AUDITORÍA 28, ALTO (AG-A4): mismo destinatario primario que la
+    // cotización — quien autorizó el contacto, no el jefe por rol.
+    const jefe = await destinatarioAvisoCoordinacion(c.tenantId, c.autorizadaPor);
     if (jefe) {
       reenviado = Boolean(await sendText(jefe, `${c.proveedorNombre} escribió:\n«${texto.replace(/\s+/g, ' ').trim().slice(0, 220)}»`));
     }

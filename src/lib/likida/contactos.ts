@@ -227,6 +227,35 @@ export async function telefonosJefe(tenantIds: string[]): Promise<Record<string,
   return mapa;
 }
 
+/**
+ * El teléfono de UN `app_user` puntual, si sigue ACTIVO en esa flota.
+ *
+ * AUDITORÍA 28, ALTO (AG-A4): la cotización de la grúa se le mandaba al jefe
+ * por ROL (`telefonoJefeDe`), no a quien de verdad autorizó el contacto
+ * (`coordinacion_proveedor.autorizada_por`) — si el dueño autorizó, la
+ * cotización con los botones de confirmar le llegaba al encargado. Este
+ * helper resuelve ESE humano puntual, con el mismo criterio de `activo` que
+ * `resolverCuentaOficina` (solo el `false` explícito da de baja) y el mismo
+ * candado de tenant que el resto del archivo: un `app_user` de OTRA flota
+ * (o ya dado de baja) no puede recibir el aviso de una coordinación ajena.
+ * `null` = no hay a quién avisar por esta vía — el llamador cae a
+ * `telefonoJefeDe`.
+ */
+export async function telefonoDeUsuario(userId: string, tenantId: string): Promise<string | null> {
+  const { data, error } = await acotada(supabaseAdmin()
+    .from('app_user')
+    .select('telefono, activo')
+    .eq('id', userId)
+    .eq('tenant_id', tenantId)
+    .not('telefono', 'is', null)
+    .maybeSingle(), 'telefonoDeUsuario');
+  if (error) throw new Error(`telefonoDeUsuario: ${error.message}`);
+  if (!data) return null;
+  const f = data as { telefono: string | null; activo: boolean | null };
+  if (f.activo === false) return null;
+  return f.telefono;
+}
+
 /** Perfil por flota. Best-effort: si no se puede leer, cada flota cae al
  *  default. Un fallo aquí no puede silenciar un aviso de operación. */
 async function ordenesAvisoDe(ids: string[]): Promise<Record<string, RolAviso[]>> {
