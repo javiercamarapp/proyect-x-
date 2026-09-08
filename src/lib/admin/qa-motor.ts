@@ -308,14 +308,18 @@ async function sembrarChofer(
   // fail-closed correcto de producción, pero deja al carril rápido sin poder
   // ejercitar nada. El ejército no lo ve porque su mock hace "exitoso" el
   // envío. La versión se calcula con las MISMAS funciones de producción
-  // (getDatosResponsable → avisoSimplificado → versionAviso), no con una copia.
+  // (getDatosResponsable → versionAvisoVigente), no con una copia — AUDITORÍA
+  // 28, LEG-A4: si la fórmula cambia SOLO en processor.ts, este carril siembra
+  // una versión distinta de la que producción calcula, `reclamarEnvioAviso`
+  // devuelve `true`, intenta mandar por Meta real, rebota, y el gate bloquea
+  // todo — el hallazgo real del 16-ago que este comentario ya contaba.
   const { getDatosResponsable } = await import('@/lib/likida/repo');
-  const { avisoSimplificado, versionAviso } = await import('@/lib/likida/privacidad');
+  const { versionAvisoVigente } = await import('@/lib/likida/privacidad');
   const datos = await getDatosResponsable(tenantId);
-  const texto = datos ? avisoSimplificado(datos) : null;
-  if (!texto) throw new Error('no se pudo armar el aviso de privacidad del tenant QA (¿razón social/domicilio sembrados?)');
+  const vigente = datos ? versionAvisoVigente(datos) : null;
+  if (!vigente) throw new Error('no se pudo armar el aviso de privacidad del tenant QA (¿razón social/domicilio sembrados?)');
   const constancia = await db.from('operador')
-    .update({ aviso_privacidad_en: new Date().toISOString(), aviso_privacidad_version: versionAviso(texto) })
+    .update({ aviso_privacidad_en: new Date().toISOString(), aviso_privacidad_version: vigente.version })
     .eq('id', op.data.id).eq('tenant_id', tenantId);
   if (constancia.error) throw new Error(`no se pudo sembrar la constancia del aviso: ${constancia.error.message}`);
 

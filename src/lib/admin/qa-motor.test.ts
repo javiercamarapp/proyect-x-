@@ -325,9 +325,15 @@ vi.mock('@/lib/likida/processor', () => ({
 vi.mock('@/lib/likida/repo', () => ({
   getDatosResponsable: async () => ({ razonSocial: 'ZZZ QA SA DE CV', domicilio: 'QA' }),
 }));
+// AUDITORÍA 28, LEG-A4: qa-motor.ts siembra la constancia con
+// `versionAvisoVigente`, no con `avisoSimplificado`/`versionAviso` sueltos —
+// el mock tiene que traer el helper nuevo o sale `undefined` en cuanto
+// `sembrarOperadorQa` lo llame (mismo hallazgo que este comentario describe:
+// un mock sin el helper nuevo tumba el carril rápido).
 vi.mock('@/lib/likida/privacidad', () => ({
   avisoSimplificado: () => 'aviso de privacidad sintético',
   versionAviso: () => 'v-qa',
+  versionAvisoVigente: () => ({ texto: 'aviso de privacidad sintético', version: 'v-qa' }),
 }));
 vi.mock('./qa-oraculos', () => ({
   correrOraculos: async () => ([{
