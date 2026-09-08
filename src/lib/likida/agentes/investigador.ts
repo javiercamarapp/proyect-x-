@@ -26,6 +26,7 @@
 import { z } from 'zod';
 import { lookup } from 'node:dns/promises';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { esIpPublica, hostNoPublico } from '@/lib/http/destino_publico';
 import { acotada } from '../presupuesto';
 import { DatoInvalido } from '../errores';
 import { estaApagado } from '../interruptores';
@@ -151,34 +152,33 @@ export function enlacesInstitucionales(html: string, base: URL): string[] {
 /** Redirects máximos que se siguen — validando el host de CADA salto. */
 const MAX_REDIRECTS = 3;
 
-/** ¿La IP es privada/loopback/link-local? (c5-11: sin esto, un `sitio_web`
- *  hostil — o un redirect — apuntaba el fetch del investigador a la red
- *  interna). Exportada para su prueba: es la frontera SSRF. */
-export function esIpPrivada(ip: string): boolean {
-  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a >= 224) return true; // multicast/reservado
-    return false;
-  }
-  const v6 = ip.toLowerCase();
-  return v6 === '::1' || v6 === '::' || v6.startsWith('fc') || v6.startsWith('fd')
-    || v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb')
-    || v6.startsWith('::ffff:127.') || v6.startsWith('::ffff:10.') || v6.startsWith('::ffff:192.168.');
-}
-
-/** Resuelve el host y rechaza lo que no sea una IP pública. Un DNS que no
- *  contesta cuenta como no-permitido: fail closed. */
-async function hostPublico(hostname: string): Promise<boolean> {
-  if (esIpPrivada(hostname)) return false;
-  if (/^localhost$/i.test(hostname)) return false;
+/** Resuelve el host y exige que TODAS las direcciones que el DNS devuelva
+ *  sean públicas (c5-11 / ARQ-M3, auditoría 28): antes esta función tenía su
+ *  propia lista de redes privadas escrita a mano, con reglas distintas a
+ *  `lib/http/destino_publico.ts` (la que ya usa `conectores/credenciales.ts`)
+ *  — `100.64.0.1` (CGNAT) pasaba aquí como pública y era privada allá;
+ *  `::ffff:169.254.169.254` (metadatos del cloud, mapeada) y `64:ff9b::7f00:1`
+ *  (NAT64 de loopback) pasaban aquí como públicas y la otra implementación
+ *  las rechazaba. Ahora hay UNA sola respuesta: `hostNoPublico`/`esIpPublica`.
+ *  Mínimo elegido de las dos opciones del prompt (a): sigue resolviendo con
+ *  `lookup` y validando ANTES del `fetch`, ahora exigiendo `esIpPublica` en
+ *  TODAS las direcciones (`all: true`), no solo la primera — pero el `fetch`
+ *  de `bajarPagina` vuelve a resolver por su cuenta, así que la ventana de
+ *  rebinding entre este lookup y el socket real que abre `fetch` SIGUE
+ *  ABIERTA. Cerrarla del todo exigiría enrutar por `httpsPublico` (que valida
+ *  dentro del socket, como hace `credenciales.ts`), pero eso solo cubre
+ *  `https:` y no admite un límite de bytes distinto al suyo (8 MiB vs. los
+ *  300 KB de `MAX_BYTES_PAGINA`) sin tocar `lib/http/*` — fuera del alcance
+ *  de este lote (ARQ-M3), documentado para quien retome el rebinding. Un DNS
+ *  que no contesta cuenta como no-permitido: fail closed. Exportada para su
+ *  prueba: es la frontera SSRF que `bajarPagina` consulta antes de cada
+ *  `fetch` (incluido cada salto de redirect). */
+export async function hostPublico(hostname: string): Promise<boolean> {
+  if (hostNoPublico(hostname)) return false;
+  const limpio = hostname.replace(/^\[|\]$/g, '');
   try {
-    const { address } = await lookup(hostname);
-    return !esIpPrivada(address);
+    const direcciones = await lookup(limpio, { all: true });
+    return direcciones.length > 0 && direcciones.every((d) => esIpPublica(d.address));
   } catch {
     return false;
   }
