@@ -77,22 +77,47 @@ export interface RespuestaCampanaEvento {
 }
 
 /**
- * AUDITORÍA 25 (ALTO): el borrado real de una BAJA. Antes de esto, un BAJA
- * solo suprimía el correo (no volver a escribirle) y registraba un
- * `prospecto_contacto` que además REINICIABA el reloj de 365 días de
- * `purgar_prospecto_persona` (0258) — ejercer el derecho alargaba la
- * retención en vez de acortarla.
+ * AUDITORÍA 25 (ALTO) → AUDITORÍA 28 (LEG-M3, MEDIO, REINCIDENTE): el borrado
+ * real de una BAJA. Antes de la 25, un BAJA solo suprimía el correo (no
+ * volver a escribirle) y registraba un `prospecto_contacto` que además
+ * REINICIABA el reloj de 365 días de `purgar_prospecto_persona` — ejercer el
+ * derecho alargaba la retención en vez de acortarla. La 25 borró tres tablas
+ * a mano; la fuente de verdad real es `purgar_prospecto_persona` (0258, ver
+ * su cabecera en `supabase/migrations/0258_purga_satelites_prospecto.sql`),
+ * que decide SEIS. Esta función replica su inventario en TS —invocar la
+ * purga desde aquí exigiría una RPC nueva (migración), fuera de este lote—,
+ * así que 0258 manda: si esa función cambia de columnas o de tablas, este
+ * inventario se queda desactualizado hasta que alguien lo note.
  *
- * Borra de inmediato lo que `avisoProspectos` (`privacidad.ts`, sección "Qué
- * datos tenemos") enumera como datos de la persona — nombre, puesto, correo,
- * teléfono, perfil —, y SOLO de la persona que pidió la baja: no toca a otros
- * contactos de la misma empresa que no la pidieron, ni la ficha de EMPRESA
- * (nombre, giro, plaza), que no es un dato suyo. Mismo criterio de columnas
- * que `purgar_prospecto_persona`.
+ * Las seis, con el mismo criterio de columnas que 0258:
+ *   · `prospecto_persona` → DELETE (la fila entera es la persona).
+ *   · `prospecto_correo` → DELETE (cada fila es un correo de esta persona).
+ *   · `prospecto_toque.resumen` → NULL: la prosa puede nombrar a la persona
+ *     (0130) y NO se acota a `esContactoPrincipal` — el toque es del
+ *     PROSPECTO, y cualquiera de sus contactos pudo dejar el nombre ahí.
+ *   · `prospecto` (cabecera) → columnas de persona a NULL — SOLO si
+ *     `esContactoPrincipal`: si quien pidió la baja era una copia
+ *     (`prospecto_correo`), la cabecera es de OTRA persona.
+ *   · `prospecto_dossier` (telefonos/datos) → NULL — mismo gate que la
+ *     cabecera: es la ficha del prospecto, no de un contacto suelto.
+ *   · `cola_aprobacion` → DELETE por `prospecto_id` — mismo gate. La tabla
+ *     (0117) NO tiene columna de destinatario/correo, solo `prospecto_id`: no
+ *     hay forma de acotar a la pieza de ESTE correo, así que se borran todas
+ *     las del prospecto, igual que hace 0258 (`cuerpo` es NOT NULL, no se
+ *     puede anonimizar en sitio).
  *
- * Respeta `conservar_hasta` (0148): un freno humano vigente (p. ej. un ARCO
- * de acceso en curso) no se pisa por una BAJA concurrente — se registra y
- * queda para revisión, en vez de borrar de más.
+ * No toca (mismas exentas que 0258, con su razón): `prospecto_contacto` (sin
+ * datos de persona por diseño — y es donde ESTA función deja su propio
+ * historial) y `comercial_evento` (la anonimiza `purgar_comercial_evento` por
+ * edad, no por baja).
+ *
+ * Respeta `conservar_hasta` (0148) SOLO en `prospecto_persona`, igual que
+ * antes de esta migración: un freno humano vigente (p. ej. un ARCO de acceso
+ * en curso) no se pisa por una BAJA concurrente en esa tabla. Las cinco
+ * tablas nuevas no comprueban `conservar_hasta` — 0258 sí lo hace, pero a
+ * nivel de lote (congela el prospecto ENTERO antes de decidir a quién tocar);
+ * replicar ese filtro aquí, por prospecto individual, queda fuera de este
+ * lote y se deja escrito como pendiente.
  *
  * Mejor esfuerzo por tabla: el fallo de una no debe impedir el resto: cada
  * una se registra si truena, y nunca lanza hacia el webhook que la llama
@@ -115,9 +140,18 @@ export async function borrarDatosPersonaPorBaja(prospectoId: string, correo: str
     .ilike('correo', correo);
   if (errCopia) logger.error('campania.baja_correo_no_borrado', { prospecto: prospectoId, err: errCopia.message });
 
+  // 0258 (bloque `prospecto_toque`): la prosa fuera, el hecho (canal, fecha,
+  // actor interno) se queda. Del PROSPECTO, no del contacto — sin gate de
+  // `esContactoPrincipal`.
+  const { error: errToque } = await db.from('prospecto_toque')
+    .update({ resumen: null })
+    .eq('prospecto_id', prospectoId);
+  if (errToque) logger.error('campania.baja_toque_no_anonimizado', { prospecto: prospectoId, err: errToque.message });
+
   // Solo si ESTE correo era el contacto de cabecera del prospecto: si el
   // remitente era una copia (`prospecto_correo`), el nombre/correo/teléfono
-  // de cabecera son de OTRA persona y no se tocan.
+  // de cabecera son de OTRA persona y no se tocan — ni la ficha del
+  // prospecto que cuelga de esa misma cabecera (dossier, piezas en cola).
   if (esContactoPrincipal) {
     const { error: errPrincipal } = await db.from('prospecto')
       .update({
@@ -128,6 +162,22 @@ export async function borrarDatosPersonaPorBaja(prospectoId: string, correo: str
       })
       .eq('id', prospectoId);
     if (errPrincipal) logger.error('campania.baja_prospecto_no_anonimizado', { prospecto: prospectoId, err: errPrincipal.message });
+
+    // 0258 (bloque `prospecto_dossier`): telefonos/datos son lo personal; el
+    // resto de la ficha (historia/empleados/flotilla/fuentes) es de la
+    // EMPRESA y se queda.
+    const { error: errDossier } = await db.from('prospecto_dossier')
+      .update({ telefonos: null, datos: null })
+      .eq('prospecto_id', prospectoId);
+    if (errDossier) logger.error('campania.baja_dossier_no_anonimizado', { prospecto: prospectoId, err: errDossier.message });
+
+    // 0258 (bloque `cola_aprobacion`): borrador completo con el nombre de
+    // pila adentro (0117) — no hay columna de destinatario que permita acotar
+    // a la pieza de este correo, así que se borran todas las del prospecto.
+    const { error: errPiezas } = await db.from('cola_aprobacion')
+      .delete()
+      .eq('prospecto_id', prospectoId);
+    if (errPiezas) logger.error('campania.baja_piezas_no_borradas', { prospecto: prospectoId, err: errPiezas.message });
   }
 }
 
@@ -211,9 +261,17 @@ export async function procesarRespuestaCampana(d: RespuestaCampanaEvento): Promi
   if (baja) await borrarDatosPersonaPorBaja(prospectoId, remitente, esContactoPrincipal);
 
   // La respuesta al historial (0118): es lo que detiene la cadencia del SDR.
+  // AUDITORÍA 28 (LEG-M3): una BAJA ya NO lleva el asunto que la persona
+  // escribió — texto fijo. `purgar_prospecto_persona` (0258) mantiene
+  // «caliente» (sin purgar) 365 días a quien tiene un `prospecto_contacto`
+  // reciente, y este registro es justo ESE: para entonces la persona que
+  // pidió la baja ya no tiene datos que purgar (el borrado de arriba la
+  // adelantó), pero el prospecto sigue sin calificar para la purga por este
+  // mismo renglón — es un efecto del filtro de frialdad de 0258, no de esta
+  // función, y no se corrige aquí porque exigiría tocar esa migración.
   const { error: errContacto } = await supabaseAdmin().from('prospecto_contacto').insert({
     prospecto_id: prospectoId, canal: 'correo', direccion: 'respuesta',
-    resumen: `Contestó${baja ? ' pidiendo BAJA' : ''}: «${asunto || 'sin asunto'}»`.slice(0, 300),
+    resumen: (baja ? 'Pidió BAJA' : `Contestó: «${asunto || 'sin asunto'}»`).slice(0, 300),
     actor_id: null,
   });
   if (errContacto) return { ok: false, motivo: `historial no escrito: ${errContacto.message}` };
