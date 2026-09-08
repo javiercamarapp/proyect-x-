@@ -63,3 +63,14 @@ Tres lecturas, y las tres importan:
 También medido: la cadencia real del pulso fue de **268 min** contra los 30
 declarados (el medidor de OP-A2, `861d09d`, **funciona y avisó**).
 
+
+## Fase 4 — arreglos (tope: 3 vueltas)
+
+- **Vuelta 1 · `166310c` — FIS-C1 [CRÍTICO], RETENIDO.** La declaración manual
+  del 15% de `/admin/flotas` ahora se coteja contra `tenant.regimen_fiscal`.
+  Rojo→verde medido con `git stash` del arreglo (3 de 8 casos fallan sin él).
+  Suite completa **936 archivos / 12,544 pasan / 0 fallan**, exit 0.
+  De paso mordió un guardarraíl real: `normas_sincronizadas` exige que
+  `usado_en_codigo` apunte a símbolos vivos porque ese texto viaja VERBATIM al
+  prompt del agente contador. Se actualizaron las dos fichas y se regeneró el
+  corpus (2 líneas de diff).
