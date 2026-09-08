@@ -712,7 +712,20 @@ export function avisoIntegral(r: DatosIntegral): SeccionAviso[] {
         // silencio: es una afirmación falsa firmada, con evidencia en la base.
         // Se declara lo que sí ocurre, con su finalidad y su límite, y se
         // conserva la promesa que sí es cierta para las demás categorías.
-        `**Un dato de salud, y solo uno:** si avisas por el chat de un accidente o una emergencia, se guarda **si hay personas lesionadas** y el texto con el que lo describes, para poder escalarlo a tu empresa y atenderlo. No se usa para tu liquidación ni para evaluarte. **Fuera de ese caso no se piden ni se conservan datos sensibles:** ni origen racial o étnico, ni creencias, ni afiliación sindical, ni preferencias sexuales, ni datos biométricos. Cada foto se procesa completa por el motor de lectura para extraer los campos del comprobante; si en ella aparece por accidente algo sensible (un ticket de farmacia, por ejemplo), un filtro lo detecta y lo excluye: **no se guarda como dato, no participa en tu liquidación**, y la imagen que no respalda ningún gasto se elimina sola del almacenamiento. **Lo que no se puede borrar ni pidiéndolo:** la foto que ya es comprobante de un gasto — esa se conserva por obligación fiscal (CFF art. 30). Lo que sí puedes pedir es que se **desligue de tu persona**, y eso es lo que la cancelación ejecuta.`,
+        //
+        // AUDITORÍA 28, LEG-M4 [MEDIO]: esta frase seguía prometiendo, para el
+        // ejemplo del ticket de farmacia, que el filtro lo excluye ENTERO
+        // ("no se guarda como dato, no participa en tu liquidación"). Falso:
+        // `intake/sanitizar.ts` (`sanitizarProducto`) SOLO descarta el campo
+        // `producto` cuando reconoce vocabulario de salud; `rfc_emisor`,
+        // `ocr_extra.emisor` (el nombre del comercio, saneado con
+        // `sanitizarTexto`, no con `sanitizarProducto` — `intake/ocr.ts:644`),
+        // el monto, la fecha y la imagen SÍ se guardan (`repo.ts` `addGasto`)
+        // y el gasto SÍ entra al cuadre; `facturacion/pendientes.ts` lo
+        // enseña al contralor como `textoTicket`. Se declara el tratamiento
+        // real: qué se descarta, qué se conserva y por qué, con la
+        // recomendación honesta que se sigue de eso.
+        `**Un dato de salud, y solo uno:** si avisas por el chat de un accidente o una emergencia, se guarda **si hay personas lesionadas** y el texto con el que lo describes, para poder escalarlo a tu empresa y atenderlo. No se usa para tu liquidación ni para evaluarte. **Fuera de ese caso no se piden ni se conservan datos sensibles:** ni origen racial o étnico, ni creencias, ni afiliación sindical, ni preferencias sexuales, ni datos biométricos. Cada foto se procesa completa por el motor de lectura para extraer los campos del comprobante; si en ella aparece por accidente algo sensible —un ticket de farmacia, por ejemplo—, el filtro descarta la línea del **producto** (el medicamento) cuando la reconoce, pero **el nombre del comercio, su RFC, el monto, la fecha y la imagen sí se guardan**, porque son tu comprobante fiscal: ese gasto entra a tu liquidación igual que cualquier otro. Por eso, si un ticket no es un gasto de la flota, lo más seguro es no mandarlo como comprobante. La imagen que no respalda ningún gasto se elimina sola del almacenamiento. **Lo que no se puede borrar ni pidiéndolo:** la foto que ya es comprobante de un gasto — esa se conserva por obligación fiscal (CFF art. 30). Lo que sí puedes pedir es que se **desligue de tu persona**, y eso es lo que la cancelación ejecuta.`,
         // AUDITORÍA 24 (LEG-8, MEDIO, reincidente ×3): `grep 'familiar|contacto
         // de emergencia'` en los dos avisos daba 0 — el nombre 24, teléfono y
         // parentesco del contacto de emergencia (`contacto_emergencia`, 0198)

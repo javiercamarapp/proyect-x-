@@ -224,3 +224,35 @@ describe('la liga que se le manda al operador ya resuelve', () => {
     expect(versionAviso(viejo)).not.toBe(versionAviso(nuevo));
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, LEG-M4 [MEDIO]: el párrafo de salud prometía, para el ejemplo
+// del ticket de farmacia, que el filtro lo excluía ENTERO ("no se guarda como
+// dato, no participa en tu liquidación"). `intake/sanitizar.ts`
+// (`sanitizarProducto`) SOLO descarta el campo `producto`; el nombre del
+// comercio, su RFC (`ocr_extra.emisor`, `rfc_emisor`), el monto, la fecha y la
+// imagen se guardan igual (`repo.ts` `addGasto`) y el gasto entra al cuadre.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('LEG-M4 · el ticket de farmacia describe el tratamiento real, no una exclusión total', () => {
+  it('ya no promete que el filtro lo excluye entero', () => {
+    expect(todo()).not.toMatch(/no se guarda como dato, no participa en tu liquidación/i);
+  });
+
+  it('dice qué se descarta (el producto) y qué se conserva (comercio, RFC, monto, fecha, imagen)', () => {
+    const t = todo();
+    expect(t).toMatch(/descarta la línea del.{0,20}producto/i);
+    expect(t).toMatch(/el medicamento/i);
+    expect(t).toMatch(/nombre del comercio/i);
+    expect(t).toMatch(/su RFC/i);
+    expect(t).toMatch(/comprobante fiscal/i);
+    // Y sigue siendo cierto que ese gasto entra a la liquidación.
+    expect(t).toMatch(/ese gasto entra a tu liquidación/i);
+  });
+
+  it('la promesa de "no se piden ni se conservan datos sensibles" (categorías, no el ticket) se conserva', () => {
+    // Es el elemento 2 del checklist §5.4 — sigue siendo cierto para origen
+    // racial, creencias, afiliación sindical, preferencias sexuales y datos
+    // biométricos. Lo que cambió es el ejemplo del ticket, no esta promesa.
+    expect(todo()).toMatch(/No se piden ni se conservan datos sensibles/i);
+  });
+});
