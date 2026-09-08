@@ -30,7 +30,7 @@ begin
  r := public.ejecutar_arco_cancelacion('34000000-0000-4000-8000-000000000001','34000000-0000-4000-8000-000000000041');
  if not coalesce((r->>'ok')::boolean,false) then raise exception '0340: operación propia falló %',r; end if;
  select resolucion into resolucion_nueva from public.solicitud_arco where id='34000000-0000-4000-8000-000000000041';
- if resolucion_nueva is distinct from 'Se sustituyeron el nombre y el teléfono del registro operativo y se eliminaron sus conversaciones. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud y la documentación fiscal. Requieren revisión de privacidad para determinar los pasos pendientes.' then
+ if resolucion_nueva is distinct from 'Se sustituyeron el nombre y el teléfono del registro operativo, se eliminaron sus conversaciones y el contacto de emergencia registrado sobre su persona. Se conservan el identificador del operador, el correo de la cuenta, la referencia del titular en la solicitud y la documentación fiscal. Requieren revisión de privacidad para determinar los pasos pendientes.' then
    raise exception '0340: resolución promete más que la operación real: %',resolucion_nueva;
  end if;
  if not exists (select 1 from public.operador where id='34000000-0000-4000-8000-000000000011' and nombre like 'Operador %' and telefono like 'anon:%' and rfc is null and licencia is null) then raise exception '0340: cambió sustitución del operador'; end if;

@@ -35,11 +35,12 @@ function exigirAlcance(texto: string) {
   for (const dato of ['identificador', 'correo', 'referencia', 'documentación fiscal', 'privacidad']) expect(texto).toContain(dato);
   // AUDITORÍA 28, LEG-A6 [ALTO]: la lista era CERRADA y le faltaban tres
   // categorías que la RPC (0286/0290) SÍ deja intactas — cámara/telemetría
-  // (evento_seguridad_flota, purga 180/365 días, mig. 0335), el contacto de
-  // emergencia (sobrevive porque la cancelación ANONIMIZA, no borra, al
-  // operador — 0198 solo hace cascada al BORRARLO) y el registro de jornada
-  // (0241). Se exigen en los TRES textos (WhatsApp, resultado de la acción y
-  // la advertencia previa al botón), todos pasados por esta misma función.
+  // (evento_seguridad_flota, purga 180/365 días, mig. 0335) y el registro de
+  // jornada (0241). LEG-M5 (0356) cerró la tercera: el contacto de
+  // emergencia (0198) ya NO sobrevive — la cancelación lo borra, así que el
+  // texto ahora lo menciona entre lo BORRADO, no entre lo conservado. Se
+  // exigen en los TRES textos (WhatsApp, resultado de la acción y la
+  // advertencia previa al botón), todos pasados por esta misma función.
   expect(texto).toMatch(/cámara|telemetría/i);
   expect(texto).toMatch(/contacto de emergencia/i);
   expect(texto).toMatch(/jornada/i);
