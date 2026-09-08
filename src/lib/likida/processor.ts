@@ -32,7 +32,7 @@ import {
   anotarFoto, anotarIncidencia, anotarAcuse, pedirTurnoDeConfirmacion, cerrarRafaga, lineaIncidencias,
   bandejasAbiertas,
 } from '@/lib/likida/intake/rafaga';
-import { avisoSimplificado, versionAviso, pideAtencionPrivacidad, respuestaPrivacidad } from '@/lib/likida/privacidad';
+import { versionAvisoVigente, pideAtencionPrivacidad, respuestaPrivacidad } from '@/lib/likida/privacidad';
 import { interpretarHito, sellarHito, mensajeHito } from '@/lib/likida/hitos_viaje';
 import {
   interpretarMarcaJornada, interpretarConformidadJornada,
@@ -435,12 +435,18 @@ export async function ponerAvisoADisposicion(
       logger.error('privacidad.tenant_sin_datos_responsable', { tenantId });
       return 'sin_datos';
     }
-    const texto = avisoSimplificado(datos);
-    if (!texto) return 'sin_datos';
+    // AUDITORÍA 28, LEG-A4: la firma que decide si se reenvía tiene que cubrir
+    // los DOS textos que el aviso promete comunicar (art. 15 fr. VI) — el
+    // simplificado, que es el que SALE, y el integral, que antes podía
+    // cambiar (p. ej. #401/LEG-B1, plazo de borrado de cámara) sin que ningún
+    // operador con constancia recibiera nada.
+    const vigente = versionAvisoVigente(datos);
+    if (!vigente) return 'sin_datos';
+    const { texto, version } = vigente;
     // El claim vive en SQL: el primer mensaje puede llegar por dos caminos a la
     // vez, y sin él el operador recibiría el aviso dos o tres veces seguidas.
     // Ya se le puso a disposición antes: se puede tratar, y no se repite.
-    if (!(await reclamarEnvioAviso(tenantId, operadorId, versionAviso(texto)))) return 'puesto';
+    if (!(await reclamarEnvioAviso(tenantId, operadorId, version))) return 'puesto';
     // La reserva va ANTES de enviar (si no, el aviso sale dos o tres veces), pero
     // la CONSTANCIA solo vale si el mensaje salió de verdad. `sendText` devolvía
     // `void` y no lanza al fallar, así que la fila se escribía igual: el 28-jul la
@@ -457,7 +463,7 @@ export async function ponerAvisoADisposicion(
     // por eso deshacerla borraba la prueba de un aviso ANTERIOR que sí se había
     // entregado: si el texto de la flota cambia y el reenvío falla, la base
     // pasaba a decir que el operador nunca recibió ninguno.
-    await confirmarEnvioAviso(tenantId, operadorId, versionAviso(texto));
+    await confirmarEnvioAviso(tenantId, operadorId, version);
     logger.info('privacidad.aviso_enviado', { tenantId, operadorId, id });
     return 'puesto';
   } catch (e) {

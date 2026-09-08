@@ -378,6 +378,44 @@ export function versionAviso(texto: string): string {
 }
 
 /**
+ * AUDITORÍA 28, LEG-A4 [ALTO, reincidente desde la 26] — la firma VIGENTE de
+ * una flota, sobre los DOS textos que el aviso promete comunicar.
+ *
+ * `versionAviso(texto)` sola solo cubre el SIMPLIFICADO (lo que sale por
+ * WhatsApp). El INTEGRAL (`avisoIntegral`, más abajo) puede cambiar sin que
+ * esa firma se mueva — y su propia sección «Cómo te avisamos si este aviso
+ * cambia» (fundamento LFPDPPP art. 15 fr. VI, más abajo) afirma con todas sus
+ * letras que "el sistema calcula una firma del texto y reenvía en cuanto deja
+ * de coincidir": la firma que describe no era la de ese texto. El PR #401
+ * (T2-04, LEG-B1) cambió el integral (plazo de borrado de cámara) y ningún
+ * operador con constancia recibió nada — el hueco cobrando.
+ *
+ * El MENSAJE que sale sigue siendo el simplificado —que ya termina con la
+ * liga al integral (:353-355 arriba)—: el reenvío del simplificado ES la
+ * comunicación del cambio, y la liga es dónde leerlo completo. Lo que cambia
+ * aquí es SOLO sobre qué se calcula la firma que decide SI se reenvía.
+ *
+ * `null` con el mismo criterio que `avisoSimplificado`: sin razón social o
+ * domicilio no hay aviso que versionar.
+ */
+export function versionAvisoVigente(datos: DatosIntegral): { texto: string; version: string } | null {
+  const texto = avisoSimplificado(datos);
+  if (texto === null) return null;
+  // Serialización DETERMINISTA del integral: por sección, `[titulo,
+  // fundamento, pendiente ? 'pendiente' : '', ...parrafos]` unidos por salto
+  // de línea, y las secciones entre sí por doble salto. Nada volátil —sin
+  // fechas, sin `Date.now()`, sin `VIGENTE_DESDE` de la página pública— para
+  // que la firma solo cambie cuando el CONTENIDO cambia, nunca por el reloj.
+  const integralSerializado = avisoIntegral(datos)
+    .map((s) => [s.titulo, s.fundamento, s.pendiente ? 'pendiente' : '', ...s.parrafos].join('\n'))
+    .join('\n\n');
+  // El separador entre los dos textos evita que dos pares (texto, integral)
+  // distintos colisionen por simple concatenación de strings.
+  const version = versionAviso(`${texto}\n${integralSerializado}`);
+  return { texto, version };
+}
+
+/**
  * Cómo se ejerce la OPOSICIÓN del art. 26 fr. II en un chat.
  *
  * El aviso anuncia el derecho con estas palabras: *"Esa revisión la hace un

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { avisoSimplificado, versionAviso, pideAtencionPrivacidad, respuestaPrivacidad, revisarAvisoIntegral, sondearAvisoIntegral, tipoDeSolicitudArco, venceArco, type DatosResponsable } from './privacidad';
+import { describe, it, expect, vi } from 'vitest';
+import { avisoSimplificado, versionAviso, versionAvisoVigente, pideAtencionPrivacidad, respuestaPrivacidad, revisarAvisoIntegral, sondearAvisoIntegral, tipoDeSolicitudArco, venceArco, type DatosResponsable, type DatosIntegral } from './privacidad';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // B19 — El aviso de privacidad no existía en ningún punto del flujo.
@@ -266,6 +266,58 @@ describe('versionAviso', () => {
     const v1 = versionAviso(avisoSimplificado(flota)!);
     const v2 = versionAviso(avisoSimplificado({ ...flota, urlAvisoIntegral: 'https://otra.mx/p' })!);
     expect(v2).not.toBe(v1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 28, LEG-A4 [ALTO, reincidente desde la 26] — la firma que dispara
+// el reenvío nunca había visto el INTEGRAL, y su propia sección «Cómo te
+// avisamos si este aviso cambia» promete lo contrario. El PR #401 (LEG-B1)
+// cambió el integral (plazo de borrado de cámara) y ningún operador con
+// constancia recibió nada, porque `versionAviso(avisoSimplificado(...))` no
+// se movió. `versionAvisoVigente` es la firma que SÍ cubre los dos textos.
+// ═══════════════════════════════════════════════════════════════════════════
+describe('versionAvisoVigente — la firma cubre los DOS textos (LEG-A4)', () => {
+  const flotaIntegral: DatosIntegral = { ...flota, contactoPrivacidad: 'Depto. de Datos Personales, datos@transportesdelsureste.mx' };
+
+  it('la misma flota da la misma versión (determinista)', () => {
+    expect(versionAvisoVigente(flotaIntegral)?.version).toBe(versionAvisoVigente(flotaIntegral)?.version);
+  });
+
+  it('ESTE ES EL HUECO: cambiar un dato que SOLO vive en el integral (contactoPrivacidad) mueve versionAvisoVigente pero NO versionAviso(avisoSimplificado(...))', () => {
+    const otro: DatosIntegral = { ...flotaIntegral, contactoPrivacidad: 'Otro contacto, otro@correo.mx' };
+
+    const vSimplificadoA = versionAviso(avisoSimplificado(flotaIntegral)!);
+    const vSimplificadoB = versionAviso(avisoSimplificado(otro)!);
+    expect(vSimplificadoB, 'el simplificado no declara el contacto del art. 29: no debería cambiar').toBe(vSimplificadoA);
+
+    const vVigenteA = versionAvisoVigente(flotaIntegral)?.version;
+    const vVigenteB = versionAvisoVigente(otro)?.version;
+    expect(vVigenteB, 'la firma vigente SÍ tiene que moverse: es el hueco que este lote cierra').not.toBe(vVigenteA);
+  });
+
+  it('cambiar el domicilio (vive en los dos textos) también mueve la firma vigente', () => {
+    const otro: DatosIntegral = { ...flotaIntegral, domicilio: 'Otra calle 1, Mérida' };
+    expect(versionAvisoVigente(otro)?.version).not.toBe(versionAvisoVigente(flotaIntegral)?.version);
+  });
+
+  it('sin razón social (o sin domicilio) da null, igual que avisoSimplificado', () => {
+    expect(versionAvisoVigente({ ...flotaIntegral, razonSocial: '' })).toBeNull();
+    expect(versionAvisoVigente({ ...flotaIntegral, domicilio: '' })).toBeNull();
+  });
+
+  it('no depende de la hora ni de VIGENTE_DESDE: dos relojes distintos dan la misma firma', () => {
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const v1 = versionAvisoVigente(flotaIntegral)?.version;
+    vi.setSystemTime(new Date('2027-06-15T12:00:00Z'));
+    const v2 = versionAvisoVigente(flotaIntegral)?.version;
+    vi.useRealTimers();
+    expect(v2).toBe(v1);
+  });
+
+  it('el texto que devuelve sigue siendo el SIMPLIFICADO (lo que de verdad sale por WhatsApp)', () => {
+    const vigente = versionAvisoVigente(flotaIntegral);
+    expect(vigente?.texto).toBe(avisoSimplificado(flotaIntegral));
   });
 });
 
