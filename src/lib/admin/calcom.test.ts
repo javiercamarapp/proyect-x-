@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 const doubles = vi.hoisted(() => ({
   rpc: vi.fn(),
   postLocal: vi.fn(),
@@ -15,8 +17,10 @@ function prospectoBuilder() {
 vi.mock('@/lib/supabase/admin', () => ({
   supabaseAdmin: () => ({ rpc, from: () => prospectoBuilder() }),
 }));
-vi.mock('@/app/api/webhook/calcom/route', () => ({
-  POST: (...a: unknown[]) => doubles.postLocal(...a),
+// ARQ-B1 (auditoría 28): el handler se movió a lib/admin/calcom_webhook.ts y
+// calcom.ts lo importa ESTÁTICAMENTE (ya no hay `import()` de la ruta).
+vi.mock('./calcom_webhook', () => ({
+  procesarWebhookCalcom: (...a: unknown[]) => doubles.postLocal(...a),
 }));
 import {
   calcomConfigurado,
@@ -612,5 +616,16 @@ describe('ejecutarMantenimientoCalcom — call-site productivo durable', () => {
       config: CONFIG, callbackUrl: 'https://app.likida.mx/api/webhook/calcom',
       venceEn: Date.now() + 30_000,
     })).resolves.toMatchObject({ completa: false, cortadasPorReloj: 1 });
+  });
+});
+
+describe('ARQ-B1 (auditoría 28) — la entrega local ya no usa `import()` de la ruta', () => {
+  it('calcom.ts no tiene ningún `import(` dinámico (la dependencia invertida lib → app → lib se fue)', () => {
+    const fuente = readFileSync(join(process.cwd(), 'src/lib/admin/calcom.ts'), 'utf8');
+    expect(fuente).not.toMatch(/\bimport\s*\(/);
+    // Sigue siendo la MISMA función la que procesa la entrega local — solo
+    // que ahora se importa estáticamente desde `lib`, no desde `app`.
+    expect(fuente).toMatch(/from\s+['"]\.\/calcom_webhook['"]/);
+    expect(fuente).toMatch(/\bprocesarWebhookCalcom\b/);
   });
 });

@@ -2,6 +2,7 @@ import { instanteRFC3339 } from '@/lib/formato';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { secretoEntornoSeguro, valorEntornoReal } from '@/lib/env';
+import { procesarWebhookCalcom } from './calcom_webhook';
 
 export type CalcomConfig = {
   apiUrl: string;
@@ -486,8 +487,14 @@ async function entregarEventoCalcomLocal(
   }
   const raw = JSON.stringify(evento);
   const firma = createHmac('sha256', config.webhookSecret).update(raw).digest('hex');
-  const { POST } = await import('@/app/api/webhook/calcom/route');
-  const response = await POST(new Request(callbackUrl, {
+  // ARQ-B1 (auditoría 28): antes esto era un `import` DINÁMICO de la ruta
+  // `@/app/api/webhook/calcom/route` — una dependencia invertida (lib → app →
+  // lib) invisible al grep estático por ser dinámica. El handler ahora vive en `lib`
+  // (`calcom_webhook.ts`) y se importa ESTÁTICAMENTE: sigue siendo el MISMO
+  // Request+HMAC fabricado a mano, contra la MISMA validación que el webhook
+  // público, para que un endurecimiento futuro del contrato no deje a la
+  // entrega local corriendo con una versión desactualizada sin enterarse.
+  const response = await procesarWebhookCalcom(new Request(callbackUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-cal-signature-256': firma },
     body: raw,
