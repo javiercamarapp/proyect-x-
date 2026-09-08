@@ -26,10 +26,12 @@
 //     acto jurídico (la razón escrita en la 0198). `fundraising` deja el parte
 //     en la bandeja; mandarlo a un inversionista es de Javier.
 //  2. NI UN TELÉFONO QUE NO ESTÉ EN LA BASE. Los números del parte de
-//     incidente salen de `flota_poliza.telefono_siniestros`,
-//     `proveedor_emergencia.telefono` y `contacto_emergencia.telefono`, y cada
-//     uno se rotula con si alguien lo verificó (`verificado_en`). Este archivo
-//     no contiene una sola cadena que parezca un número.
+//     incidente salen de `flota_poliza.telefono_siniestros` y
+//     `proveedor_emergencia.telefono`, y cada uno se rotula con si alguien lo
+//     verificó (`verificado_en`). Este archivo no contiene una sola cadena que
+//     parezca un número. Desde la auditoría 28 (LEG-A5), `contacto_emergencia`
+//     (los familiares del operador) ya NO se consulta aquí: ver la cabecera
+//     de la sección 2.
 //  3. NULL ≠ 0 Y «NO SE PUDO LEER» ≠ «NO HAY». Un MRR sobre una suscripción
 //     con `precio_mensual` NULL no es un MRR parcial: es un MRR INDETERMINADO,
 //     y así sale. Una fuente que no contesta se nombra; no se rellena.
@@ -470,11 +472,18 @@ async function correrAutomejora(disparo: DisparoCorrida, hoy: string): Promise<R
 //   · `flota_poliza.telefono_siniestros` — el 800 de la aseguradora.
 //   · `proveedor_emergencia.telefono` — con `verificado_en`: NULL se imprime
 //     como «CAPTURADO PERO NO VERIFICADO», nunca se calla.
-//   · `contacto_emergencia.telefono` — y SOLO cuando `hay_lesionados = true`.
-//     Ojo con el NULL: la 0198 dice que `hay_lesionados` NULL significa NO
-//     PREGUNTADO, jamás «no hay». Sobre un NULL este parte NO propone avisarle
-//     a la familia (avisar por error de un accidente que no lo fue es un daño
-//     que no se deshace) y tampoco lo calla: dice que falta preguntarlo.
+//
+// AUDITORÍA 28 (LEG-A5, ALTO, REINCIDENTE): este agente YA NO lee ni imprime
+// `contacto_emergencia` de ningún operador. Hasta la 28, la línea de familia
+// SOLO existía cuando `hay_lesionados === true` — su sola PRESENCIA en el
+// parte (que se encola en `cola_aprobacion`, bandeja interna sin purga ni
+// alcance ARCO) delataba el dato de salud del operador, con nombre completo,
+// aunque el texto dijera «no se reproduce el dato». Ocultar el valor no
+// bastaba si la EXISTENCIA del renglón ya lo afirmaba. El parte ahora imprime
+// SIEMPRE la misma línea neutra que remite al expediente — con o sin
+// lesionados, con o sin contactos capturados — y no consulta la tabla: no
+// leer un dato personal que el parte no va a poder usar es minimización
+// (LFPDPPP), no una optimización.
 //
 // A QUÉ INCIDENTES ATIENDE: los de tipo de emergencia (0198) que siguen sin
 // resolver. Un `retraso` no necesita un especialista; un `siniestro` sí.
@@ -522,7 +531,6 @@ export interface Incidente {
   flota: string;
   poliza: { aseguradora: string; numeroPoliza: string; telefono: string; vigenciaHasta: string | null } | null;
   proveedores: Array<{ tipo: string; nombre: string; telefono: string; verificadoEn: string | null }>;
-  contactosFamilia: Array<{ nombre: string; telefono: string; parentesco: string | null; avisarSiLesionados: boolean }>;
 }
 
 /** La lista de a quién llamar, PURA. El orden es el del protocolo, no el de
@@ -531,28 +539,16 @@ export interface Incidente {
 export function aQuienLlamar(inc: Incidente): Telefono[] {
   const t: Telefono[] = [];
 
-  // 1. La familia, SOLO con lesionados CONFIRMADOS. Ver la cabecera: sobre un
-  // NULL no se propone — avisarle a una familia de un accidente que no lo fue
-  // es un daño que no se deshace.
-  if (inc.hayLesionados === true) {
-    for (const c of inc.contactosFamilia.filter((x) => x.avisarSiLesionados)) {
-      // AUDITORÍA 25 (ALTO, REINCIDENTE): este `quien` viaja tal cual al
-      // cuerpo de `armarParteIncidente`, que se encola en `cola_aprobacion`
-      // (la bandeja de /admin) — una tabla SIN alcance de purga ni de
-      // cancelación ARCO (no tiene FK a operador ni a contacto_emergencia).
-      // El arreglo de la 24 ya ocultó el NÚMERO por esta misma razón; el
-      // nombre y el parentesco del familiar se quedaron. Mismo criterio:
-      // se remite al expediente (que SÍ está dentro del ciclo de purga/ARCO
-      // del tenant) en vez de reproducirlos aquí.
-      t.push({
-        quien: `Contacto de emergencia — familia de ${inc.operadorNombre ?? 'el operador'} (nombre y parentesco: en el expediente, no reproducidos aquí)`,
-        numero: c.telefono,
-        respaldo: 'contacto_emergencia, capturado por la flota con la casilla «avisar si hay lesionados» marcada. El estado de salud confirmado vive en el expediente — no se repite aquí.',
-      });
-    }
-  }
+  // AUDITORÍA 28 (LEG-A5, ALTO, REINCIDENTE): esta función solía incluir a la
+  // familia del operador SOLO con lesionados CONFIRMADOS — y esa condición es
+  // justo el problema: la sola PRESENCIA del renglón delataba el dato de
+  // salud a quien leyera `cola_aprobacion` (bandeja sin purga ni alcance
+  // ARCO), aunque el texto ocultara nombre y número. `aQuienLlamar` tiene un
+  // único consumidor (`armarParteIncidente`, grep verificado en la 28): la
+  // línea neutra sobre contactos de emergencia ahora vive ahí, fija, sin
+  // depender de `hayLesionados` — no en esta lista.
 
-  // 2. La aseguradora — el 800 de siniestros es EL dato de la 0198.
+  // 1. La aseguradora — el 800 de siniestros es EL dato de la 0198.
   if (inc.poliza !== null) {
     const venc = inc.poliza.vigenciaHasta;
     t.push({
@@ -564,7 +560,7 @@ export function aQuienLlamar(inc: Incidente): Telefono[] {
     });
   }
 
-  // 3. Los proveedores que este tipo de emergencia pide.
+  // 2. Los proveedores que este tipo de emergencia pide.
   const pide = PROVEEDOR_POR_TIPO[inc.tipo] ?? [];
   for (const tipo of pide) {
     for (const p of inc.proveedores.filter((x) => x.tipo === tipo)) {
@@ -602,6 +598,13 @@ export function armarParteIncidente(inc: Incidente, telefonos: Telefono[], dia: 
     // purga ni alcance de la cancelación ARCO — remite al expediente en
     // vez de repetirlo.
     `  · Descripción: revísala en el panel de tu flota (expediente ${inc.id}) — este parte no la reproduce.`,
+    // AUDITORÍA 28 (LEG-A5, ALTO, REINCIDENTE): esta línea se imprime SIEMPRE
+    // — con o sin lesionados, con o sin contactos capturados — precisamente
+    // para que su EXISTENCIA no delate si hay lesionados. Antes, el renglón
+    // de familia solo aparecía cuando `hayLesionados === true`: su sola
+    // presencia en `cola_aprobacion` (bandeja sin purga ni alcance ARCO) era
+    // el dato de salud, aunque el texto no lo dijera con todas sus letras.
+    `  · Contactos de emergencia del operador: en el expediente ${inc.id}, en el panel de la flota — el parte no los reproduce ni dice si procede avisarles.`,
   ];
   // AUDITORÍA 25 (ALTO, REINCIDENTE): el estado de salud es dato SENSIBLE
   // (LFPDPPP art. 2 fr. VI, agravado por el art. 59 fr. IV) y esta pieza
@@ -610,7 +613,7 @@ export function armarParteIncidente(inc: Incidente, telefonos: Telefono[], dia: 
   // afirmar el valor aquí. El caso NULL se queda igual: "no se preguntó" no
   // es un dato de salud, es la ausencia de uno.
   l.push(inc.hayLesionados === null
-    ? '  · ¿Hay lesionados? NO SE PREGUNTÓ. La columna está en NULL, y NULL aquí significa exactamente eso — no significa «no hay». Es la PRIMERA pregunta de la llamada, y hasta que se conteste este parte no propone avisarle a ninguna familia.'
+    ? '  · ¿Hay lesionados? NO SE PREGUNTÓ. La columna está en NULL, y NULL aquí significa exactamente eso — no significa «no hay». Es la PRIMERA pregunta de la llamada.'
     : `  · ¿Hay lesionados? Ya se contestó en el expediente (${inc.id}) — revísalo en el panel de tu flota; este parte no reproduce el dato de salud.`);
   l.push(inc.unidadMovible === null
     ? '  · ¿La unidad se puede mover? NO SE PREGUNTÓ. De la respuesta depende si hace falta grúa.'
@@ -625,20 +628,15 @@ export function armarParteIncidente(inc: Incidente, telefonos: Telefono[], dia: 
     l.push('  Esto NO es «no hay a quién llamar»: es que esta flota no tiene póliza registrada en `flota_poliza` ni proveedores en `proveedor_emergencia`, o el tipo de emergencia no tiene proveedor asociado. Un número inventado aquí sería peor que no tener ninguno — mandaría a alguien a marcar a un desconocido en el peor momento.');
     l.push('  EL SIGUIENTE PASO ES DE UNA PERSONA: capturar el 800 de siniestros de la aseguradora y al menos una grúa de la zona, y volver a mirar este expediente.');
   } else {
-    // LEG-5: el riesgo real es el CONTACTO FAMILIAR (dato personal de un
-    // tercero, `aQuienLlamar` los marca "— familia de <operador>"), no la
-    // aseguradora ni los proveedores (contactos de negocio, necesarios para
-    // que esta pieza sirva de verdad en una emergencia). Solo la familia se
-    // remite al expediente; el resto de la lista se reproduce igual que
-    // siempre.
+    // AUDITORÍA 28 (LEG-A5): `aQuienLlamar` ya no devuelve contactos
+    // familiares (ver su cabecera) — todo lo que llega aquí es aseguradora y
+    // proveedores, contactos de negocio necesarios para que esta pieza sirva
+    // de verdad en una emergencia, y se reproducen sin remitir a ningún
+    // expediente.
     for (let i = 0; i < telefonos.length; i++) {
       const t = telefonos[i];
       l.push(`  ${numero(i + 1)}. ${t.quien}`);
-      if (t.quien.includes('— familia de')) {
-        l.push(`     tel: disponible en el panel de tu flota — este parte no lo reproduce (expediente ${inc.id}).`);
-      } else {
-        l.push(`     tel: ${t.numero}`);
-      }
+      l.push(`     tel: ${t.numero}`);
       l.push(`     respaldo: ${t.respaldo}`);
     }
   }
@@ -653,7 +651,7 @@ export function armarParteIncidente(inc: Incidente, telefonos: Telefono[], dia: 
 
   l.push('');
   l.push('LIKIDA NO MARCÓ Y NO VA A MARCAR. Está escrito en la migración que creó estas tablas: una llamada automática abre un siniestro, y un siniestro es dinero y un acto jurídico. Este parte deja el dato en la mano; marcar es de una persona.');
-  l.push('Fuentes: `incidencia` (expediente abierto) · `flota_poliza` · `proveedor_emergencia` (con su marca de verificación) · `contacto_emergencia` (solo con lesionados confirmados) · `operador` · `unidad`.');
+  l.push('Fuentes: `incidencia` (expediente abierto) · `flota_poliza` · `proveedor_emergencia` (con su marca de verificación) · `operador` · `unidad`. Los contactos de emergencia del operador viven en el expediente — este parte no los consulta.');
   return l.join('\n');
 }
 
@@ -687,13 +685,13 @@ async function incidenteSinParte(venceEn?: number): Promise<{ incidente: Inciden
     const tenantId = String(f.tenant_id);
     const operadorId = (f.operador_id as string | null) ?? null;
     const hayLesionados = f.hay_lesionados === null || f.hay_lesionados === undefined ? null : f.hay_lesionados === true;
-    const [poliza, proveedores, contactosFamilia] = await Promise.all([
+    // AUDITORÍA 28 (LEG-A5): ya no se lee `contacto_emergencia` aquí — el
+    // parte no consulta ni reproduce contactos familiares (ver la cabecera de
+    // la sección 2 y de `aQuienLlamar`). `operadorId` se conserva en el tipo
+    // porque otros consumidores del expediente sí lo usan.
+    const [poliza, proveedores] = await Promise.all([
       leerPoliza(tenantId),
       leerProveedores(tenantId),
-      // La lista de familia solo se PIDE con lesionados confirmados: no leer
-      // datos personales que el parte no va a poder usar es minimización
-      // (LFPDPPP), no una optimización.
-      hayLesionados === true && operadorId ? leerContactosFamilia(tenantId, operadorId) : Promise.resolve([]),
     ]);
     const op = f.operador as { nombre?: string } | null;
     const un = f.unidad as { numero_economico?: string } | null;
@@ -713,7 +711,7 @@ async function incidenteSinParte(venceEn?: number): Promise<{ incidente: Inciden
       operadorNombre: op?.nombre?.trim() || null,
       unidadEconomico: un?.numero_economico?.trim() || null,
       flota: fl?.nombre?.trim() || `flota ${tenantId}`,
-      poliza, proveedores, contactosFamilia,
+      poliza, proveedores,
     } };
   }
   return { incidente: null, sinTurno: false };
@@ -754,22 +752,6 @@ async function leerProveedores(tenantId: string): Promise<Incidente['proveedores
   })).sort((a, b) => Number(a.verificadoEn === null) - Number(b.verificadoEn === null) || a.nombre.localeCompare(b.nombre));
 }
 
-async function leerContactosFamilia(tenantId: string, operadorId: string): Promise<Incidente['contactosFamilia']> {
-  const { data, error } = await acotada(supabaseAdmin()
-    .from('contacto_emergencia')
-    .select('nombre, telefono, parentesco, avisar_si_lesionados')
-    .eq('tenant_id', tenantId)
-    .eq('operador_id', operadorId)
-    .limit(20), 'direccion.incidente.familia');
-  if (error) throw new Error(`leerContactosFamilia: ${error.message}`);
-  return ((data ?? []) as Array<Record<string, unknown>>).map((f) => ({
-    nombre: String(f.nombre),
-    telefono: String(f.telefono),
-    parentesco: (f.parentesco as string | null) ?? null,
-    avisarSiLesionados: f.avisar_si_lesionados === true,
-  }));
-}
-
 async function correrEspecialistasIncidente(disparo: DisparoCorrida, hoy: string, venceEn?: number): Promise<ResultadoDireccionBandeja> {
   const inicio = new Date();
   const agente = 'especialistas_incidente';
@@ -806,7 +788,7 @@ async function correrEspecialistasIncidente(disparo: DisparoCorrida, hoy: string
       prioridad: inc.prioridad,
       telefonos_disponibles: telefonos.length,
       con_poliza: inc.poliza !== null,
-      consultas: ['incidencia (emergencias sin resolver)', 'flota_poliza', 'proveedor_emergencia', 'contacto_emergencia'],
+      consultas: ['incidencia (emergencias sin resolver)', 'flota_poliza', 'proveedor_emergencia'],
     }, inc.tenantId);
     await anotarCorrida(agente, inicio, 'ok', disparo, { pieza: res, incidencia: inc.id, telefonos: telefonos.length });
     return { resultado: 'corrio', piezas: res === 'encolada' ? 1 : 0, motivo: res === 'ya_existia' ? 'otra corrida ganó el expediente' : undefined, costoUsd: 0 };
