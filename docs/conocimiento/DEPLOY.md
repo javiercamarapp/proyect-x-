@@ -67,6 +67,18 @@ verificar cosas (Meta, Supabase Site URL) contra el sitio que no es.
 5. **Si las fotos dejaron de llegar.** El sospechoso número uno es el token de
    WhatsApp caducado — ver la sección siguiente.
 
+6. **Si el panel imprime algo que ya no cuadra con el esquema (RPC/columna que
+   ya no existe, o al revés).** Antes de sospechar de un bug: mira
+   `https://app.likida.ai/api/health` → `migracion.{atras, adelante, motivo}`.
+   `atras > 0` es la base sin las migraciones que el código ya pide;
+   `adelante > 0` es al revés — el esquema se aplicó y ESTE build no se
+   publicó, y el código puede estar llamando algo que una migración ya cambió
+   (el escenario del 7-sep-2026: la 0317 dropeó la firma de
+   `gastos_fiscales_agregados_tenant` mientras producción seguía en un build
+   viejo). Cualquiera de los dos deja el pulso en `degraded` (503) y abre o
+   mantiene abierto el issue `salud-produccion` — revísalo, puede ya tener el
+   motivo exacto.
+
 ---
 
 ## ¿El costo por liquidación es real o solo parece barato?
@@ -378,9 +390,48 @@ El procedimiento, entonces:
 
 ```bash
 bash scripts/aplicar-migraciones-y-humos.sh   # 1. migraciones a producción
-curl -s https://app.likida.ai/api/health | grep -o '"migracion":{[^}]*}'   # 2. atras:0
+curl -s https://app.likida.ai/api/health | grep -o '"migracion":{[^}]*}'   # 2. atras:0, adelante:0
 git commit -m 'fix(x): … [deploy]' && git push   # 3. ahora sí construye
+# 4. COMPROBAR QUE CONSTRUYÓ — este paso no es opcional (ver más abajo)
+curl -s https://app.likida.ai/api/health | grep -o '"version":"[^"]*"'   # ¿es tu sha corto?
 ```
+
+**Paso 4 no es cosmético.** El 7-sep-2026 (corrida 34092224844) la compuerta
+de Actions dijo `compuerta: CONSTRUIR` y Vercel NO construyó: 20 sondeos en 10
+minutos y producción siguió en el sha anterior. El repo no puede ver *por qué*
+—el `ignoreCommand` de Vercel es mudo y un build que Vercel decide no correr
+no deja rastro en Actions—, así que el runbook no puede prometer que pasar la
+compuerta sea suficiente: hay que MIRAR que `version` cambió.
+
+### Si la compuerta dijo CONSTRUIR y `version` NO cambió después de un rato
+
+En este orden:
+
+1. **`/api/health` → `migracion.adelante`.** Si `adelante > 0`, el esquema ya
+   se aplicó y ESTE build en particular es el que corre — el problema no es
+   que "no construyó", es que el build vivo ya no calza con la base. Ver la
+   sección de arriba (§ Algo se rompió, punto 6).
+2. **El panel de Vercel → Deployments.** ¿Existe un deployment para tu sha?
+   - Si NO existe: la integración de Git con Vercel no recibió el push, o el
+     `ignoreCommand` lo saltó. Como el workflow de Actions imprimió
+     `compuerta: CONSTRUIR`, el veredicto de ESTE repo era construir — la
+     decisión de no hacerlo se tomó del lado de Vercel, y no hay log de eso
+     en Actions. Revisa la integración (Project Settings → Git) antes de
+     suponer un bug en `compuerta-deploy.mjs`.
+   - Si existe y falló: su log de build tiene el error real.
+3. **El camino CON verificación: `deploy-preview-promote.yml`.** Es
+   `workflow_dispatch` con `ref` = tu sha, `promote: true` y
+   `production_confirmation: APPLY_MIGRATIONS_AND_PROMOTE` — el flujo
+   Preview→smoke→promote de `docs/operacion/RESILIENCIA-DEPLOY.md`. **No es
+   un botón que "simplemente funciona":** la auditoría 28 midió 29 corridas
+   de ese workflow sin promover NUNCA. Dispararlo sin mirar su corrida es
+   confiar a ciegas en algo que hoy no tiene ese historial. Si lo usas,
+   quédate viendo el run hasta que termine.
+4. **`[deploy:forzar]` en el asunto** salta la compuerta a la vista — pero
+   solo sirve cuando el punto 1 confirma que LA COMPUERTA es lo que bloquea
+   (una base que el health todavía no cotejó bien, por ejemplo). Nunca lo uses
+   para saltarte el punto 1: forzar con `adelante > 0` sin resolverlo publica
+   un build que ya sabes que no calza con el esquema.
 
 **El push a `master` ya no despliega solo.** `vercel.json` trae un
 `ignoreCommand` que solo construye cuando **el asunto del commit** —la primera
@@ -406,19 +457,34 @@ git log -1 --format='%h %s'                      # tu último commit
 vercel inspect likida.ai --scope likida | head   # qué está publicado
 ```
 
-Si no coinciden, la salida rápida es **Redeploy** en el panel sobre el último
-deployment, que no requiere commit nuevo.
+Si no coinciden, **Redeploy** en el panel sobre un deployment (sin commit
+nuevo) SOLO sirve cuando el commit de ese deployment ya es compatible con el
+esquema actual — en la práctica: `/api/health` → `migracion.adelante === 0`
+para ESE commit. Si `adelante > 0`, Redeploy EMPEORA las cosas: republica un
+build viejo contra un esquema que ya cambió. Eso pasó el 7-sep-2026 — el
+deployment "más reciente" en el panel era justo el build roto contra la base
+0347 (la 0317 había dropeado la firma de `gastos_fiscales_agregados_tenant`
+que ese build llama), y un Redeploy sobre "el último" lo habría vuelto a
+publicar. **"Redeploy sobre el deployment del commit correcto" no es lo mismo
+que "Redeploy sobre el último"** — confirma CUÁL commit antes de apretar el
+botón.
 
 **El mismo cotejo, sin ojos:** `/api/health` devuelve `version` (los 7
 primeros caracteres del sha desplegado), `db` y `sentry`, sin auth y sin un
 solo dato de negocio. El workflow `.github/workflows/salud-produccion.yml` lo
 consume de dos formas:
 
-- cada 30 minutos pega a `https://app.likida.ai/api/health` y falla (correo
-  de GitHub Actions al dueño del repo, más un issue `salud-produccion` que se
+- por schedule: pega a `https://app.likida.ai/api/health` y falla (correo de
+  GitHub Actions al dueño del repo, más un issue `salud-produccion` que se
   abre en rojo y se cierra en verde) si no responde 200 con `ok:true`; y
   comprueba que `version` sea el último commit con `[deploy]` de `master` o
-  uno posterior;
+  uno posterior. Declarado cada 30 min (`cron: '*/30 * * * *'`); **GitHub NO
+  garantiza la cadencia de `schedule`** — medido 4-7-sep-2026: ~8 corridas/día
+  (no las 48/día que "cada 30 min" prometería), con huecos de hasta 5 h 30
+  min. Desde esta ronda (OP-A2, auditoría 28) el propio workflow imprime su
+  cadencia real (`gh run list`) en cada corrida y avisa (`::warning::`) cuando
+  el hueco duplica lo declarado — no hay todavía una cifra medida de cuánto
+  tarda esa alerta en llegar a alguien, así que no se promete una;
 - tras cada push a `master` cuyo asunto lleve `[deploy]`, corre la compuerta
   de migraciones y luego espera hasta 10 minutos a que `version` coincida con
   el sha pusheado y falla si no — que es exactamente el modo de falla

@@ -195,4 +195,26 @@ describe('DEPLOY.md pide lo que hace falta para que el sistema no arranque ciego
     const wf = readFileSync(join(RAIZ, '.github/workflows/backup-storage.yml'), 'utf8');
     expect(wf).not.toMatch(/^\s*schedule:/m);
   });
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // OP-M5 (auditoría 28, MEDIO REINCIDENTE 27) — § «Publicar un cambio»
+  // describía una receta que el 7-sep-2026 pasó la compuerta y aun así no
+  // publicó (Vercel no construyó), y una salida de emergencia (Redeploy) que
+  // ese mismo día habría republicado el build roto contra el esquema nuevo.
+  // El runbook tiene que nombrar `adelante` (lo que hay que mirar primero) y
+  // el camino CON verificación (`deploy-preview-promote.yml`), sin afirmar
+  // que ese camino "funciona" — la auditoría midió 29 corridas sin promover.
+  // ═════════════════════════════════════════════════════════════════════════
+  it('OP-M5: § Publicar nombra `adelante` y el camino con verificación (deploy-preview-promote.yml)', () => {
+    const texto = deploy();
+    const publicar = texto.split('## Publicar un cambio')[1] ?? '';
+    expect(publicar, 'no existe la sección § Publicar un cambio').toBeTruthy();
+    expect(publicar).toContain('adelante');
+    expect(publicar).toContain('deploy-preview-promote.yml');
+  });
+
+  it('OP-M5: ya no afirma "cada 30 minutos pega" a secas — la cadencia real no está garantizada ni medida como una promesa', () => {
+    const texto = deploy();
+    expect(texto).not.toMatch(/cada 30 minutos pega/i);
+  });
 });
