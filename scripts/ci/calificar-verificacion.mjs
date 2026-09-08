@@ -33,6 +33,19 @@
 //   "verifiqué" de "no supe leer" no es una compuerta.
 // · Un bloque sin `(esperado …)` es un REPORTE (su salida depende de datos o
 //   de tiempos): se corre igual, se lista aparte, nunca como fallo.
+// · (auditoría 28, PRU-A3) Si el mensaje trae MÁS de un grupo `(esperado …)`,
+//   o si después del `)` que cierra el ÚNICO grupo quedan más tokens
+//   `identificador=` (mediciones que el autor puso DESPUÉS del paréntesis en
+//   vez de antes), tampoco se puede calificar con certeza: `sin_calificar`.
+//   El defecto de clase que esto atrapa: `indexOf('(esperado')` encontraba el
+//   grupo, pero el corte del lado derecho llegaba hasta el FINAL del mensaje
+//   en vez de hasta el `)` que lo cierra — así que cualquier medición escrita
+//   después de ese `)` (el caso real: el bloque 47, `verificaciones.sql`) se
+//   tragaba entera como texto del ÚLTIMO valor esperado, con espacios adentro
+//   → comodín de prosa → `ok:true` sin importar lo que esa medición dijera.
+//   El cierre se encuentra contando paréntesis anidados desde el `(` de
+//   "(esperado" (hay bloques con paréntesis DENTRO del propio grupo, p. ej.
+//   `(esperado "(tenant_id, created_at DESC, id DESC)" / f / f / t / t)`).
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Parte un archivo en sus bloques `do $$ ... end $$;` de nivel superior. */
@@ -82,10 +95,50 @@ export function extraerMensaje(stderr) {
   return m[1].replace(/\s+/g, ' ').trim();
 }
 
+/** Encuentra el `)` que cierra el grupo `(…` que abre en `marcador`, contando
+ * paréntesis anidados (algunos valores esperados traen paréntesis propios). */
+function cierreDelGrupo(mensaje, marcador) {
+  let profundidad = 0;
+  for (let i = marcador; i < mensaje.length; i++) {
+    if (mensaje[i] === '(') profundidad++;
+    else if (mensaje[i] === ')') {
+      profundidad--;
+      if (profundidad === 0) return i;
+    }
+  }
+  return -1; // sin cierre: paréntesis desbalanceado
+}
+
 /** Separa "clave1=val1  clave2=val2   (esperado a / b)" en sus dos mitades. */
 export function partirEnClavesYEsperado(mensaje) {
   const marcador = mensaje.indexOf('(esperado');
   if (marcador === -1) return null; // bloque-reporte: nada que calificar
+
+  // Más de un grupo `(esperado …)` en el mismo mensaje es ambiguo: no hay
+  // forma de saber a cuál de los dos pertenece cada clave del lado izquierdo.
+  const grupos = (mensaje.match(/\(esperado/g) ?? []).length;
+
+  const cierre = cierreDelGrupo(mensaje, marcador);
+
+  // Todo lo que sigue DESPUÉS del `)` que cierra el grupo: si trae otro
+  // `identificador=`, el autor escribió una medición donde el calificador no
+  // la puede alcanzar (el defecto real del bloque 47 de `verificaciones.sql`,
+  // PRU-A3 — ver la nota de cabecera de este archivo).
+  const resto = cierre === -1 ? '' : mensaje.slice(cierre + 1);
+  const clavesRe0 = /([\wÁÉÍÓÚáéíóúñÑ+-]+)=/g;
+  const clavesTrasCierre = [];
+  let cmr;
+  while ((cmr = clavesRe0.exec(resto))) clavesTrasCierre.push(cmr[1]);
+
+  if (grupos > 1 || cierre === -1 || clavesTrasCierre.length > 0) {
+    const razon = grupos > 1
+      ? `${grupos} grupos (esperado …) en un mismo mensaje`
+      : cierre === -1
+        ? 'el grupo (esperado …) no tiene un `)` de cierre'
+        : `mediciones después del ) que cierra (esperado …): ${clavesTrasCierre.join(', ')}`;
+    return { izq: mensaje.slice(0, marcador).trim(), esperados: [], pares: [], razonSinCalificar: razon };
+  }
+
   let izq = mensaje.slice(0, marcador).trim();
 
   // Varios bloques hacen una "falsificación" al final: desarman a propósito
@@ -96,8 +149,8 @@ export function partirEnClavesYEsperado(mensaje) {
   const corteFalsificacion = izq.indexOf('FALSIFICADO');
   if (corteFalsificacion !== -1) izq = izq.slice(0, corteFalsificacion).trim();
 
-  let der = mensaje.slice(marcador + '(esperado'.length).trim();
-  der = der.replace(/\)\s*$/, ''); // quita el paréntesis de cierre final
+  let der = mensaje.slice(marcador + '(esperado'.length, cierre).trim();
+  der = der.replace(/\)\s*$/, ''); // por si el propio grupo cierra doble, cinturón y tirantes
   const esperados = der.split(/\s*\/\s*/).map((s) => s.trim());
 
   // El ÚLTIMO valor puede traer prosa tras un guion largo ("0 — nunca 2, que
@@ -167,6 +220,9 @@ export function comparaDesigualdad(actual, esperado) {
 export function calificar(mensaje) {
   const partido = partirEnClavesYEsperado(mensaje);
   if (partido === null) return { tipo: 'reporte' };
+  if (partido.razonSinCalificar) {
+    return { tipo: 'sin_calificar', razon: partido.razonSinCalificar, pares: partido.pares, esperados: partido.esperados };
+  }
   const { esperados, pares } = partido;
   if (esperados.length !== pares.length) {
     return {

@@ -1,8 +1,48 @@
 import dns from 'node:dns';
+import os from 'node:os';
 import { createServer, request, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crearProxyLocalE2E } from './proxy-local.mjs';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REQUISITO DE ENTORNO: loopback IPv6 (`::1`).
+//
+// Varios casos de abajo levantan el servidor "canario" con `host: '::1'`
+// (auditoría 28, PRU-B4). En un contenedor sin IPv6 configurado en loopback
+// eso truena y esos casos salen rojos SIN que el repo tenga la culpa —
+// `npm run test:coverage` ni siquiera llega a evaluar los umbrales de
+// cobertura. `ubuntu-latest` de GitHub Actions sí trae `::1`, y las Mac de
+// desarrollo también, así que ahí corren todos. Si tu entorno no lo tiene
+// (algunos contenedores Docker minimalistas), verás un `console.warn` al
+// arrancar la suite y los casos que lo requieren se saltan con
+// `it.skipIf(!ipv6Loopback)` — SOLO esos; los de `127.0.0.1` siempre corren.
+//
+// Esto NO usa el mecanismo de `src/lib/likida/pruebas_en_ci.test.ts`
+// (`skipIf(...LIKIDA_COBERTURA...)`): esa red solo recorre `src/` y vigila
+// que lo saltado por falta de cobertura sí corra en el paso sin instrumentar.
+// Este `skipIf` es por falta de una capacidad del ENTORNO, no de la bandera
+// de cobertura, así que esa red no lo ve y no debe verlo — pero su principio
+// aplica igual: lo que se salta tiene que correr en algún lado, y para esto
+// ese "algún lado" es CI (ubuntu-latest) y cualquier Mac de desarrollo.
+// ═══════════════════════════════════════════════════════════════════════════
+function detectarIpv6Loopback(): boolean {
+  const interfaces = os.networkInterfaces();
+  for (const direcciones of Object.values(interfaces)) {
+    for (const dir of direcciones ?? []) {
+      if (dir.address === '::1') return true;
+    }
+  }
+  return false;
+}
+
+const ipv6Loopback = detectarIpv6Loopback();
+if (!ipv6Loopback) {
+  console.warn(
+    '[proxy-local.test.ts] ::1 (loopback IPv6) no está disponible en este entorno ' +
+    '(no aparece en os.networkInterfaces()); se saltan los casos que lo requieren.',
+  );
+}
 
 const limpiezas: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -84,11 +124,17 @@ function connectPorProxy(proxyUrl: URL, autoridad: string, contenido = '') {
 }
 
 describe('proxy E2E: sockets limitados a IP loopback literal', () => {
-  const destinos = [
-    ['127.0.0.1', '127.0.0.1'], ['[::1]', '::1'],
-    ['localhost', '127.0.0.1'], ['localhost', '::1'],
-  ];
-  it.each(destinos)('HTTP %s contra servidor exclusivo %s conserva ruta/query sin DNS', async (host, bind) => {
+  // Separados por si requieren loopback IPv6 real (`bind === '::1'`): los de
+  // 127.0.0.1 corren siempre, los de '::1' se saltan cuando el entorno no lo
+  // tiene (ver el comentario de cabecera del archivo).
+  const destinosSinIpv6 = [
+    ['127.0.0.1', '127.0.0.1'], ['localhost', '127.0.0.1'],
+  ] as const;
+  const destinosConIpv6 = [
+    ['[::1]', '::1'], ['localhost', '::1'],
+  ] as const;
+
+  const casoHttp = async (host: string, bind: string) => {
     const backend = await destino(bind);
     const local = await proxy();
     const resolver = impedirDNS();
@@ -97,9 +143,13 @@ describe('proxy E2E: sockets limitados a IP loopback literal', () => {
       .toEqual({ estado: 200, cuerpo: 'canario local' });
     expect(backend.recibidas).toEqual([{ url: '/canario?a=1', host: autoridad }]);
     expect(resolver).not.toHaveBeenCalled();
-  });
+  };
+  it.each(destinosSinIpv6)('HTTP %s contra servidor exclusivo %s conserva ruta/query sin DNS', casoHttp);
+  it.skipIf(!ipv6Loopback).each(destinosConIpv6)(
+    'HTTP %s contra servidor exclusivo %s conserva ruta/query sin DNS', casoHttp,
+  );
 
-  it.each(destinos)('CONNECT %s contra servidor exclusivo %s transporta head sin DNS', async (host, bind) => {
+  const casoConnect = async (host: string, bind: string) => {
     const backend = await destino(bind);
     const local = await proxy();
     const resolver = impedirDNS();
@@ -110,10 +160,13 @@ describe('proxy E2E: sockets limitados a IP loopback literal', () => {
     expect(respuesta).toContain('canario local');
     expect(backend.recibidas).toEqual([{ url: '/tunel', host: autoridad }]);
     expect(resolver).not.toHaveBeenCalled();
-  });
+  };
+  it.each(destinosSinIpv6)('CONNECT %s contra servidor exclusivo %s transporta head sin DNS', casoConnect);
+  it.skipIf(!ipv6Loopback).each(destinosConIpv6)(
+    'CONNECT %s contra servidor exclusivo %s transporta head sin DNS', casoConnect,
+  );
 
-  it.each([['127.0.0.1', '::1'], ['[::1]', '127.0.0.1']])
-  ('la IP explícita %s no salta al servidor de la otra familia %s', async (host, bind) => {
+  const casoCruzado = async (host: string, bind: string) => {
     const backend = await destino(bind);
     const local = await proxy();
     const resolver = impedirDNS();
@@ -122,6 +175,14 @@ describe('proxy E2E: sockets limitados a IP loopback literal', () => {
     expect(await connectPorProxy(local, autoridad)).not.toContain('200 Connection Established');
     expect(backend.recibidas).toEqual([]);
     expect(resolver).not.toHaveBeenCalled();
+  };
+  // Solo el primer caso (bind '::1') exige loopback IPv6; el segundo liga en
+  // 127.0.0.1 y corre siempre.
+  it.skipIf(!ipv6Loopback)('la IP explícita 127.0.0.1 no salta al servidor de la otra familia ::1', async () => {
+    await casoCruzado('127.0.0.1', '::1');
+  });
+  it('la IP explícita [::1] no salta al servidor de la otra familia 127.0.0.1', async () => {
+    await casoCruzado('[::1]', '127.0.0.1');
   });
 
   it.each(['http://externo.invalid/', 'http://usuario:clave@127.0.0.1:PUERTO/',
