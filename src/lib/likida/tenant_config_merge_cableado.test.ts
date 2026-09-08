@@ -34,7 +34,15 @@ const { DatoInvalido } = await import('./errores');
 
 beforeEach(() => {
   rpc.mockReset().mockResolvedValue({ data: {}, error: null });
-  from.mockReset();
+  // AUDITORÍA 29, FIS-C1: `actualizarFacilidad15` ahora LEE `tenant.regimen_fiscal`
+  // antes de conceder la facilidad (solo cuando `reg === true`), para que un
+  // «Régimen: Sí» a mano no le gane a la clave del SAT. Los casos de abajo que
+  // conceden necesitan una clave elegible en el fixture; el que corrige a
+  // «No` no lee nada, y su `expect(from).not.toHaveBeenCalled()` sigue vivo y
+  // sigue siendo el guardarraíl contra volver a mezclar la config aquí.
+  from.mockReset().mockImplementation(() => ({
+    select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { regimen_fiscal: '624' }, error: null }) }) }),
+  }));
   anotarBitacora.mockReset();
 });
 

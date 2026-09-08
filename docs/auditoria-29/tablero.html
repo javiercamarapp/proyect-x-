@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auditoría 29 — Likida</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --surface:#ffffff; --ink:#1a1a19; --ink2:#4a4a47; --ink3:#75736e;
+    --line:#e3e1dc; --line2:#cfccc5;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --accent:#3d6fd6;
+  }
+  :root:not([data-theme="light"]){ @media (prefers-color-scheme: dark){
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }}
+  :root[data-theme="dark"]{
+    --bg:#131312; --surface:#1a1a19; --ink:#f2f1ee; --ink2:#c2bfb8; --ink3:#918d85;
+    --line:#2e2d2b; --line2:#403e3b; --accent:#7fa4ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:28px 24px 56px;}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 2px;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13px;margin-bottom:20px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);
+     margin:30px 0 11px;font-weight:600}
+
+  .gate{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .chip{background:var(--surface);border:1px solid var(--line);border-radius:7px;
+        padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:13px}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .chip b{font-weight:600}
+  .chip span{color:var(--ink3)}
+  .note{font-size:12.5px;color:var(--ink2);background:var(--surface);
+        border:1px solid var(--line);border-left:3px solid var(--warn);
+        border-radius:0 7px 7px 0;padding:9px 13px;margin-top:8px}
+  .note.rojo{border-left-color:var(--crit)}
+  .note.verde{border-left-color:var(--good)}
+
+  .hero{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;margin-top:18px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .glob{min-width:190px}
+  .glob .n{font-size:44px;font-weight:650;letter-spacing:-.03em;line-height:1.05}
+  .glob .d{font-size:14px;color:var(--good);font-weight:600;margin-top:2px}
+  .glob .l{font-size:12px;color:var(--ink3);margin-top:5px}
+  .spark{flex:1;min-width:330px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:11px}
+  .r{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+     padding:13px 15px;border-left-width:4px;border-left-style:solid}
+  .r.g3,.r.g4{border-left-color:var(--crit)}
+  .r.g5,.r.g6{border-left-color:var(--warn)}
+  .r.g7{border-left-color:var(--good)}
+  .rh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .rn{font-weight:600;font-size:13.5px}
+  .rg{font-size:25px;font-weight:650;letter-spacing:-.02em;white-space:nowrap}
+  .rd{font-size:12px;font-weight:600}
+  .rd.sube{color:var(--good)} .rd.igual{color:var(--ink3)} .rd.baja{color:var(--crit)}
+  .rr{font-size:12.5px;color:var(--ink2);margin-top:6px}
+  .rsev{font-size:11.5px;color:var(--ink3);margin-top:7px;font-variant-numeric:tabular-nums}
+  .rsev b{color:var(--crit)}
+
+  table{border-collapse:collapse;width:100%;font-size:12.5px}
+  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink3);font-weight:600;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
+       border:1px solid var(--line);border-radius:4px;padding:1px 4px}
+  .badge{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:20px;
+         border:1px solid var(--line2);color:var(--ink2);white-space:nowrap}
+  .badge.ok{color:var(--good);border-color:var(--good)}
+  .badge.crit{color:var(--crit);border-color:var(--crit)}
+  .badge.reinc{color:var(--serious);border-color:var(--serious)}
+  .foot{margin-top:28px;font-size:12px;color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Auditoría 29 — Likida</h1>
+  <div class="sub">8-sep-2026 · ronda COMPLETA, 12 rubros · rama <code>claude/auditoria-29</code> sobre <code>7bcc319</code> · ventana de 43 commits (+10,376/−1,399)</div>
+
+  <!-- ═══ 1. QUÉ ESTÁ ROJO AHORA ═══ -->
+  <h2>Compuerta</h2>
+  <div class="gate">
+    <div class="chip"><span class="dot" style="background:var(--good)"></span><b>npm test</b> <span>937 archivos · 12,553 pasan · 6 saltadas · <b>0 fallan</b></span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span><b>tsc --noEmit</b> <span>exit 0</span></div>
+    <div class="chip"><span class="dot" style="background:var(--good)"></span><b>lint</b> <span>0 errores · 154 avisos · ratchet 0 nuevos</span></div>
+    <div class="chip"><span class="dot" style="background:var(--ink3)"></span><b>build</b> <span>no se corre en la nube (sin credenciales)</span></div>
+  </div>
+  <div class="note verde"><b>La compuerta quedó entera por primera vez en tres rondas.</b> Las
+    <b>5 fallas INFRA</b> que la 27 y la 28 arrastraban (<code>listen EAFNOSUPPORT ::1</code> en
+    <code>scripts/ci/e2e/proxy-local.test.ts</code>, el contenedor de la nube sin loopback IPv6)
+    <b>ya no ocurren</b>: las cerró <code>6beb5f5</code> (PRU-B4) con un <code>it.skipIf</code>
+    selectivo solo en los casos que bindean <code>::1</code> — dictaminado midiendo, no por el asunto
+    del commit. Línea base al arrancar: 935 archivos / 12,536 pasan. Los <b>+17</b> son las pruebas
+    nuevas de los dos arreglos de esta ronda.</div>
+
+  <div class="note rojo"><b>Producción está en 503 mientras lees esto — y ya no por lo que decía la 28.</b>
+    Medido contra la API de GitHub (corrida <code>34212560163</code>, 8-sep 09:54 UTC):
+    <code>http=503 estado=degraded <b>crons=degraded</b></code>.
+    <b>52 corridas consecutivas en rojo</b> (#513→#564), <b>14 h 33 min</b>, issue <b>#365</b> abierto
+    desde el 7-sep 19:20 con <code>updated_at == created_at</code>: nadie lo ha abierto.
+    <br><b>Lo que SÍ se cerró:</b> la deriva de esquema de la 28 ya no existe —
+    <code>migracion={"base":"0347","codigo":"0347","atras":0}</code> y el cotejo confirma que
+    producción corre el último <code>[deploy]</code>. La mano humana ocurrió.
+    <br><b>Lo que sigue abierto:</b> producción corre <code>d56e626</code> y <code>master</code> va en
+    <code>7bcc319</code> — <b>los 43 commits de arreglos de la 28 no están publicados</b>, porque
+    ninguno lleva la bandera en el asunto. Entre lo no publicado va el propio arreglo de OP-C1.
+    <b>Publicar sigue siendo una mano humana</b> (Redeploy en Vercel).</div>
+
+  <!-- ═══ 2. LA GLOBAL ═══ -->
+  <div class="hero">
+    <div class="card glob">
+      <div class="n">6.0</div>
+      <div class="d">▲ 1.6 &nbsp;<span style="color:var(--ink3);font-weight:400">(antes 4.4)</span></div>
+      <div class="l">media de los 12 · 72/12 = 6.00</div>
+    </div>
+    <div class="card spark">
+      <div style="font-size:12px;color:var(--ink3);margin-bottom:8px">Serie histórica de la global</div>
+      <svg viewBox="0 0 660 130" width="100%" height="130" role="img"
+           aria-label="Global por ronda: 6.2 en la 24, 5.3 en la 25, 6.0 en la 26, 5.8 en la continuación de la 26, 5.3 en la 27, 4.4 en la 28, 6.0 en la 29.">
+        <line x1="40" y1="10" x2="40" y2="100" stroke="var(--line2)" stroke-width="1"/>
+        <line x1="40" y1="100" x2="650" y2="100" stroke="var(--line2)" stroke-width="1"/>
+        <text x="30" y="14" font-size="10" fill="var(--ink3)" text-anchor="end">7</text>
+        <text x="30" y="104" font-size="10" fill="var(--ink3)" text-anchor="end">4</text>
+        <!-- y = 100 - (v-4)*30 -->
+        <polyline fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"
+                  points="80,34 175,61 270,40 365,46 460,61 555,88 650,40"/>
+        <circle cx="80"  cy="34" r="4" fill="var(--accent)"/>
+        <circle cx="175" cy="61" r="4" fill="var(--accent)"/>
+        <circle cx="270" cy="40" r="4" fill="var(--accent)"/>
+        <circle cx="365" cy="46" r="4" fill="var(--accent)"/>
+        <circle cx="460" cy="61" r="4" fill="var(--accent)"/>
+        <circle cx="555" cy="88" r="4" fill="var(--crit)"/>
+        <circle cx="650" cy="40" r="5" fill="var(--good)"/>
+        <text x="80"  y="24" font-size="11" fill="var(--ink2)" text-anchor="middle">6.2</text>
+        <text x="175" y="51" font-size="11" fill="var(--ink2)" text-anchor="middle">5.3</text>
+        <text x="270" y="30" font-size="11" fill="var(--ink2)" text-anchor="middle">6.0</text>
+        <text x="365" y="36" font-size="11" fill="var(--ink2)" text-anchor="middle">5.8</text>
+        <text x="460" y="51" font-size="11" fill="var(--ink2)" text-anchor="middle">5.3</text>
+        <text x="555" y="78" font-size="11" fill="var(--crit)" text-anchor="middle">4.4</text>
+        <text x="650" y="30" font-size="11" fill="var(--good)" font-weight="600" text-anchor="middle">6.0</text>
+        <text x="80"  y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">24</text>
+        <text x="175" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">25</text>
+        <text x="270" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">26</text>
+        <text x="365" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">26c</text>
+        <text x="460" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">27</text>
+        <text x="555" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">28</text>
+        <text x="650" y="118" font-size="10" fill="var(--ink3)" text-anchor="middle">29</text>
+      </svg>
+    </div>
+  </div>
+  <div class="note"><b>La reserva que va con este +1.6, escrita antes de que alguien la pida.</b>
+    La 28 bajó diez notas <b>exactamente 1</b> sobre código que no cambió, y anotó esa uniformidad
+    como sospechosa. Esta ronda sube once, y hay que decir de qué está hecho el rebote: la ventana
+    trae <b>43 commits que son los arreglos de esos hallazgos</b>, y cada auditor dictaminó los
+    suyos <b>abriendo el archivo y la prueba</b> y preguntando si la prueba se pone roja al revertir
+    el arreglo — no leyendo el asunto del commit. Eso es <i>se atacó y subió</i> con evidencia.
+    Pero parte del rebote es <b>corrección de la sobre-corrección de la 28</b>, no mejora del código:
+    los saltos de <b>+3</b> (agéntico, operabilidad) miden las dos cosas juntas y no las puedo
+    separar. Lo que aguanta verificación son los cierres, no el tamaño del escalón.</div>
+
+  <!-- ═══ 3. LOS DOCE RUBROS ═══ -->
+  <h2>Los doce rubros</h2>
+  <div class="grid">
+
+    <div class="r g6"><div class="rh"><span class="rn">Frontend</span><span class="rg">6 <span class="rd sube">▲2</span></span></div>
+      <div class="rr">8 de 10 abiertos cerrados con prueba que muere al revertir. El CRÍTICO del Anticipo va en su 4ª ronda intacto.</div>
+      <div class="rsev"><b>1 crítico</b> · 0 altos · 3 medios · 1 bajo</div></div>
+
+    <div class="r g6"><div class="rh"><span class="rn">Backend y API</span><span class="rg">6 <span class="rd sube">▲2</span></span></div>
+      <div class="rr">Los 6 abiertos: 5 cerrados con su prueba nombrada. BE-3 —seis agregados que suman liquidaciones rechazadas— sigue idéntico, 3ª ronda.</div>
+      <div class="rsev">0 críticos · 3 altos · 1 medio · 1 bajo</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Sistema agéntico</span><span class="rg">7 <span class="rd sube">▲3</span></span></div>
+      <div class="rr">11 de 12 cerrados. <code>ingerirRep</code> sin reloj —el CRÍTICO de dos rondas— cerrado de verdad: <code>rep.test.ts:244</code> exige 63/87 sobre 150 doctos.</div>
+      <div class="rsev">0 críticos · 1 alto · 2 medios · 2 bajos</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Tool calling</span><span class="rg">7 <span class="rd sube">▲2</span></span></div>
+      <div class="rr">Primera ronda en cinco que recibe líneas. 10 de 15 cerrados; 3 de los 4 altos. 33 tools, ninguna rompe la regla de <code>properties: {}</code>.</div>
+      <div class="rsev">0 críticos · 2 altos · 3 medios · 2 bajos</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Seguridad</span><span class="rg">7 <span class="rd igual">=</span></span></div>
+      <div class="rr">4 de 5 cerrados, pero la deuda del mismo módulo cobró factura y el ancla estructural no se movió: se compensan. 0 CVE sobre 751 deps.</div>
+      <div class="rsev">0 críticos · 1 alto · 1 medio · 1 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Cumplimiento fiscal</span><span class="rg">4 <span class="rd sube">▲1</span></span></div>
+      <div class="rr">El CRÍTICO no se cerró: <b>mutó y empeoró</b> — el arreglo de FIS-A3 ascendió el sí/no manual a la fuente que decide. Arreglado en esta ronda.</div>
+      <div class="rsev"><b>2 críticos</b> · 3 altos · 3 medios · 2 bajos</div></div>
+
+    <div class="r g5"><div class="rh"><span class="rn">Cumplimiento legal</span><span class="rg">5 <span class="rd sube">▲1</span></span></div>
+      <div class="rr">El CRÍTICO de ARCO por texto está cerrado de punta a punta. Uno nuevo lo sustituye: la ubicación sale a un proveedor externo. Arreglado.</div>
+      <div class="rsev"><b>1 crítico</b> · 3 altos · 2 medios · 1 bajo</div></div>
+
+    <div class="r g4"><div class="rh"><span class="rn">Arquitectura</span><span class="rg">4 <span class="rd sube">▲1</span></span></div>
+      <div class="rr">9 de 14 cerrados y es su mejor ventana. No sube más: el CRÍTICO va en su <b>7ª aparición</b> y el predicado del 15% vive en 5 implementaciones.</div>
+      <div class="rsev"><b>1 crítico</b> · 2 altos · 3 medios · 2 bajos</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Pruebas</span><span class="rg">7 <span class="rd sube">▲1</span></span></div>
+      <div class="rr">Mutación: <b>44 probadas, 35 muertas (80 %)</b>, contra 5 de 15 en la 28. 11 de 14 abiertos cerrados con mutación que muere.</div>
+      <div class="rsev"><b>1 crítico reincidente</b> · 3 altos · 2 medios · 2 bajos</div></div>
+
+    <div class="r g6"><div class="rh"><span class="rn">Operabilidad y DX</span><span class="rg">6 <span class="rd sube">▲3</span></span></div>
+      <div class="rr">7 de 8 cerrados. El cuello que mataba tres críticos (<code>staging-recovery.mjs:121</code>) <b>quedó abierto</b>, verificado creando una migración sonda.</div>
+      <div class="rsev"><b>1 crítico</b> · 3 altos · 2 medios · 1 bajo</div></div>
+
+    <div class="r g6"><div class="rh"><span class="rn">Rendimiento y costo</span><span class="rg">6 <span class="rd sube">▲2</span></span></div>
+      <div class="rr">12 de 13 cerrados. <code>margenUnidadAtomicaMs()</code> convirtió el margen de reloj en derivación, no parche. Un CRÍTICO nuevo en el cron del SAT.</div>
+      <div class="rsev"><b>1 crítico</b> · 2 altos · 3 medios · 1 bajo</div></div>
+
+    <div class="r g7"><div class="rh"><span class="rn">Modelo de datos</span><span class="rg">7 <span class="rd sube">▲1</span></span></div>
+      <div class="rr">El ALTO que hundió la nota se cerró con SQL que hace divergir las dos RPC a propósito. Esquema sin cambios: 324 <code>.sql</code>, 3ª ronda.</div>
+      <div class="rsev">0 críticos · 0 altos · 4 medios · 4 bajos</div></div>
+
+  </div>
+
+  <!-- ═══ 4. LOS CRÍTICOS ═══ -->
+  <h2>Los ocho críticos y su estado</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>ID</th><th>Qué es</th><th>Dónde</th><th>Estado</th></tr>
+
+    <tr><td><code>FIS-C1</code></td>
+      <td>El <code>&lt;select&gt;</code> sí/no de <code>/admin/flotas</code> le gana a la clave del SAT. Sobre un CFDI de diésel de $11,600 en efectivo: de $0.00 a $11,600.00 deducibles y de $0.00 a $1,600.00 de IVA acreditable, impreso citando la RFA 2.9. <b>El arreglo de la 28 lo ascendió a la fuente que decide.</b></td>
+      <td><code>repo.ts:1599</code> · <code>admin/flotas/page.tsx:236</code></td>
+      <td><span class="badge ok">arreglado</span><br><code>166310c</code></td></tr>
+
+    <tr><td><code>LEG-C1</code></td>
+      <td>La ubicación que el chofer comparte por el chat se manda por WhatsApp a una grúa o llantera —tercero que no es encargado— y el aviso enumeraba una lista cerrada de dos que no lo incluía.</td>
+      <td><code>asistencia_coordinacion.ts:122</code> · <code>privacidad.ts:901</code></td>
+      <td><span class="badge ok">arreglado</span><br><code>d232f83</code></td></tr>
+
+    <tr><td><code>FE-C1</code></td>
+      <td>El despacho no ofrece el Anticipo: el viaje nace en 0 y la pantalla de firma presenta ese cero como una medición. <b>No existe un solo <code>update</code> de <code>viaje.anticipo</code> en todo <code>src/</code>.</b></td>
+      <td><code>forma-viaje.tsx:90-93</code> · <code>[id]/detalle.tsx:242</code></td>
+      <td><span class="badge reinc">4ª ronda</span> <span class="badge">pendiente</span><br>falta un escritor entero: es alcance de producto, no un arreglo</td></tr>
+
+    <tr><td><code>ARQ-C1</code></td>
+      <td>Un ajuste firmado tira el export contable del periodo completo. <code>git diff c7bbb83..HEAD</code> sobre <code>export/poliza/</code> y <code>revision_recalculo.ts</code> devuelve <b>vacío</b>.</td>
+      <td><code>export/poliza/</code> · <code>revision_recalculo.ts</code></td>
+      <td><span class="badge reinc">7ª aparición</span> <span class="badge">pendiente</span><br>rediseño del export; no cabe en un commit atómico</td></tr>
+
+    <tr><td><code>OP-C1</code></td>
+      <td>Producción lleva 14 h 33 min en 503 con un cron caído, y lo único que queda por la mañana es un issue de una línea que nadie ha tocado y un log que dice <code>degraded</code> sin decir de quién.</td>
+      <td>no vive en el repo · issue <b>#365</b></td>
+      <td><span class="badge crit">pendiente</span><br><b>mano humana</b>: qué cron cayó no es visible desde aquí</td></tr>
+
+    <tr><td><code>REN-C1</code></td>
+      <td>256.5 s de <code>venceEn</code> + 75.0 s de la unidad del consolidado = <b>331.5 s contra <code>maxDuration=300</code></b>. El sello de dedup se commitea ANTES de conciliar, así que un ECC muerto a medias <b>no se reintenta jamás</b>: ~$27,600 de IVA de un mes que no llegan al contador.</td>
+      <td><code>cron/descarga-sat/route.ts:96</code> · <code>ciclo.ts:296-315</code></td>
+      <td><span class="badge">propuesto</span><br>verificado; toca el camino del dinero y excede el tope de 3 vueltas</td></tr>
+
+    <tr><td>FIS #2</td>
+      <td>La COPIA de un comprobante entra al 15 % por la RPC (<code>0345</code>) y no por el motor.</td>
+      <td><code>supabase/migrations/0345:27</code></td>
+      <td><span class="badge reinc">4ª ronda</span> <span class="badge">pendiente</span><br>exige migración — <b>ya desbloqueada</b> esta ronda</td></tr>
+
+    <tr><td><code>PRU-C1</code></td>
+      <td>Reincidente de cuarta ronda: la zona que exige <code>psql</code> contra Postgres real sigue sin arnés.</td>
+      <td><code>supabase/verificaciones.sql</code></td>
+      <td><span class="badge reinc">4ª ronda</span> <span class="badge">pendiente</span><br>exige base viva: no verificable en la nube</td></tr>
+  </table>
+  </div>
+
+  <!-- ═══ 5. LO QUE SE VERIFICÓ A MANO ═══ -->
+  <h2>Verificación adversarial del orquestador</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>Hallazgo</th><th>Cómo se comprobó</th><th>Veredicto</th></tr>
+    <tr><td><code>FIS-C1</code></td><td>Abiertas y leídas las 5 líneas citadas: el <code>&lt;select&gt;</code> en <code>page.tsx:236-241</code>, <code>reg</code> en <code>:89-96</code>, <code>guardarPerfilPatch(declararFacilidad15(...))</code> en <code>repo.ts:1599</code>, la precedencia perfil→config en <code>preguntas.ts:366-367</code>, y <code>REGIMENES_ELEGIBLES</code> en <code>administracion.ts:200</code>. El comentario del propio <code>repo.ts</code> acredita a la auditoría 28 el cambio que lo empeoró.</td><td><span class="badge crit">confirmado</span></td></tr>
+    <tr><td><code>LEG-C1</code></td><td>Contado a mano: <code>grep -ci "grúa|llantera|auxilio|taller"</code> sobre <code>privacidad.ts</code> = <b>0</b>. Leídos <code>armarMensajeProveedor</code> (la liga de Maps con lat/lng) y <code>TIPOS_UTILES.varado = ['llantera','mecanico','grua']</code>, contra la lista cerrada de dos en <code>privacidad.ts:901</code>.</td><td><span class="badge crit">confirmado</span></td></tr>
+    <tr><td><code>REN-C1</code></td><td>Leído el orden real: el upsert del sello en <code>ciclo.ts:297-310</code> ocurre <b>antes</b> de <code>guardarYConciliarConsolidado</code> en <code>:324</code>, y <code>:315</code> hace <code>cfdisRepetidos++; continue;</code>. El <code>try/catch</code> existe pero un kill de Vercel no es capturable.</td><td><span class="badge crit">confirmado</span></td></tr>
+    <tr><td>Estado de producción</td><td>Corrida <code>34212560163</code> leída por la API, con el cuerpo de <code>/api/health</code>; issue <b>#344</b> cerrado a mano el 7-sep 18:12; issue <b>#365</b> abierto 19:20.</td><td><span class="badge crit">confirmado</span></td></tr>
+    <tr><td>Migraciones desbloqueadas</td><td>El auditor no se fió del diff: creó <code>0348_auditoria29_sonda.sql</code>, corrió <code>scripts/</code> (28 archivos, 452 pasan, 0 fallos) y la borró. Confirmado también, por separado, por el rubro de datos.</td><td><span class="badge ok">confirmado</span></td></tr>
+    <tr><td>Las 5 fallas INFRA</td><td>Medido en la línea base de esta ronda: <code>npm test</code> exit 0, 0 fallos. Acreditado a <code>6beb5f5</code> (PRU-B4) y no a otra cosa.</td><td><span class="badge ok">cerrado</span></td></tr>
+  </table>
+  </div>
+  <div class="note">Se verificaron <b>6</b> a mano, no los 80. La lista de arriba dice cuáles — es más
+    honesto que insinuar cobertura total. <b>Ningún hallazgo resultó falso esta ronda</b>; en la 28
+    uno lo fue, y se dice para que se note la diferencia.</div>
+
+  <div class="foot">
+    Ronda COMPLETA · 12 rubros · 80 hallazgos · 8 críticos (2 arreglados, 1 propuesto, 5 pendientes con razón escrita) ·
+    2 vueltas de arreglo de 3 · 0 revertidos · <code>docs/auditoria-29/</code>
+  </div>
+
+</div>
+</body>
+</html>

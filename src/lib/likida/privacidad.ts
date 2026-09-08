@@ -898,7 +898,19 @@ export function avisoIntegral(r: DatosIntegral): SeccionAviso[] {
         // revisión legal humana recomendada antes de publicar
         `Y cuando alguien de tu empresa usa el **asistente del panel** para preguntar por los viajes de la flota, ese modelo también puede recibir tu **nombre** junto con **montos de tus viajes** —el anticipo, por ejemplo— para poder contestarle.`,
         `Y cuando tu empresa emite un complemento **Carta Porte**, el comprobante viaja al **proveedor autorizado de certificación (PAC)** que lo timbra ante el SAT, y dentro de él van **tu RFC y el número de tu licencia**: el SAT los exige en ese documento.`,
-        `Transferencias que sí lo son y no necesitan tu consentimiento: a la autoridad fiscal cuando la ley lo exige, y al contador de la empresa para cumplir sus obligaciones.`,
+        // AUDITORÍA 29, LEG-C1 (CRÍTICO): el circuito de asistencia en
+        // carretera manda tu UBICACIÓN a un proveedor comercial externo
+        // (`asistencia_coordinacion.ts`: `armarMensajeProveedor` arma la liga
+        // de Google Maps con tu lat/lng y `sendText` la entrega al WhatsApp de
+        // la grúa/llantera/mecánico). Ese proveedor NO es persona encargada —
+        // presta su propio servicio, no trata datos por cuenta de la empresa—,
+        // así que es una transferencia del art. 35 y tenía que estar dicha.
+        // `grep -i "grúa|llantera|auxilio|taller" sobre este archivo daba CERO
+        // mientras la lista de abajo se enumeraba cerrada y de dos, y el
+        // párrafo final prometía pedir permiso "para algo distinto".
+        // revisión legal humana recomendada antes de publicar
+        `Y si te quedas varado o tienes un percance y tu empresa pide auxilio por ti, tu **ubicación** —la que compartiste por el chat— se le manda al **proveedor de auxilio en carretera** que atienda: una **grúa**, una **llantera**, un auxilio mecánico o apoyo médico, junto con la unidad y el nombre de tu empresa. Eso **sí es una transferencia**: ese proveedor no trabaja por instrucción de la empresa, presta su propio servicio. Se manda solo para que puedan llegar a donde estás, y **tu teléfono no va en ese mensaje**: el contacto que se les da es el del jefe de tráfico.`,
+        `Transferencias que sí lo son y no necesitan tu consentimiento: a la autoridad fiscal cuando la ley lo exige, y al contador de la empresa para cumplir sus obligaciones. La del proveedor de auxilio del párrafo anterior se hace para protegerte en una emergencia o para cumplir lo que tu empresa te debe en carretera.`,
         `**Si algún día se quisiera transferir tus datos para algo distinto, se te pedirá permiso antes.** No hacer nada al leer esto no cuenta como haber aceptado.`,
       ],
     },
