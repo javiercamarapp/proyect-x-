@@ -103,24 +103,34 @@ export default defineConfig({
         // rompen. Solo dejan de contar en el porcentaje.
         'src/app/**/*.tsx',
       ],
-      // UN TRINQUETE, NO UNA ASPIRACIÓN. Medido el 5-ago-2026 (líneas 68.07 ·
-      // ramas 84.74 · funciones 79.58) tras añadir ~90 pruebas en la ronda 16
-      // (tenant-api, contactos, chofer, estatus, sufijo, stripe, saludo,
-      // suscripcion). El trinquete sube de 64 a 67 con un punto de margen —
-      // bajar de aquí falla. El camino a 78 (el objetivo del trinquete) está
-      // rastreado: faltan los componentes UI (necesitan jsdom + testing-library,
-      // sesión dedicada post-demo) y los módulos grandes (repo.ts, consolidado).
-      // Vitest/V8 4 cambió la instrumentación de ramas respecto de Vitest 2:
-      // el mismo código pasó a 69.76% branches y 82.64% functions (24-ago-2026),
-      // mientras líneas/statements permanecieron arriba de 78. Se reancla el
-      // trinquete a ese baseline medido, con margen menor a un punto. No es una
-      // afirmación de equivalencia entre métricas de motores distintos; evita
-      // fingir que un porcentaje viejo sigue midiendo el mismo denominador.
+      // UN TRINQUETE, NO UNA ASPIRACIÓN. Historia: 5-ago-2026, líneas 68.07 ·
+      // ramas 84.74 · funciones 79.58 (Vitest 2, ronda 16). 24-ago-2026,
+      // reanclado tras el cambio de instrumentación de ramas de Vitest/V8 4:
+      // el mismo código pasó a medir 69.76% branches / 82.64% functions,
+      // mientras líneas/statements seguían arriba de 78 — no es una
+      // afirmación de equivalencia entre métricas de motores distintos, es
+      // evitar fingir que un porcentaje viejo sigue midiendo el mismo
+      // denominador. El umbral de 78 que se citaba como «objetivo» ya se
+      // cruzó en líneas y en sentencias: el trinquete nunca fue una meta a
+      // alcanzar, es un piso que solo sube, cada vez que se vuelve a medir.
+      //
+      // Reanclado el 7-sep-2026 (auditoría 28, PRU-M4) sobre
+      // `42bfa2b94ee7bdec4536c51df4abf0c44853b55a` (origin/master con T4-01 y
+      // T4-02 fusionados), `npm run test:coverage`: 935 archivos · 12,539
+      // pruebas verdes · 3 saltadas · 0 fallos · exit 0. Medido:
+      // statements 84.10% (34,883/41,474) · branches 74.05% (26,671/36,014) ·
+      // functions 87.11% (5,593/6,420) · lines 86.86% (30,557/35,179).
+      // Fórmula del margen (la que este comentario prometía y no cumplía):
+      // umbral = floor(medido − 0.5), un solo punto de holgura por redondeo,
+      // nunca un margen inventado a mano. Aplicada: 86.86→86, 84.10→83,
+      // 74.05→73, 87.11→86. Baja de aquí falla; subir exige volver a medir
+      // en real (`npm run test:coverage`), nunca copiar un número de un PR
+      // anterior — cada lote mueve la cobertura en ambas direcciones.
       thresholds: {
-        lines: 78,
-        statements: 78,
-        branches: 69,
-        functions: 82,
+        lines: 86,
+        statements: 83,
+        branches: 73,
+        functions: 86,
       },
     },
   },
