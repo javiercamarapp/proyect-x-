@@ -44,4 +44,21 @@ describe('el corpus de texto del contador NO se puede separar de normas/', () =>
       expect(f.texto, f.archivo).toMatch(/^estado_verificacion:/m);
     }
   });
+
+  // AUDITORÍA 28, FIS-M1 (MEDIO): `rfa-2026-2.1.yaml` afirmaba, VERBATIM en
+  // el corpus que lee el agente contador, que 2.2 y 2.9 SÍ cubren pasaje y
+  // turismo ("a diferencia de la RFA 2.2 y 2.9, esta regla es más angosta").
+  // El texto verificado de las tres dice SOLO "carga federal". Este `it`
+  // busca la frase literal que afirmaba lo contrario: si vuelve a aparecer en
+  // CUALQUIER ficha del corpus, el agente contador vuelve a poder decir "sí"
+  // sobre una excepción que no existe.
+  it('ninguna ficha del corpus afirma que la 2.2 o la 2.9 cubren pasaje/turismo', () => {
+    for (const f of FICHAS_TEXTO) {
+      // La frase literal que decía lo contrario (rfa-2026-2.1.yaml, condición
+      // de aplicación, antes de esta corrección).
+      expect(f.texto, f.archivo).not.toMatch(/a diferencia de la RFA 2\.2 y 2\.9/i);
+      // Ninguna variante de "esta regla SÍ cubre pasaje/turismo" para 2.2 o 2.9.
+      expect(f.texto, f.archivo).not.toMatch(/no aplica a pasaje ni tur[ií]stico/i);
+    }
+  });
 });

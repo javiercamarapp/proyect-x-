@@ -30,7 +30,7 @@ nota_verificacion: >
   La Resolución entra en vigor el 18-feb-2026 y rige todo el ejercicio 2026.
 cambio_de_numero: false
 condiciones_de_aplicacion:
-  - "Dedicados EXCLUSIVAMENTE al autotransporte terrestre de carga federal"
+  - "Dedicados EXCLUSIVAMENTE al autotransporte terrestre de carga FEDERAL — la MISMA fórmula que 2.1 y 2.2. NO cubre pasaje ni turismo foráneo (RFA 3.12, sin ficha en este repo): una flota de pasaje/turismo NO abre esta facilidad (AUDITORÍA 28, FIS-M1)"
   - "Tributar en Título II Cap. VII (coordinados) o Título IV Cap. II Secc. I (PF act. empresarial)"
   - "El efectivo no puede exceder el 15% del total pagado por combustible — OJO: EL PERIODO LO PONE EL PRODUCTO, NO LA REGLA (ver periodicidad_del_15_no_esta_en_la_norma)"
   - "El CFDI debe consignar el permiso vigente y no suspendido"
@@ -88,7 +88,7 @@ usado_en_codigo:
   - "repo.ts — getAcumuladoCombustible (el contador del ejercicio: efectivo y total, paginado con count exact para que PostgREST no lo recorte) y actualizarFacilidad15 (la declaración de elegibilidad de la flota)"
   - "cuadre/desde_db.ts — le pasa al motor el acumulado del ejercicio, best-effort declarado"
   - "periodo/combustible.ts — evaluarTope15 (TOPE_EFECTIVO 0.15, umbral de alerta al 12%)"
-  - "fiscal.ts — tope15DeGastos y las causas combustible_efectivo / efectivo_no_elegible del panel del contador"
+  - "fiscal.ts — combustibleEjercicioDe() y proporcionCombustible15() (el prorrateo del panel del contador, agregado sobre el acumulado del ejercicio) y las causas combustible_efectivo / efectivo_no_elegible"
 pendiente_en_producto: >
   EL CONTADOR YA EXISTE (esta ficha decía "no existe todavía" semanas después de
   que getAcumuladoCombustible en repo.ts llevara la cuenta del ejercicio y el

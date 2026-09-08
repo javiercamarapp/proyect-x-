@@ -90,8 +90,16 @@ export function FormaOnboarding({
               "carga federal" — dos onboardings, dos preguntas distintas
               para la misma facilidad. Una flota de carga local podía
               contestar "sí" de buena fe y quedar declarada elegible al 15%
-              sin serlo. */}
-          <Selector nombre="dedicacion" etiqueta="¿Dedicación exclusiva a transporte de carga federal / pasaje / turismo?"
+              sin serlo.
+              AUDITORÍA 28 (FIS-M1, MEDIO): esta etiqueta agregó "/ pasaje /
+              turismo" en esa misma corrección, y era falso: el texto
+              VERIFICADO de la regla 2.9 (normas/rfa-2026-2.9.yaml,
+              verificado_fuente_primaria) dice SOLO "carga federal" — igual
+              que 2.1 y 2.2. Pasaje y turismo foráneo son materia de la RFA
+              3.12, que NO tiene ficha en este repo. Se quita "pasaje /
+              turismo" fail-closed: una flota de pasaje/turismo deja de abrir
+              la 2.9 hasta que exista ficha 3.12. */}
+          <Selector nombre="dedicacion" etiqueta="¿Dedicación exclusiva al autotransporte terrestre de carga federal?"
             opciones={SI_NO} ayuda="RFA 2026 regla 2.9: exige carga FEDERAL específicamente — la carga local/municipal no califica. Válvula del 15% de combustible en efectivo y del estímulo de peaje." />
           <Selector nombre="regimenSat" etiqueta="Régimen fiscal (clave SAT c_RegimenFiscal)"
             opciones={REGIMEN_SAT} ayuda="La facilidad del 15% en efectivo solo abre con 612 o 624 — se calcula de la clave, no de si crees que calificas. Si no estás seguro, déjalo en blanco." />

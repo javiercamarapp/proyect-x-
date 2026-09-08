@@ -48,7 +48,7 @@ nota_verificacion: >
   RFA 2026" publicada al 30-ago-2026.
 cambio_de_numero: false
 condiciones_de_aplicacion:
-  - "Dedicados EXCLUSIVAMENTE al autotransporte terrestre de carga FEDERAL (no aplica a pasaje ni turístico — a diferencia de la RFA 2.2 y 2.9, esta regla es más angosta)"
+  - "Dedicados EXCLUSIVAMENTE al autotransporte terrestre de carga FEDERAL — la MISMA fórmula que 2.2 y 2.9; pasaje y turismo foráneo son materia de la RFA 3.12, sin ficha en este repo"
   - "Tributar en Título II Cap. VII (coordinados) o Título IV Cap. II Secc. I (PF con actividad empresarial) — mismas dos claves que abren 2.2 y 2.9: 624 y 612"
   - "Es una OPCIÓN, no una obligación: sustituye el régimen de sueldos y salarios, no lo complementa"
   - "Solo cubre pagos a OPERADORES, MACHETEROS y MANIOBRISTAS — pagos a otros trabajadores siguen la LISR general (Título IV Cap. I, sueldos y salarios)"
