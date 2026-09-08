@@ -74,3 +74,8 @@ declarados (el medidor de OP-A2, `861d09d`, **funciona y avisó**).
   `usado_en_codigo` apunte a símbolos vivos porque ese texto viaja VERBATIM al
   prompt del agente contador. Se actualizaron las dos fichas y se regeneró el
   corpus (2 líneas de diff).
+- **Vuelta 2 · `d232f83` — LEG-C1 [CRÍTICO], RETENIDO.** El aviso integral
+  declara la transferencia de la ubicación del operador al proveedor de auxilio
+  en carretera. Rojo→verde medido con `git stash` (8 de 9 casos fallan sin el
+  arreglo). Suite **937 / 12,553 / 0 fallan**, exit 0; `lint:ratchet` 0 nuevos
+  (mordió un `no-unused-vars` mío y se quitó antes de commitear).
