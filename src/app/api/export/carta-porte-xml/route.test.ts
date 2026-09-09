@@ -82,6 +82,9 @@ describe('GET /api/export/carta-porte-xml', () => {
     expect(r.status).toBe(200);
     expect(r.headers.get('Content-Type')).toContain('application/xml');
     expect(r.headers.get('Content-Disposition')).toContain('carta-porte-F1.xml');
+    // El XML es de un viaje/tenant concreto: un caché intermedio no debe
+    // reutilizarlo para otra sesión.
+    expect(r.headers.get('Cache-Control')).toBe('no-store');
     expect(await r.text()).toBe('<xml/>');
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ ccp_xml_generado_por: 'u-9' }));
     expect(filtros).toContainEqual(['tenant_id', 't-1']);

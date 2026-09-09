@@ -62,6 +62,7 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': 'attachment; filename="bitacora_rmf_918_likida.csv"',
+        'Cache-Control': 'no-store',
       },
     });
   } catch (e) {

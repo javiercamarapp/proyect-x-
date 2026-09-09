@@ -439,6 +439,7 @@ export async function GET(req: Request) {
         'x-likida-polizas': String(polizas.length),
         'x-likida-base-desconocida': String(conBaseDesconocida),
         'x-likida-estado': 'generado_no_importado',
+        'Cache-Control': 'no-store',
       },
     });
   }
@@ -462,5 +463,5 @@ export async function GET(req: Request) {
       'El archivo está generado desde una plantilla confirmada para esta flota; Likida no puede afirmar que ya fue importado hasta que tu contador lo pruebe en su instancia.',
     estado: 'generado_no_importado',
     plantillaConfirmadaEn: perfil.confirmadoEn,
-  });
+  }, { headers: { 'Cache-Control': 'no-store' } });
 }

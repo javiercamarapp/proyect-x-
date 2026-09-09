@@ -110,6 +110,20 @@ beforeEach(() => {
   resolverTenantApi.mockResolvedValue({ ok: true as const, tenantId: 'tenant-1', rol: 'contador' });
 });
 
+describe('póliza: un caché intermedio no debe reutilizar la respuesta entre flotas/sesiones', () => {
+  it('contpaqi (CSV): Cache-Control no-store', async () => {
+    const r = await pedir();
+    expect(r.status).toBe(200);
+    expect(r.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it('sap_b1 (JSON del DTW): Cache-Control no-store', async () => {
+    perfil = PERFIL_SAP;
+    const r = await pedirSap();
+    expect(r.status).toBe(200);
+    expect(r.headers.get('Cache-Control')).toBe('no-store');
+  });
+});
+
 describe('póliza y revisión humana: no inventar impuestos ni asentar sin firma', () => {
   it('un periodo mixto no entrega un archivo parcial ni acredita una pendiente', async () => {
     filas = [

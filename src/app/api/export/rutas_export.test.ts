@@ -188,6 +188,16 @@ describe.each(RUTAS)('export/%s — las tres puertas del IDOR documentado', (_no
     const r = await GET();
     expect([200, 302]).toContain(r.status);
   });
+
+  // Cada documento es de un tenant/liquidación concreto: un caché intermedio
+  // (proxy, CDN, o el propio navegador tras cerrar sesión) que reutilice la
+  // respuesta para otra sesión filtraría dinero/fiscal entre flotas.
+  it('la respuesta exitosa nunca es cacheable', async () => {
+    tenant = { ok: true, tenantId: 't-1', rol: 'flota_admin' };
+    const r = await GET();
+    expect([200, 302]).toContain(r.status);
+    expect(r.headers.get('Cache-Control')).toBe('no-store');
+  });
 });
 
 describe('export/pdf/[id] — el tenant es el de la SESIÓN, no el de la URL', () => {

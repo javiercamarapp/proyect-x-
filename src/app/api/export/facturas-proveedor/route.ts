@@ -107,6 +107,7 @@ export async function GET(req: Request) {
         'Content-Type': 'text/csv; charset=utf-8',
         // El genérico conserva su nombre de siempre: hay quien ya lo descarga.
         'Content-Disposition': `attachment; filename="${formato === 'generico' ? 'facturas_proveedor_likida.csv' : `facturas_proveedor_${formato}_likida.csv`}"`,
+        'Cache-Control': 'no-store',
       },
     });
   } catch (e) {

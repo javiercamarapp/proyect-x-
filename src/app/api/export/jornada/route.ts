@@ -125,6 +125,7 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': `attachment; filename="registro_jornada_${desde}_a_${hasta}.csv"`,
+        'Cache-Control': 'no-store',
       },
     });
   } catch (e) {

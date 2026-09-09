@@ -170,5 +170,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     });
   }
 
-  return NextResponse.redirect(firmada.data.signedUrl, 302);
+  return NextResponse.redirect(firmada.data.signedUrl, {
+    status: 302,
+    // La URL firmada es de un solo tenant/liquidación; un caché intermedio
+    // que la reutilice para otra sesión filtraría el PDF entre flotas.
+    headers: { 'Cache-Control': 'no-store' },
+  });
 }
