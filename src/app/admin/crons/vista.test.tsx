@@ -102,6 +102,41 @@ describe('VistaCrons — el card dice la verdad', () => {
     );
     expect(html).toContain('interruptor_ilegible');
   });
+
+  // El card superior prometía "el detalle está abajo" para una corrida
+  // `parcial`, pero el renglón sólo sabía mostrar un `codigo` de `fallo` — un
+  // rótulo que promete un detalle que la tabla nunca pintaba, contra la regla
+  // del propio panel: "aquí sí se dice cuál, desde cuándo y por qué".
+  it('una corrida parcial muestra su detalle real, no un guion vacío', () => {
+    const html = renderToStaticMarkup(
+      <VistaCrons latidos={todos({ 'wa-outbox': { ultimoEstado: 'parcial', detalle: { enviadas: 5, fallidas: 3 } } })} />,
+    );
+    expect(html).toContain('fallidas');
+    expect(html).toContain('3');
+  });
+
+  it('una corrida parcial con arreglos en el detalle también se cuenta (no sólo números)', () => {
+    const html = renderToStaticMarkup(
+      <VistaCrons latidos={todos({ gps: { ultimoEstado: 'parcial', detalle: { proveedoresConError: ['samsara', 'geotab'] } } })} />,
+    );
+    expect(html).toContain('proveedoresConError');
+    expect(html).toContain('2');
+  });
+
+  it('un fallo SIN código conocido también muestra el resto del detalle, en vez de un guion', () => {
+    const html = renderToStaticMarkup(
+      <VistaCrons latidos={todos({ purgar: { ultimoEstado: 'fallo', detalle: { tablasConError: 3 } } })} />,
+    );
+    expect(html).toContain('tablasConError');
+  });
+
+  it('un detalle vacío ({}) sigue mostrando el guion — no se inventa contenido', () => {
+    const html = renderToStaticMarkup(
+      <VistaCrons latidos={todos({ runner: { ultimoEstado: 'parcial', detalle: {} } })} />,
+    );
+    // El renglón de `runner` (sin nada que decir) no debe ganar texto nuevo.
+    expect(html).not.toMatch(/runner[\s\S]{0,200}fallidas/);
+  });
 });
 
 describe('cadaCuanto / desdeHace', () => {
