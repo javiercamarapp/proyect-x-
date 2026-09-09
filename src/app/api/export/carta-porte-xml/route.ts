@@ -82,6 +82,7 @@ export async function GET(req: Request) {
         headers: {
           'Content-Type': 'application/xml; charset=utf-8',
           'Content-Disposition': `attachment; filename="${nombre}"`,
+          'Cache-Control': 'no-store',
         },
       });
     } catch (e) {
@@ -122,6 +123,7 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'application/xml; charset=utf-8',
         'Content-Disposition': `attachment; filename="${r.nombreArchivo}"`,
+        'Cache-Control': 'no-store',
       },
     });
   } catch (e) {

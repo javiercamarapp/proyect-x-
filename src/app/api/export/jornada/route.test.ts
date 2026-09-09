@@ -170,6 +170,9 @@ describe('GET /api/export/jornada — las dos puertas', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toContain('text/csv');
     expect(res.headers.get('Content-Disposition')).toContain('registro_jornada_2026-08-20_a_2026-08-20.csv');
+    // Un caché intermedio que reutilice esta respuesta la serviría a otro
+    // usuario/sesión: el registro de jornada es de la flota, no público.
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
   });
 
   it('sin sesión válida se devuelve el estatus que dijo el resolvedor, sin leer nada', async () => {
