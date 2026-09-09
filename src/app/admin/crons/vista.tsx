@@ -96,6 +96,29 @@ export function desdeHace(min: number | null): string {
   return `hace ${Math.round(min / 144) / 10} d`;
 }
 
+/**
+ * El card de arriba promete "el detalle está abajo" para una corrida
+ * `parcial` — y para un `fallo` sin `codigo` no hay nada más que decir salvo
+ * lo que el propio cron dejó en `detalle`. Sin esto, el renglón caía siempre
+ * al guion, contradiciendo la promesa del propio card y la premisa de este
+ * archivo: "aquí sí se dice cuál, desde cuándo y por qué". No inventa una
+ * interpretación: sólo enseña lo que el cron ya registró, tal cual, sin
+ * `codigo` (que ya tiene su propio renglón) ni claves vacías.
+ */
+export function resumenDetalle(detalle: Record<string, unknown>): string | null {
+  const partes = Object.entries(detalle)
+    .filter(([clave, valor]) => clave !== 'codigo' && valor !== undefined && valor !== null)
+    .map(([clave, valor]): string | null => {
+      if (Array.isArray(valor)) return valor.length > 0 ? `${clave}: ${valor.length}` : null;
+      if (typeof valor === 'number') return valor > 0 ? `${clave}: ${valor}` : null;
+      if (typeof valor === 'string') return valor.trim() !== '' ? `${clave}: ${valor}` : null;
+      if (typeof valor === 'boolean') return valor ? clave : null;
+      return null;
+    })
+    .filter((x): x is string => x !== null);
+  return partes.length > 0 ? partes.join(' · ') : null;
+}
+
 function Renglon({ cron, l }: { cron: CronId; l: LatidoDetallado }) {
   const salud = PILL_SALUD[l.estado];
   const ultimo = l.ultimoEstado === null ? null : PILL_ULTIMO[l.ultimoEstado];
@@ -144,7 +167,9 @@ function Renglon({ cron, l }: { cron: CronId; l: LatidoDetallado }) {
                   debería haber latido {cadaCuanto(l.cadenciaMs)} (+{Math.round(TOLERANCIA_LATIDO_MS / 60_000)} min de tolerancia)
                 </span>
               )
-              : <span style={{ color: 'var(--faint)' }}>—</span>}
+              : (l.ultimoEstado === 'parcial' || l.ultimoEstado === 'fallo') && resumenDetalle(l.detalle) !== null
+                ? <span style={{ color: 'var(--muted)' }}>{resumenDetalle(l.detalle)}</span>
+                : <span style={{ color: 'var(--faint)' }}>—</span>}
       </td>
     </tr>
   );
