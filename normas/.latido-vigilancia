@@ -1,75 +1,41 @@
 ---
-fecha_corrida: 2026-09-07 21:31 CST (lunes, sesión local con egress abierto)
-ultimo_dia_barrido: 2026-09-07
-rango_barrido: 2026-09-06 (domingo) y 2026-09-07 (lunes) — cierra el hueco del
-  domingo que el latido anterior dejaba pendiente.
-notas_revisadas: 59 — todas de la matutina del 07-sep (38 con título + 21
-  encabezados de sección / "Aviso REF" sin título). El domingo 06-sep las tres
-  ediciones vinieron vacías (0 notas), confirmado con notas/06-09-2026.
-ediciones_07_sep: >
-  Matutina: publicada (codDiario 329505, 348 páginas). Vespertina y
-  extraordinaria: NO publicadas a las 21:31 CST según notas/07-09-2026 y
-  diarios/porFecha/07-09-2026 (Vespertina: null). Si el DOF sube una
-  vespertina tardía hoy, este barrido no la vio: la corrida de mañana debe
-  repetir 07-sep además de 08-sep.
-anti_silencio: ok — el cruce diarios/porFecha coincide con notas/{fecha}
-  (solo MAT en ambos).
+fecha_corrida: 2026-09-09 21:30 CST (miércoles)
+ultimo_dia_barrido: 2026-09-09
+rango_barrido: 2026-09-08 (martes) y 2026-09-09 (miércoles) — continúa desde
+  el 07-sep del latido anterior.
+notas_revisadas: 203 — 122 en la matutina del 08-sep (89 con título + 33
+  encabezados de sección/avisos sin título) y 81 en la matutina del 09-sep
+  (59 con título + 22 encabezados/avisos sin título).
+ediciones: >
+  08-sep: Matutina publicada (codDiario 329525, 314 páginas). Vespertina y
+  extraordinaria: null en diarios/porFecha/08-09-2026.
+  09-sep: Matutina publicada (codDiario 329545, 602 páginas). Vespertina y
+  extraordinaria: null en diarios/porFecha/09-09-2026.
+anti_silencio: ok — diarios/porFecha coincide con notas/{fecha} en ambos días
+  (solo MAT, cero notas en VES/EXT porque no hubo edición, no por fallo).
 disparadores_evaluados: >
-  Ningún título de la matutina toca IEPS, ISR, IVA, CFF, LIF, RMF, carta
-  porte, CFDI, RFA, UMA/salarios ni LFPDPPP. Casos cercanos revisados a
-  fondo y descartados: (1) codNota 5798079, aviso de CAPUFE sobre los
-  Lineamientos de Línea Exprés (LINEXP) — es un aviso de publicación de un
-  instrumento administrativo interno, no mueve tarifas ni la red; no toca
-  red-nacional-autopistas.yaml. (2) codNota 5798063, PROY-NOM-030-ASEA-2026
-  sobre distribución de gas LP por autotanque — proyecto en consulta, fuera
-  del dominio (diésel/flota de carga). (3) codNota 5798065, Plan de
-  Desarrollo del Sector Hidrocarburos de SENER — planeación, sin cifra ni
-  regla que el producto use.
+  Ningún título de ninguna de las dos matutinas toca IEPS, ISR, IVA, CFF,
+  LIF, RMF, carta porte, CFDI, RFA, UMA/salarios, autotransporte,
+  Nota Aclaratoria, Fe de erratas ni LFPDPPP (grep de disparadores sobre el
+  JSON completo de ambos días, no solo títulos). Casos revisados a fondo y
+  descartados: (1) codNota 5798132 (08-sep), acuerdo IMSS sobre Tarjeta de
+  Identificación Patronal Digital y actualización del Buzón IMSS — trámite
+  administrativo digital, no toca cuotas obrero-patronales ni SBC
+  (lss-27.yaml, criterios-imss-sbc.yaml siguen intactas). (2) codNotas
+  5798116/5798118 (08-sep), sin título y existeDoc:N — confirmado por
+  fetch a /notas/nota/{codNota} que son encabezados de sección (Secretaría
+  de Energía, Secretaría de Economía) sin contenido propio. (3) codNotas
+  5798330/5798332/5798335 (09-sep), "Secretaría de Hacienda/SICT -
+  REF:0143xx" — son convocatorias de plazas vacantes del Servicio
+  Profesional de Carrera, no avisos normativos.
 fichas_disparadas: 0 de las fichas de normas/*.yaml.
-rezago_cerrado_cuota_diesel: >
-  El acuerdo semanal de cuotas IEPS del viernes 04-sep (vespertina, codNota
-  5798037, ACUERDO 134/2026, periodo 05 al 11 de septiembre de 2026) NUNCA
-  había entrado al repo: el PR #329 que lo traía se cerró sin mergear el
-  07-sep ~03:51 UTC (ver latido anterior). Leído hoy de nuevo desde SIDOF:
-  diésel 90.78 %, reducción SHCP $6.6847/L, cuota disminuida $0.6787/L;
-  6.6847 + 0.6787 = 7.3634 exacto, y 6.6847 / 7.3634 = 90.78 %. Fila añadida
-  a normas/datos/cuota-ieps-diesel.yaml; cuota_diesel.test.ts (18 pruebas)
-  en verde. Código tocado por depender de esa fila: CUOTA_DOF en
-  src/lib/likida/marketing/calculadora.ts (1.3622 → 0.6787, registradaEl
-  2026-09-05; calculadora.test.ts lo cruza contra la tabla) y el corpus
-  generado src/lib/likida/normas/corpus_texto.ts (regenerado con
-  scripts/generar-corpus-contador.mjs). Vigente hasta el viernes 11-sep;
-  el acuerdo de la semana 12-18 sep sale el viernes 11-sep en vespertina.
-etag_sat: >
-  Ventana de lunes cumplida. HEAD a
-  www.sat.gob.mx/minisitio/NormatividadRMFyRGCE/normatividad_rmf_rgce2026.html
-  → 200, ETag "6a9a26fc-3e6d0", Last-Modified Fri 04 Sep 2026 02:03:40 GMT.
-  No había ETag previo registrado en el repo (las corridas anteriores
-  cayeron por egress), así que este es la LÍNEA BASE para comparar el lunes
-  14-sep. Lo que cambió esa fecha: entró la "10a Versión Anticipada de la 2a
-  RM RMF 2026" (2aRM_RMF2026-Decima_version_anticipada_03092026.pdf, 2
-  páginas). Leída completa: reforma la regla 9.4.4 (ISR de jugadores
-  residentes en el extranjero, FIFA) y adiciona las fracciones XIV a XXII
-  de la 11.7.3 (precio base del diésel: restas semanales del 9-jul al
-  3-sep), más la Segunda Modificación al Anexo 2 (fichas de trámite).
-  NINGUNA de las reglas de las fichas de normas/ (2.7.1.21, 2.7.1.29,
-  2.7.1.48, 2.7.7, 3.3.1.7, 9.1.7, 9.1.8) aparece. La 11.7.3 es insumo de
-  la SHCP para fijar la cuota semanal, que el producto ya toma del acuerdo
-  del DOF, no de esa regla. Las versiones 7a a 9a de esta anticipada
-  (20-ago a 27-ago) no constan como revisadas en latidos anteriores; la
-  10a las acumula (encabezado "primera a décima versión anticipada") y no
-  trae más reglas que las dos citadas.
+cuota_diesel: no_aplica_hoy — no es viernes. La fila vigente (05-11 sep,
+  codNota 5798037, 0.6787/L) sigue capturada desde el latido del 07-sep. El
+  próximo acuerdo (semana 12-18 sep) sale el viernes 11-sep en vespertina.
+etag_sat: no_aplica_hoy — no es lunes. Línea base ETag "6a9a26fc-3e6d0"
+  registrada el 07-sep; próxima comparación lunes 14-sep.
 deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
-verificacion_codigo: >
-  npx tsc --noEmit limpio; eslint limpio en los dos archivos tocados;
-  vitest sobre cuadre/cuota_diesel, marketing, normas y agentes/crecimiento:
-  247 pruebas en verde. Nota honesta: la primera corrida de esa selección
-  falló 2 pruebas de fundamento.test.ts que miden tiempo (guardia ReDoS
-  < 500 ms y "fracción de milisegundo") mientras tsc y eslint corrían en
-  paralelo en la misma máquina; sin carga pasan tres veces seguidas. No
-  dependen de nada tocado hoy.
-estado: "OK — 59 títulos revisados (matutina 07-sep) + domingo vacío; sin
-  cambios del dominio en el DOF de hoy. Rezago del 04-sep cerrado: cuota
-  IEPS diésel 05-11 sep (codNota 5798037) capturada y proyectada al código.
-  SAT: 10a anticipada leída, sin ficha disparada; ETag base registrado."
+estado: "SIN CAMBIOS — 203 títulos revisados (matutinas 08-sep y 09-sep),
+  sin vespertina ni extraordinaria en ninguno de los dos días (confirmado
+  por diarios/porFecha, no es fallo). Sin cambios del dominio en el DOF."
 ---
