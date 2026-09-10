@@ -405,10 +405,23 @@ export async function GET(req: Request) {
     // `parcial` con el motor en vuelo nombrado: trabajo que quedó sin hacer.
     // La respuesta se ARMA antes de dar la corrida por cerrada: si no se puede
     // serializar, el latido que queda es «sin cerrar», no un `ok` sobre un 500.
+    //
+    // OP-C1 (mismo criterio que descarga-sat, health.ts): Cal.com sin API
+    // key/webhook secret es un hueco de configuración DECLARADO, no una
+    // regresión — `esHuecoDeConfiguracion()` lee `detalle.configAusente`
+    // para que /api/health lo publique como `config_ausente`, no `degraded`.
+    // Sólo se marca cuando ES la única causa: si además hubo un fallo real
+    // en otro motor, `huboFallo` ya manda a `fallo` y no se enmascara nada.
+    const calcomSinConfigurar = (resultado.calcom as { configured?: boolean } | undefined)?.configured === false;
+    const configAusente = !huboFallo && calcomSinConfigurar;
     const respuesta = NextResponse.json(resultado, { status: huboFallo ? 500 : 200 });
     latido = {
-      estado: huboFallo ? 'fallo' : (cortados > 0 || corteDuro) ? 'parcial' : 'ok',
-      detalle: corteDuro ? { cortesSeguidos, cortados, corteDuro: enVuelo } : { cortesSeguidos, cortados },
+      estado: huboFallo ? 'fallo' : (cortados > 0 || corteDuro || configAusente) ? 'parcial' : 'ok',
+      detalle: corteDuro
+        ? { cortesSeguidos, cortados, corteDuro: enVuelo }
+        : configAusente
+          ? { cortesSeguidos, cortados, configAusente: true, motivo: 'Cal.com no configurado: faltan API key o webhook secret' }
+          : { cortesSeguidos, cortados },
     };
     return respuesta;
   } finally {
