@@ -16,7 +16,7 @@
 // de cada llamada al SAT.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -30,10 +30,17 @@ vi.mock('../intake/cfdi_xml', () => ({
     tipoComprobante: 'I', lineas: [],
   }),
 }));
-vi.mock('../intake/consolidado', () => ({ guardarYConciliarConsolidado: vi.fn(async () => {}) }));
+// REN-C1: `vi.hoisted` para poder espiar llamadas Y reconfigurar el destino
+// por prueba — el resto del archivo (destino fijo 'disponible') sigue igual,
+// las pruebas de REN-C1 son las únicas que llaman a `decidirCruce.mockReturnValueOnce`.
+const { guardarYConciliarConsolidado, decidirCruce } = vi.hoisted(() => ({
+  guardarYConciliarConsolidado: vi.fn(async () => {}),
+  decidirCruce: vi.fn((_cfdi: { uuid?: string }): DestinoCfdi => ({ destino: 'disponible', motivo: 'ningún gasto le corresponde' })),
+}));
+vi.mock('../intake/consolidado', () => ({ guardarYConciliarConsolidado }));
 vi.mock('../repo', () => ({ saveCfdiXmlRaw: vi.fn(async () => {}) }));
 vi.mock('./cruce', () => ({
-  decidirCruce: () => ({ destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' }),
+  decidirCruce,
 }));
 
 interface Op {
@@ -76,6 +83,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 
 import { correrFlota, paquetesYaBajados, solicitudAtorada } from './ciclo';
 import type { ProveedorDescargaSat } from './tipos';
+import type { DestinoCfdi } from './cruce';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
 
@@ -483,5 +491,78 @@ describe('c7-1 · el reloj de la vuelta corta el ciclo del SAT sin quemar cuota 
     expect(llamadas.descargar).toEqual(['p1']);
     expect(r.sinTurno).toBe(0);
     expect(db.solicitudes[0].estado).toBe('descargada');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REN-C1 (auditoría 29) · un consolidado con el sello YA puesto (una corrida
+// anterior murió a medio conciliar — un corte duro de Vercel, no una
+// excepción atrapada) SÍ se reintenta, en vez de saltarse para siempre.
+//
+// El estado que deja una muerte así: el sello en `sat_cfdi_descargado` YA
+// existe (se commitea antes de conciliar), pero el PAQUETE nunca se marcó
+// `bajado` (esa anotación es posterior, y la invocación murió antes de
+// llegar ahí) — así que la corrida siguiente SÍ vuelve a bajar el paquete y
+// a recorrer sus XML, y es ahí donde antes el sello ya puesto hacía `continue`
+// sin volver a intentar `guardarYConciliarConsolidado` (que ya es idempotente
+// y reanudable por sí sola: la prueba no reimplementa esa parte, solo
+// confirma que SE LE VUELVE A DAR LA OPORTUNIDAD DE CORRER).
+// ═══════════════════════════════════════════════════════════════════════════
+describe('REN-C1 · el sello de dedup ya puesto no debe impedir reintentar un consolidado', () => {
+  afterEach(() => {
+    decidirCruce.mockImplementation(() => ({ destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' }));
+  });
+
+  it('paquete nunca marcado bajado + sello ya existente: se vuelve a llamar guardarYConciliarConsolidado', async () => {
+    const db = base([solicitudViva({ paquetes_bajados: null })]);
+    // El estado que deja una muerte a medio conciliar: el sello YA está.
+    db.cfdis.push({ cfdi_uuid: 'p1-cfdi-1', solicitud_id: 'sol-1' });
+    decidirCruce.mockImplementation((cfdi: { uuid?: string }): DestinoCfdi =>
+      cfdi.uuid === 'p1-cfdi-1'
+        ? { destino: 'consolidado' as const, emisor: 'Banco X (monedero)' }
+        : { destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' });
+    const { prov } = proveedor(['p1']);
+
+    const r = await correrFlota(CFG(), prov, '2026-08-27', AHORA);
+
+    expect(guardarYConciliarConsolidado).toHaveBeenCalledTimes(1);
+    expect(r.errores).toEqual([]);
+    // El repetido SÍ cuenta como repetido (el sello ya existía) — lo que
+    // cambia no es el conteo, es que la conciliación se reintentó.
+    expect(db.solicitudes[0].cfdis_repetidos).toBe(1);
+  });
+
+  it('si guardarYConciliarConsolidado sigue sin poder terminar, el error se reporta — no se traga en silencio', async () => {
+    const db = base([solicitudViva({ paquetes_bajados: null })]);
+    db.cfdis.push({ cfdi_uuid: 'p1-cfdi-1', solicitud_id: 'sol-1' });
+    decidirCruce.mockImplementation((cfdi: { uuid?: string }): DestinoCfdi =>
+      cfdi.uuid === 'p1-cfdi-1'
+        ? { destino: 'consolidado' as const, emisor: 'Banco X (monedero)' }
+        : { destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' });
+    guardarYConciliarConsolidado.mockRejectedValueOnce(new Error('cfdi_consolidado_linea: la base no contestó'));
+    const { prov } = proveedor(['p1']);
+
+    const r = await correrFlota(CFG(), prov, '2026-08-27', AHORA);
+
+    expect(guardarYConciliarConsolidado).toHaveBeenCalledTimes(1);
+    expect(r.errores.some((e) => e.includes('El consolidado p1-cfdi-1 no se pudo conciliar'))).toBe(true);
+  });
+
+  it('un consolidado genuinamente NUEVO (sin sello previo) sigue contando y marcando como siempre', async () => {
+    const db = base([solicitudViva({ paquetes_bajados: null })]);
+    decidirCruce.mockImplementation((cfdi: { uuid?: string }): DestinoCfdi =>
+      cfdi.uuid === 'p1-cfdi-1'
+        ? { destino: 'consolidado' as const, emisor: 'Banco X (monedero)' }
+        : { destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' });
+    const { prov } = proveedor(['p1']);
+
+    await correrFlota(CFG(), prov, '2026-08-27', AHORA);
+
+    expect(guardarYConciliarConsolidado).toHaveBeenCalledTimes(1);
+    // El paquete falso trae DOS xmls (p1-cfdi-1 y p1-cfdi-2); ninguno tenía
+    // sello previo, así que los dos cuentan como nuevos — el segundo es
+    // 'disponible' (mock por omisión), no otro consolidado.
+    expect(db.solicitudes[0].cfdis_nuevos).toBe(2);
+    expect(db.solicitudes[0].cfdis_repetidos).toBe(0);
   });
 });

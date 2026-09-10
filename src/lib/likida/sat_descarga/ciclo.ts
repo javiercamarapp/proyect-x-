@@ -312,26 +312,46 @@ async function ingerir(
       r.errores.push(`No se pudo registrar el CFDI ${uuid}: ${errSello.message}`);
       continue;
     }
-    if ((metido ?? []).length === 0) { r.cfdisRepetidos++; conteo.repetidos++; continue; }
-    r.cfdisNuevos++;
-    conteo.nuevos++;
+    // REN-C1 (auditoría 29): `yaDescargado` distingue "ya está en la tabla de
+    // deduplicación" de "ya terminó de procesarse" — para `consolidado` NO son
+    // lo mismo. `decidirCruce` es puro (depende solo del propio CFDI, nunca de
+    // `fondo`), así que corre SIEMPRE, incluso en un repetido: si esta vez
+    // resulta ser un consolidado, se reintenta la conciliación más abajo en
+    // vez de darla por hecha solo porque el sello ya existía.
+    const yaDescargado = (metido ?? []).length === 0;
+    if (yaDescargado) { r.cfdisRepetidos++; conteo.repetidos++; }
+    else { r.cfdisNuevos++; conteo.nuevos++; }
 
     const decision = decidirCruce(cfdi, [...fondo.values()]);
 
     if (decision.destino === 'consolidado') {
       // El camino que YA existe para estos (0076): concilia línea por línea.
       // Nunca 1:1 — es la regla 3.3.1.7 hecha código.
+      //
+      // REN-C1: `guardarYConciliarConsolidado` YA es idempotente y reanudable
+      // (líneas ya escritas → regresa el resumen sin re-correr el JOIN;
+      // gastos ya sellados de una corrida anterior → se respetan y solo se
+      // concilia el resto) — la única razón por la que antes "nunca se
+      // reintentaba" era que este bloque ni se alcanzaba en un repetido. Un
+      // corte duro de Vercel a media conciliación deja el sello puesto pero
+      // `cfdi_consolidado_linea` incompleta; la corrida SIGUIENTE ahora sí
+      // vuelve a entrar aquí y retoma justo donde se quedó, en vez de saltarlo
+      // para siempre. Se reintenta siempre, no solo cuando es nuevo.
       try {
         await guardarYConciliarConsolidado(cfg.tenantId, cfdi, xml);
-        r.consolidados++;
-        await marcar(cfg.tenantId, uuid, 'ignorado', null, {
-          motivo: `CFDI de ${decision.emisor}: se concilió línea por línea (complemento ECC), no como comprobante único.`,
-        });
+        if (!yaDescargado) {
+          r.consolidados++;
+          await marcar(cfg.tenantId, uuid, 'ignorado', null, {
+            motivo: `CFDI de ${decision.emisor}: se concilió línea por línea (complemento ECC), no como comprobante único.`,
+          });
+        }
       } catch (e) {
         r.errores.push(`El consolidado ${uuid} no se pudo conciliar: ${e instanceof Error ? e.message : String(e)}`);
       }
       continue;
     }
+
+    if (yaDescargado) continue;
 
     if (decision.destino === 'casado') {
       const ok = await ligar(cfg.tenantId, decision.gastoId, uuid);
