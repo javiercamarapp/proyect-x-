@@ -219,3 +219,61 @@ export async function traerTodo<T>(
   logger.error('pg.lectura_incompleta', { consulta, leidas: filas.length, esperadas });
   throw new LecturaIncompleta(consulta, filas.length, esperadas);
 }
+
+/**
+ * Trae TODAS las filas de una consulta ordenada por `id` ASCENDENTE, con
+ * cursor por FILA (`id > última leída`), no por posición.
+ *
+ * AUDITORÍA 24, MEDIO REINCIDENTE: `traerTodo` pagina con `range(desde,
+ * hasta)` — una POSICIÓN sobre una tabla VIVA. Con `.order('id')` ascendente
+ * sobre un id no correlacionado con el tiempo (UUID v4), un INSERT o DELETE
+ * en cualquier parte de la tabla mientras se pagina desplaza qué fila cae en
+ * cada posición: la página siguiente puede repetir una fila ya leída (si algo
+ * se insertó antes del cursor) o saltarse una sin leer (si algo se borró
+ * antes del cursor) — en los dos casos con `leidas` terminando igual a
+ * `esperadas`, así que `LecturaIncompleta` no lo nota. Para una suma fiscal,
+ * una fila duplicada infla la cifra sin que nada avise.
+ *
+ * El cursor por `id` no tiene ese problema PORQUE no depende de la posición:
+ * "tráeme lo que tenga `id` mayor al último que vi" sigue siendo verdad sin
+ * importar qué se insertó o borró en cualquier otra parte de la tabla. Mismo
+ * principio que el keyset `(created_at, id)` de `export/liquidaciones/route.ts`
+ * (auditoría 21) — aquí en su forma más simple, un solo cursor, para cuando
+ * `id` YA es el único orden que importa (el caso de `candidatosDb` en
+ * `intake/consolidado.ts`, REN-C1 auditoría 29).
+ *
+ * Mismo contrato de `traerTodo`: se demuestra con el `count` EXACTO de la
+ * primera página, o se LANZA `LecturaIncompleta` — nunca una cifra parcial.
+ * `construir` recibe el cursor (`null` en la primera vuelta) y es quien pone
+ * `.order('id')` + `.limit(PAGINA)` + `.gt('id', cursor)` si aplica: la forma
+ * exacta de esas tres llamadas depende del resto de filtros de cada llamador.
+ */
+export async function traerTodoDesdeId<T extends { id: string }>(
+  construir: (despuesDe: string | null) => PromiseLike<RespuestaPg<T[]>>,
+  consulta: string,
+): Promise<T[]> {
+  const filas: T[] = [];
+  let esperadas: number | null = null;
+  let cursor: string | null = null;
+
+  for (let pagina = 0; pagina < MAX_PAGINAS; pagina++) {
+    const res = await construir(cursor);
+    const pag = exigir(res, consulta) ?? [];
+    // Solo en la primera vuelta, igual que `traerTodo`: el total viene gratis
+    // en la misma respuesta y pedirlo de nuevo en cada página contaría de más.
+    if (pagina === 0 && typeof res.count === 'number') esperadas = res.count;
+    filas.push(...pag);
+
+    if (esperadas !== null && filas.length >= esperadas) return filas;
+    if (pag.length === 0) {
+      // Página vacía: no hay nada después del cursor. Prueba válida con o sin
+      // `count` — a diferencia de `range()`, aquí no hay ambigüedad de si el
+      // servidor "dejó de entregar": con cursor por fila, vacío es vacío.
+      return filas;
+    }
+    cursor = pag[pag.length - 1].id;
+  }
+
+  logger.error('pg.lectura_incompleta', { consulta, leidas: filas.length, esperadas });
+  throw new LecturaIncompleta(consulta, filas.length, esperadas);
+}

@@ -30,6 +30,7 @@ let lineasUpsertPayload: Array<Record<string, unknown>> | null;
 
 function thenable(resp: () => Resp) {
   const nodo: Record<string, unknown> = {};
+  let cursorGt: string | undefined;
   for (const m of ['eq', 'is', 'gte', 'lte', 'select', 'order']) nodo[m] = () => nodo;
   nodo.single = () => Promise.resolve(resp());
   // `traerTodo` pagina con `.range(d, h)`: el mock rebana como lo haría el
@@ -40,6 +41,18 @@ function thenable(resp: () => Resp) {
       ...r,
       data: Array.isArray(r.data) ? (r.data as unknown[]).slice(d, h + 1) : r.data,
     }));
+  // `candidatosDeGasto` pagina con `traerTodoDesdeId` (REN-C1 + auditoría 24):
+  // cursor por `id`, no por posición. `.gt('id', cursor)` filtra, `.limit(n)`
+  // corta — igual que `.range` arriba pero por FILA, no por índice: una página
+  // que ya no tiene filas después del cursor llega vacía, sin `count`, y con
+  // eso `traerTodoDesdeId` sabe que terminó (no necesita el total).
+  nodo.gt = (_col: string, val: string) => { cursorGt = val; return nodo; };
+  nodo.limit = (n: number) =>
+    Promise.resolve(resp()).then((r) => {
+      const todas = Array.isArray(r.data) ? (r.data as Array<{ id: string }>) : [];
+      const filtradas = cursorGt === undefined ? todas : todas.filter((f) => f.id > cursorGt!);
+      return { ...r, data: filtradas.slice(0, n) };
+    });
   nodo.then = (onOk: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) =>
     Promise.resolve(resp()).then(onOk, onErr);
   return nodo;

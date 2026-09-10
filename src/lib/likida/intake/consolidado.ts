@@ -35,7 +35,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { acotada } from '../presupuesto';
-import { traerTodo, conteo } from '../pg';
+import { traerTodo, traerTodoDesdeId, conteo, PAGINA } from '../pg';
 import { logger } from '@/lib/logger';
 import { enLotes } from '../lotes';
 import { strip_accents } from '../cuadre/util';
@@ -326,6 +326,43 @@ function datosDieselDeLinea(l: Pick<CfdiLineaXml, 'cantidad' | 'claveProdServ' |
 }
 
 /**
+ * Los gastos SIN CFDI en el rango de fechas del consolidado — el fondo de
+ * candidatos que `conciliarLineas` cruza contra las líneas del XML.
+ *
+ * REN-C1 (auditoría 29) + AUDITORÍA 24, MEDIO REINCIDENTE: antes paginaba con
+ * `traerTodo` (`range()` por POSICIÓN) sobre `.order('id')` ascendente en una
+ * tabla VIVA — el mismo patrón que esa auditoría marcó capaz de duplicar o
+ * saltarse una fila si un gasto nuevo entra por WhatsApp durante la lectura
+ * (un consolidado grande son decenas de páginas: varios segundos de ventana
+ * real, y `leidas` puede terminar igual a `esperadas` con una fila contada
+ * dos veces sin que nada lo note). `traerTodoDesdeId` pagina por CURSOR
+ * (`id` mayor al último visto), inmune a inserciones/borrados en cualquier
+ * otra parte de la tabla mientras se pagina. Ver `pg.ts`.
+ */
+async function candidatosDeGasto(tenantId: string, rango: { desde: string; hasta: string }): Promise<Gasto[]> {
+  const data = await traerTodoDesdeId<{ id: string; concepto: unknown; monto: unknown; fecha: unknown }>(
+    (despuesDe) => {
+      let q = supabaseAdmin()
+        .from('gasto')
+        .select('id, concepto, monto, fecha', despuesDe === null ? { count: 'exact' as const } : {})
+        .eq('tenant_id', tenantId)
+        .is('cfdi_uuid', null)
+        .gte('fecha', rango.desde)
+        .lte('fecha', rango.hasta);
+      if (despuesDe !== null) q = q.gt('id', despuesDe);
+      return acotada(q.order('id').limit(PAGINA), 'consolidado.candidatos_gasto');
+    },
+    'consolidado.candidatos_gasto',
+  );
+  return data.map((g) => ({
+    id: g.id,
+    concepto: g.concepto as Gasto['concepto'],
+    monto: Number(g.monto),
+    fecha: (g.fecha as string | null) ?? undefined,
+  }));
+}
+
+/**
  * Guarda el CFDI consolidado, corre el JOIN contra el `gasto` del tenant y
  * deja rastro de las dos cosas: lo que ligó solo y lo que le tocó a un
  * humano. Idempotente por `(tenant_id, cfdi_uuid)` / `(cfdi_xml_id, indice)`:
@@ -433,30 +470,7 @@ export async function guardarYConciliarConsolidado(
   );
 
   const rango = rangoFechasLineas(xml.lineas);
-  let candidatosDb: Gasto[] = [];
-  if (rango) {
-    // `traerTodo` (escala 15k): el rango es el del estado de cuenta —un mes—
-    // y con ~45,000 gastos/mes los candidatos sin CFDI pasan de 1,000 con
-    // holgura. El recorte silencioso marcaba `por_conciliar`/`sin_match`
-    // líneas perfectamente conciliables: fraude aparente por truncamiento.
-    const data = await traerTodo<{ id: unknown; concepto: unknown; monto: unknown; fecha: unknown }>(
-      (d, h) => acotada(supabaseAdmin()
-        .from('gasto')
-        .select('id, concepto, monto, fecha', conteo(d))
-        .eq('tenant_id', tenantId)
-        .is('cfdi_uuid', null)
-        .gte('fecha', rango.desde)
-        .lte('fecha', rango.hasta)
-        .order('id').range(d, h), 'consolidado.candidatos_gasto'),
-      'consolidado.candidatos_gasto',
-    );
-    candidatosDb = data.map((g) => ({
-      id: g.id as string,
-      concepto: g.concepto as Gasto['concepto'],
-      monto: Number(g.monto),
-      fecha: (g.fecha as string | null) ?? undefined,
-    }));
-  }
+  const candidatosDb = rango ? await candidatosDeGasto(tenantId, rango) : [];
 
   // Las líneas cuya decisión YA quedó sellada en `gasto` no se re-adivinan;
   // el JOIN corre solo para el resto.
