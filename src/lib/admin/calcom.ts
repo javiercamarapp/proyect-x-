@@ -522,7 +522,15 @@ export async function ejecutarMantenimientoCalcom(opciones: CalcomMantenimientoO
   const config = opciones.config ?? calcomConfig();
   const ledgerInicial = await reconciliarEventosCalcomPendientes(250, config);
   if (!calcomConfigurado(config)) {
-    throw new Error('Cal.com no configurado: faltan API key o webhook secret');
+    // Igual que descarga-sat (health.ts, OP-C1): faltar la API key o el
+    // webhook secret es un hueco de configuración DECLARADO, no una
+    // regresión — se devuelve `configured: false`, no se lanza. Lanzar aquí
+    // convertía cada corrida horaria del cron en un `fallo` indistinguible
+    // de un bug real, y /api/health no podía separar los dos casos.
+    return {
+      configured: false, completa: false, provisionado: false,
+      revisadas: 0, cortadasPorReloj: 0, ledger: ledgerInicial,
+    };
   }
   const { data, error } = await supabaseAdmin().rpc('iniciar_sincronizacion_calcom', {
     p_lease_seconds: 100,

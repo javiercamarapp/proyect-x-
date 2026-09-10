@@ -308,6 +308,38 @@ describe('el reloj se reparte y los cortes repetidos se gritan', () => {
     expect(registrarLatido).toHaveBeenCalledWith('escalar', 'ok', { cortesSeguidos: 0, cortados: 0 });
     expect(alertarOperador).not.toHaveBeenCalled();
   });
+
+  // OP-C1 (mismo criterio que descarga-sat, health.ts): Cal.com sin API
+  // key/webhook secret es un HUECO DE CONFIGURACIÓN declarado, no una
+  // regresión — antes ejecutarMantenimientoCalcom lanzaba y esta corrida
+  // salía como `fallo` (200 corridas seguidas así degradaban /api/health
+  // para siempre, indistinguible de un bug real). Ahora devuelve
+  // `configured: false` y el cron lo marca `parcial` con `configAusente`,
+  // que `esHuecoDeConfiguracion()` sabe leer para no tumbar el status global.
+  it('Cal.com sin configurar: `parcial` con configAusente, NUNCA `fallo` — y sin alertar como si fuera una regresión', async () => {
+    ejecutarMantenimientoCalcom.mockResolvedValueOnce({
+      configured: false, completa: false, provisionado: false, revisadas: 0,
+      cortadasPorReloj: 0, ledger: { configured: false, revisados: 0, recuperados: 0, restantes: 0 },
+    });
+    const res = await GET(peticion('Bearer secreto-de-prueba'));
+    expect(res.status).toBe(200);
+    expect(registrarLatido).toHaveBeenCalledWith('escalar', 'parcial', {
+      cortesSeguidos: 0, cortados: 0, configAusente: true,
+      motivo: 'Cal.com no configurado: faltan API key o webhook secret',
+    });
+    expect(alertarOperador).not.toHaveBeenCalled();
+  });
+
+  it('Cal.com sin configurar Y un fallo real en otro motor: sigue siendo `fallo` — el hueco declarado no enmascara una regresión', async () => {
+    ejecutarMantenimientoCalcom.mockResolvedValueOnce({
+      configured: false, completa: false, provisionado: false, revisadas: 0,
+      cortadasPorReloj: 0, ledger: { configured: false, revisados: 0, recuperados: 0, restantes: 0 },
+    });
+    ejecutarCobranzaGlobal.mockRejectedValueOnce(new Error('base caída'));
+    const res = await GET(peticion('Bearer secreto-de-prueba'));
+    expect(res.status).toBe(500);
+    expect(registrarLatido).toHaveBeenCalledWith('escalar', 'fallo', { cortesSeguidos: 0, cortados: 0 });
+  });
 });
 
 describe('c5-CRON — el reintento único ante timeout, solo donde es idempotente', () => {
