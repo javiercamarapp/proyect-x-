@@ -1,41 +1,38 @@
 ---
-fecha_corrida: 2026-09-09 21:30 CST (miércoles)
-ultimo_dia_barrido: 2026-09-09
-rango_barrido: 2026-09-08 (martes) y 2026-09-09 (miércoles) — continúa desde
-  el 07-sep del latido anterior.
-notas_revisadas: 203 — 122 en la matutina del 08-sep (89 con título + 33
-  encabezados de sección/avisos sin título) y 81 en la matutina del 09-sep
-  (59 con título + 22 encabezados/avisos sin título).
+fecha_corrida: 2026-09-10 21:30 CST (jueves)
+ultimo_dia_barrido: 2026-09-10
+rango_barrido: 2026-09-10 (jueves) — continúa desde el 09-sep del latido
+  anterior.
+notas_revisadas: 142 — matutina del 10-sep (130 con título + 12
+  encabezados de sección/avisos sin título, existeDoc:N).
 ediciones: >
-  08-sep: Matutina publicada (codDiario 329525, 314 páginas). Vespertina y
-  extraordinaria: null en diarios/porFecha/08-09-2026.
-  09-sep: Matutina publicada (codDiario 329545, 602 páginas). Vespertina y
-  extraordinaria: null en diarios/porFecha/09-09-2026.
-anti_silencio: ok — diarios/porFecha coincide con notas/{fecha} en ambos días
-  (solo MAT, cero notas en VES/EXT porque no hubo edición, no por fallo).
+  10-sep: Matutina publicada (codDiario 329565, 274 páginas). Vespertina y
+  extraordinaria: null en diarios/porFecha/10-09-2026.
+anti_silencio: ok — diarios/porFecha coincide con notas/10-09-2026 (solo
+  MAT, cero notas en VES/EXT porque no hubo edición, no por fallo).
 disparadores_evaluados: >
-  Ningún título de ninguna de las dos matutinas toca IEPS, ISR, IVA, CFF,
-  LIF, RMF, carta porte, CFDI, RFA, UMA/salarios, autotransporte,
-  Nota Aclaratoria, Fe de erratas ni LFPDPPP (grep de disparadores sobre el
-  JSON completo de ambos días, no solo títulos). Casos revisados a fondo y
-  descartados: (1) codNota 5798132 (08-sep), acuerdo IMSS sobre Tarjeta de
-  Identificación Patronal Digital y actualización del Buzón IMSS — trámite
-  administrativo digital, no toca cuotas obrero-patronales ni SBC
-  (lss-27.yaml, criterios-imss-sbc.yaml siguen intactas). (2) codNotas
-  5798116/5798118 (08-sep), sin título y existeDoc:N — confirmado por
-  fetch a /notas/nota/{codNota} que son encabezados de sección (Secretaría
-  de Energía, Secretaría de Economía) sin contenido propio. (3) codNotas
-  5798330/5798332/5798335 (09-sep), "Secretaría de Hacienda/SICT -
-  REF:0143xx" — son convocatorias de plazas vacantes del Servicio
-  Profesional de Carrera, no avisos normativos.
+  Grep de disparadores (Miscelánea Fiscal, facilidades administrativas, Ley
+  de Ingresos, Código Fiscal, Impuesto sobre la Renta, valor agregado,
+  producción y servicios, datos personales, autotransporte, Anexo, Nota
+  Aclaratoria, Fe de erratas, carta porte, CFDI, UMA, salarios, autopistas,
+  SCT) sobre el JSON completo de la matutina, no solo títulos. Dos
+  coincidencias, ambas descartadas tras leer el título completo: (1)
+  codNota 5798363, "Anexo Técnico" de un convenio fitozoosanitario
+  SADER-Tamaulipas — no toca ninguna ficha rmf-*/rfa-* (Anexo 3/20 de la
+  RMF). (2) codNota 5798465, "SECRETARIA DE CIENCIA, HUMANIDADES..." — el
+  match de "UMA" es un substring de "HUMANIDADES"; es una convocatoria de
+  adquisiciones (existeDoc:S, tipoNota AVISO, sección CV), no toca
+  UMA/salarios mínimos. Las 12 notas sin título son encabezados de sección
+  (existeDoc:N), sin contenido propio.
 fichas_disparadas: 0 de las fichas de normas/*.yaml.
 cuota_diesel: no_aplica_hoy — no es viernes. La fila vigente (05-11 sep,
   codNota 5798037, 0.6787/L) sigue capturada desde el latido del 07-sep. El
-  próximo acuerdo (semana 12-18 sep) sale el viernes 11-sep en vespertina.
+  próximo acuerdo (semana 12-18 sep) sale mañana viernes 11-sep en
+  vespertina.
 etag_sat: no_aplica_hoy — no es lunes. Línea base ETag "6a9a26fc-3e6d0"
-  registrada el 07-sep; próxima comparación lunes 14-sep.
+  registrada el 07-sep sigue vigente; próxima comparación lunes 14-sep.
 deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
-estado: "SIN CAMBIOS — 203 títulos revisados (matutinas 08-sep y 09-sep),
-  sin vespertina ni extraordinaria en ninguno de los dos días (confirmado
-  por diarios/porFecha, no es fallo). Sin cambios del dominio en el DOF."
+estado: "SIN CAMBIOS — 142 títulos revisados (matutina 10-sep), sin
+  vespertina ni extraordinaria (confirmado por diarios/porFecha, no es
+  fallo). Sin cambios del dominio en el DOF."
 ---
