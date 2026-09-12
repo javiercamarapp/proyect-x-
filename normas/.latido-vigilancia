@@ -1,38 +1,28 @@
 ---
-fecha_corrida: 2026-09-10 21:30 CST (jueves)
+fecha_corrida: 2026-09-12 14:09 UTC (sábado)
 ultimo_dia_barrido: 2026-09-10
-rango_barrido: 2026-09-10 (jueves) — continúa desde el 09-sep del latido
-  anterior.
-notas_revisadas: 142 — matutina del 10-sep (130 con título + 12
-  encabezados de sección/avisos sin título, existeDoc:N).
-ediciones: >
-  10-sep: Matutina publicada (codDiario 329565, 274 páginas). Vespertina y
-  extraordinaria: null en diarios/porFecha/10-09-2026.
-anti_silencio: ok — diarios/porFecha coincide con notas/10-09-2026 (solo
-  MAT, cero notas en VES/EXT porque no hubo edición, no por fallo).
-disparadores_evaluados: >
-  Grep de disparadores (Miscelánea Fiscal, facilidades administrativas, Ley
-  de Ingresos, Código Fiscal, Impuesto sobre la Renta, valor agregado,
-  producción y servicios, datos personales, autotransporte, Anexo, Nota
-  Aclaratoria, Fe de erratas, carta porte, CFDI, UMA, salarios, autopistas,
-  SCT) sobre el JSON completo de la matutina, no solo títulos. Dos
-  coincidencias, ambas descartadas tras leer el título completo: (1)
-  codNota 5798363, "Anexo Técnico" de un convenio fitozoosanitario
-  SADER-Tamaulipas — no toca ninguna ficha rmf-*/rfa-* (Anexo 3/20 de la
-  RMF). (2) codNota 5798465, "SECRETARIA DE CIENCIA, HUMANIDADES..." — el
-  match de "UMA" es un substring de "HUMANIDADES"; es una convocatoria de
-  adquisiciones (existeDoc:S, tipoNota AVISO, sección CV), no toca
-  UMA/salarios mínimos. Las 12 notas sin título son encabezados de sección
-  (existeDoc:N), sin contenido propio.
-fichas_disparadas: 0 de las fichas de normas/*.yaml.
-cuota_diesel: no_aplica_hoy — no es viernes. La fila vigente (05-11 sep,
-  codNota 5798037, 0.6787/L) sigue capturada desde el latido del 07-sep. El
-  próximo acuerdo (semana 12-18 sep) sale mañana viernes 11-sep en
-  vespertina.
-etag_sat: no_aplica_hoy — no es lunes. Línea base ETag "6a9a26fc-3e6d0"
-  registrada el 07-sep sigue vigente; próxima comparación lunes 14-sep.
+rango_pendiente: 2026-09-11 — no se pudo barrer. Sigue pendiente para la
+  próxima corrida (arranca en 09-11, no en 09-12).
+notas_revisadas: 0 — ningún endpoint respondió.
+anti_silencio: no_evaluable — sin acceso a notas/ ni a diarios/porFecha no
+  hay con qué cruzar.
+fichas_disparadas: 0 — no evaluable, no confirmado "sin cambios".
+cuota_diesel: no_evaluable_hoy — hoy no es viernes, pero el acuerdo de la
+  semana 12-18 sep (esperado el viernes 11-sep vespertina) tampoco se pudo
+  verificar por el mismo corte de red. Revisar en la próxima corrida.
+etag_sat: no_aplica_hoy — no es lunes.
 deriva_ley_check: no_aplica — no es día 1 de trimestre (próxima: 01-oct-2026)
-estado: "SIN CAMBIOS — 142 títulos revisados (matutina 10-sep), sin
-  vespertina ni extraordinaria (confirmado por diarios/porFecha, no es
-  fallo). Sin cambios del dominio en el DOF."
+estado: >
+  INFRA — los cuatro dominios de references/fuentes.md
+  (sidofqa.segob.gob.mx, dof.gob.mx, www.sat.gob.mx, diputados.gob.mx)
+  fueron rechazados por el proxy de egreso de ESTA SESIÓN con
+  "CONNECT tunnel failed, response 403" (política de organización, no
+  caída del sitio — confirmado en
+  http://127.0.0.1:38161/__agentproxy/status: connect_rejected en los
+  cuatro). Control: github.com respondió (400, alcanzable) y google.com
+  también fue rechazado con el mismo 403 — el bloqueo es de política de
+  egreso para estos hosts, no una caída general de la red del contenedor.
+  No se leyó ninguna nota del DOF. No se tocó ninguna ficha de normas/.
+  Sin veredicto sobre si hubo publicaciones relevantes el 11-sep
+  (viernes — la cuota de diésel suele salir ese día en vespertina).
 ---
