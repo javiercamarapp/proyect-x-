@@ -152,6 +152,52 @@ describe('FIS-C2 · el previo del 15% juzga la forma de pago EFECTIVA, igual que
     expect(entradaDelMotor().efectivoPrevEjercicio).toBe(145000);
   });
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // AUDITORÍA 30, ARQ-C2 (CRÍTICO, creado por la ventana de esta ronda). El
+  // par de términos volvió a descuadrarse, ahora por el otro lado.
+  //
+  // La migración 0349 («el cubo del 15% excluye copias del mismo
+  // comprobante») le enseñó a `sumar_combustible_ejercicio` a contar UNA sola
+  // vez las dos fotos del mismo ticket: dedupa por `(lower(cfdi_uuid),
+  // coalesce(cfdi_orden,1))` y, sin UUID, por `(concepto, folio_norm, monto)`.
+  // El término de la RESTA que vive en TypeScript no se movió y sigue sumando
+  // las dos copias.
+  //
+  // Antes de la 0349 el par estaba CUADRADO —los dos contaban doble y la
+  // resta salía bien—, así que esto no es deuda vieja: lo creó el arreglo.
+  // Y la dirección del error es la que regala cupo: el previo sale corto, el
+  // viaje cree tener más 15% disponible del que le queda, y el PDF declara
+  // deducible combustible en efectivo que ya excedió la facilidad de la RFA
+  // 2026 2.9. Lo firma el contralor y lo ve el contador en la primera revisión.
+  //
+  // `copiasDeComprobante` (el mismo `engine.ts` que ya usa el resto del
+  // cuadre) es el espejo exacto del criterio de la 0349: `uuid#orden` primero,
+  // `folioNorm` después. Se reusa en vez de reimplementarlo — que es
+  // precisamente la enfermedad que ARQ-C1 lleva ocho rondas denunciando.
+  // ═════════════════════════════════════════════════════════════════════════
+  it('ARQ-C2 · dos fotos del MISMO ticket se restan UNA vez, igual que las cuenta la 0349', async () => {
+    // El ejercicio lleva $100,000 de combustible no admitido, ya deduplicados
+    // por la RPC: el ticket de este viaje entra ahí UNA sola vez.
+    getAcumuladoCombustible.mockResolvedValue({ efectivo: 100000, totalCombustible: 1000000 });
+    getGastos.mockResolvedValue([
+      {
+        id: U(11), concepto: 'diesel', monto: 4700, fecha: '2026-02-15',
+        formaPago: '01', cfdiUuid: 'UUID-TICKET-FOTOGRAFIADO-DOS-VECES', estadoSat: 'vigente',
+      },
+      {
+        // La segunda foto del mismo ticket: mismo CFDI, mismo orden implícito.
+        id: U(12), concepto: 'diesel', monto: 4700, fecha: '2026-02-15',
+        formaPago: '01', cfdiUuid: 'UUID-TICKET-FOTOGRAFIADO-DOS-VECES', estadoSat: 'vigente',
+      },
+    ]);
+
+    await cuadrarDesdeDB(U(7), U(9));
+
+    // 100,000 − 4,700 (una vez) = 95,300. Con la copia restada dos veces sale
+    // 90,600 y el viaje se regala $4,700 de cupo del 15% que ya gastó.
+    expect(entradaDelMotor().efectivoPrevEjercicio).toBe(95300);
+  });
+
   it('el efectivo en mano («01») se sigue restando: el arreglo no cambia el caso que ya funcionaba', async () => {
     getAcumuladoCombustible.mockResolvedValue({ efectivo: 150000, totalCombustible: 1000000 });
     getGastos.mockResolvedValue([
