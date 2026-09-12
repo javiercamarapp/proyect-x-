@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { MEDIOS_LISR_27_III, FORMA_PAGO_SIN_PAGAR } from './cuadre/engine';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,7 +35,35 @@ import { MEDIOS_LISR_27_III, FORMA_PAGO_SIN_PAGAR } from './cuadre/engine';
 // REP no cuenta— se conservan sobre la nueva forma.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const RUTA_SQL = 'supabase/migrations/0345_combustible_rep_por_definir.sql';
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA 30, ARQ-A (el guardia que debió atrapar a ARQ-C2 y no lo hizo).
+// La ruta estaba TECLEADA, y por eso este archivo lleva dos rondas validando
+// una definición muerta: la auditoría 25 ya tuvo que moverla a mano cuando la
+// 0345 sustituyó a la 0305, y en la ventana de la 30 la 0349 sustituyó a la
+// 0345 sin que nadie la moviera. El guardia pasaba verde comparando
+// `engine.ts` contra un archivo que la base ya no ejecuta — que es exactamente
+// la falla que este archivo existe para impedir, aplicada a sí mismo.
+//
+// Seis migraciones han definido esta RPC (0084, 0112, 0190, 0305, 0345, 0349).
+// Habrá una séptima. Así que la ruta se DERIVA: la migración viva es la
+// última, en orden, que la define. Un guardia que hay que acordarse de
+// actualizar a mano no es un guardia, es una nota.
+// ═══════════════════════════════════════════════════════════════════════════
+const DIR_MIGRACIONES = 'supabase/migrations';
+
+function rutaVigente(): string {
+  const definen = readdirSync(DIR_MIGRACIONES)
+    .filter((f) => f.endsWith('.sql'))
+    .sort() // los nombres van con 4 dígitos a la izquierda: el orden léxico ES el numérico
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta derivada del propio repo, no de entrada externa
+    .filter((f) => /function\s+(public\.)?sumar_combustible_ejercicio/i.test(readFileSync(`${DIR_MIGRACIONES}/${f}`, 'utf8')));
+  const ultima = definen.at(-1);
+  if (ultima === undefined) throw new Error('ninguna migración define `sumar_combustible_ejercicio`');
+  return `${DIR_MIGRACIONES}/${ultima}`;
+}
+
+const RUTA_SQL = rutaVigente();
+// eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta derivada del propio repo, no de entrada externa
 const sql = readFileSync(RUTA_SQL, 'utf8');
 
 /** El `not in (...)` del `filter` que define el numerador del 15%. */
@@ -46,6 +74,18 @@ function listaDelSql(): string[] {
 }
 
 describe('el cubo del 15% (RFA 2026 regla 2.9) dice lo mismo en TS y en SQL', () => {
+  it('el guardia lee la definición VIVA de la RPC, no una que ya fue sustituida', () => {
+    // Sin esta aserción el archivo pasa verde comparando `engine.ts` contra
+    // una migración muerta, que es la falla que existe para impedir. La
+    // 0345 estuvo tecleada aquí mientras la 0349 ya era la vigente.
+    const posteriores = readdirSync(DIR_MIGRACIONES)
+      .filter((f) => f.endsWith('.sql') && `${DIR_MIGRACIONES}/${f}` > RUTA_SQL)
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- ruta derivada del propio repo, no de entrada externa
+      .filter((f) => /function\s+(public\.)?sumar_combustible_ejercicio/i.test(readFileSync(`${DIR_MIGRACIONES}/${f}`, 'utf8')));
+    expect(posteriores, `${RUTA_SQL} ya fue sustituida: el guardia está validando SQL muerto`).toEqual([]);
+    expect(sql, 'la definición viva tiene que traer el cubo del 15%').toMatch(/forma_pago_efectiva/i);
+  });
+
   it('la lista de medios admitidos por la LISR 27-III es la MISMA en engine.ts y en la definición vigente', () => {
     expect([...listaDelSql()].sort()).toEqual([...MEDIOS_LISR_27_III].sort());
   });
