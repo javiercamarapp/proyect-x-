@@ -2,7 +2,7 @@
 // Fuente única de verdad del cuadre; la usan las tools del agente Y la guardia
 // determinística del processor (para no depender de que el LLM llame la tool).
 
-import { cuadrarViaje, medioNoAdmitidoCombustible, formaPagoJuzgableDe } from './engine';
+import { cuadrarViaje, medioNoAdmitidoCombustible, formaPagoJuzgableDe, copiasDeComprobante } from './engine';
 import { ventanaDelViaje } from './fecha_dudosa';
 import { getViaje, getGastos, getOperador, getAcumuladoCombustible, getPerfilCrudo } from '../repo';
 import { getConfig } from '../config';
@@ -170,8 +170,23 @@ export async function cuadrarDesdeDB(
   // de la AUDITORÍA 16 aquí arriba ya declaraba la regla completa («un gasto
   // de otro año O SIN FECHA no está en el contador»); solo la mitad de «otro
   // año» estaba implementada.
+  // AUDITORÍA 30, ARQ-C2: el `.filter` tiene que espejar el `where` de la RPC
+  // en TODOS sus términos — y la 0349 le agregó uno. Desde esa migración
+  // `sumar_combustible_ejercicio` cuenta UNA sola vez las dos fotos del mismo
+  // ticket (dedupa por `(lower(cfdi_uuid), coalesce(cfdi_orden,1))` y, sin
+  // UUID, por `(concepto, folio_norm, monto)`); esta resta las sumaba las dos.
+  //
+  // Antes de la 0349 el par estaba cuadrado: los dos términos contaban doble.
+  // El arreglo movió uno solo, y el error quedó del lado que REGALA cupo — el
+  // previo sale corto, el viaje cree tener más 15% del que le queda, y el PDF
+  // declara deducible combustible en efectivo que ya excedió la RFA 2026 2.9.
+  //
+  // `copiasDeComprobante` es el criterio del propio motor y el espejo exacto
+  // del de la 0349. Se reusa en vez de reimplementarse: una tercera copia del
+  // predicado es la enfermedad que ARQ-C1 lleva ocho rondas denunciando.
+  const copias = copiasDeComprobante(gastos);
   const efectivoDeEsteViaje = gastos
-    .filter((g) => g.fecha != null && g.fecha.slice(0, 4) === anioEjercicio
+    .filter((g) => !copias.has(g.id) && g.fecha != null && g.fecha.slice(0, 4) === anioEjercicio
       && medioNoAdmitidoCombustible(formaPagoJuzgableDe(g)) && (g.concepto === 'diesel' || clavesCombustible.includes(g.claveProdServ ?? '')))
     .reduce((s, g) => s + Number(g.monto ?? 0), 0);
   const efectivoPrevEjercicio = Math.max(0, totalesEjercicio.efectivo - efectivoDeEsteViaje);
