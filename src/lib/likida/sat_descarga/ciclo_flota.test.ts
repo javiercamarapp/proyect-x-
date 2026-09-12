@@ -95,7 +95,11 @@ interface FilaSolicitud extends Record<string, unknown> {
 
 /** La base falsa: filas de verdad, filtros de verdad. */
 function base(solicitudes: FilaSolicitud[]) {
-  const cfdis: { cfdi_uuid: string; solicitud_id: string }[] = [];
+  // `estatus` se guarda de verdad: es la columna que decide si el contralor ve
+  // el CFDI en la bandeja «nadie reportó este gasto». Sin ella, una prueba no
+  // puede distinguir «se concilió» de «se concilió y además se sacó de la
+  // bandeja», que es justo el par que AG-C1 separa.
+  const cfdis: { cfdi_uuid: string; solicitud_id: string; estatus?: string }[] = [];
   const errores = new Map<string, { code?: string; message: string }>();
   manejar = (op) => {
     const forzado = errores.get(`${op.tabla}:${op.verbo}`);
@@ -132,10 +136,15 @@ function base(solicitudes: FilaSolicitud[]) {
     if (op.tabla === 'gasto') return { data: [], error: null };
     if (op.tabla === 'sat_cfdi_descargado') {
       if (op.verbo === 'upsert') {
-        const p = op.payload as { cfdi_uuid: string; solicitud_id: string };
+        const p = op.payload as { cfdi_uuid: string; solicitud_id: string; estatus?: string };
         if (cfdis.some((c) => c.cfdi_uuid === p.cfdi_uuid)) return { data: [], error: null }; // el sello de dedup
-        cfdis.push({ cfdi_uuid: p.cfdi_uuid, solicitud_id: p.solicitud_id });
+        cfdis.push({ cfdi_uuid: p.cfdi_uuid, solicitud_id: p.solicitud_id, estatus: p.estatus });
         return { data: [{ id: p.cfdi_uuid }], error: null };
+      }
+      if (op.verbo === 'update') {
+        const f = cfdis.find((c) => c.cfdi_uuid === op.filtros.cfdi_uuid);
+        if (f !== undefined) Object.assign(f, op.payload);
+        return { data: null, error: null };
       }
       if (op.conteo) {
         return { data: null, error: null, count: cfdis.filter((c) => c.solicitud_id === op.filtros.solicitud_id).length };
@@ -546,6 +555,38 @@ describe('REN-C1 · el sello de dedup ya puesto no debe impedir reintentar un co
 
     expect(guardarYConciliarConsolidado).toHaveBeenCalledTimes(1);
     expect(r.errores.some((e) => e.includes('El consolidado p1-cfdi-1 no se pudo conciliar'))).toBe(true);
+  });
+
+  // ── AG-C1 (auditoría 30) ────────────────────────────────────────────────
+  // El arreglo de REN-C1 le devolvió la oportunidad de conciliarse al
+  // consolidado con sello previo, pero dejó `marcar(...,'ignorado')` DENTRO de
+  // `if (!yaDescargado)`. Consecuencia: el reintento que sí concilia no saca
+  // el CFDI de la bandeja. El sello se insertó con `estatus: 'disponible'`, y
+  // 'disponible' es literalmente «nadie reportó este gasto»: el contralor ve
+  // un ECC de $200,000 ofrecido para ligarlo 1:1 contra un ticket de $1,200,
+  // que es lo que la regla 3.3.1.7 prohíbe — y ya se concilió línea por línea,
+  // así que ligarlo otra vez mueve el acreditamiento al gasto equivocado.
+  //
+  // Reintentar y no cerrar el ciclo es peor que no reintentar: antes el
+  // consolidado se saltaba y quedaba sin conciliar (visiblemente incompleto);
+  // ahora queda conciliado Y ofrecido, que se ve correcto y no lo está.
+  it('AG-C1 · el consolidado reintentado con sello previo SÍ sale de la bandeja: estatus queda en ignorado', async () => {
+    const db = base([solicitudViva({ paquetes_bajados: null })]);
+    // El estado que deja una muerte a medio conciliar: sello puesto, y con el
+    // estatus con el que nace todo sello, 'disponible'.
+    db.cfdis.push({ cfdi_uuid: 'p1-cfdi-1', solicitud_id: 'sol-1', estatus: 'disponible' });
+    decidirCruce.mockImplementation((cfdi: { uuid?: string }): DestinoCfdi =>
+      cfdi.uuid === 'p1-cfdi-1'
+        ? { destino: 'consolidado' as const, emisor: 'Banco X (monedero)' }
+        : { destino: 'disponible' as const, motivo: 'ningún gasto le corresponde' });
+    const { prov } = proveedor(['p1']);
+
+    await correrFlota(CFG(), prov, '2026-08-27', AHORA);
+
+    // La conciliación corrió (eso ya lo garantiza REN-C1)...
+    expect(guardarYConciliarConsolidado).toHaveBeenCalledTimes(1);
+    // ...y el ciclo se cerró: el CFDI ya no se le ofrece a nadie.
+    expect(db.cfdis.find((c) => c.cfdi_uuid === 'p1-cfdi-1')?.estatus).toBe('ignorado');
   });
 
   it('un consolidado genuinamente NUEVO (sin sello previo) sigue contando y marcando como siempre', async () => {

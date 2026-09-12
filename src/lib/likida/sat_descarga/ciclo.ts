@@ -339,12 +339,22 @@ async function ingerir(
       // para siempre. Se reintenta siempre, no solo cuando es nuevo.
       try {
         await guardarYConciliarConsolidado(cfg.tenantId, cfdi, xml);
-        if (!yaDescargado) {
-          r.consolidados++;
-          await marcar(cfg.tenantId, uuid, 'ignorado', null, {
-            motivo: `CFDI de ${decision.emisor}: se concilió línea por línea (complemento ECC), no como comprobante único.`,
-          });
-        }
+        // AG-C1 (auditoría 30): `marcar` va FUERA del `if (!yaDescargado)`.
+        // Reintentar la conciliación y no cerrar el ciclo es peor que no
+        // reintentarla: el sello nace en 'disponible' —que es literalmente
+        // «nadie reportó este gasto»—, así que el ECC recién conciliado se le
+        // seguía ofreciendo al contralor para ligarlo 1:1 contra un ticket
+        // suelto, justo lo que prohíbe la regla 3.3.1.7, y con el
+        // acreditamiento ya repartido línea por línea. `marcar` es un `update`
+        // idempotente: repetirlo sobre un CFDI ya 'ignorado' no cambia nada.
+        //
+        // El CONTADOR sí se queda adentro: `r.consolidados` cuenta los
+        // consolidados nuevos de ESTA corrida, y sacarlo haría que un repetido
+        // ya conciliado se recontara en cada pasada.
+        await marcar(cfg.tenantId, uuid, 'ignorado', null, {
+          motivo: `CFDI de ${decision.emisor}: se concilió línea por línea (complemento ECC), no como comprobante único.`,
+        });
+        if (!yaDescargado) r.consolidados++;
       } catch (e) {
         r.errores.push(`El consolidado ${uuid} no se pudo conciliar: ${e instanceof Error ? e.message : String(e)}`);
       }
