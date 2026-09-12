@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Likida · Auditoría 30 — 12-sep-2026</title>
+<style>
+  /* Sin CDN, sin fuentes remotas, sin animación de entrada: este archivo se
+     abre desde disco meses después y se captura en headless. */
+  :root {
+    --surface-0: #f4f4f1;
+    --surface-1: #fcfcfb;
+    --surface-2: #eceae4;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7a7873;
+    --rule: #dcdad3;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --linea: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #121211;
+      --surface-1: #1a1a19;
+      --surface-2: #242422;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #908e85;
+      --rule: #33332f;
+      --linea: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #242422;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #908e85;
+    --rule: #33332f;
+    --linea: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding-block: 28px;
+    padding-inline: 20px;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  header { margin-bottom: 22px; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0; }
+
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text-muted); margin: 30px 0 12px; font-weight: 600;
+  }
+
+  /* ── Cinta de compuerta ─────────────────────────────────────────────── */
+  .compuerta {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--surface-1); border: 1px solid var(--rule);
+    border-radius: 7px; padding: 7px 11px; font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .chip b { color: var(--text-primary); font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+  /* ── Cabecera global ────────────────────────────────────────────────── */
+  .global {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 26px;
+    background: var(--surface-1); border: 1px solid var(--rule);
+    border-radius: 11px; padding: 18px 20px; margin-bottom: 8px;
+  }
+  .hero { display: flex; align-items: baseline; gap: 12px; }
+  .hero .n { font-size: 46px; font-weight: 650; letter-spacing: -0.03em; line-height: 1; }
+  .hero .d { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
+  .hero .lbl { font-size: 12px; color: var(--text-muted); display: block; margin-top: 5px; }
+  .serie { flex: 1 1 380px; min-width: 300px; }
+
+  /* ── Rejilla de rubros ──────────────────────────────────────────────── */
+  .rejilla {
+    display: grid; gap: 9px;
+    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  }
+  .rubro {
+    background: var(--surface-1); border: 1px solid var(--rule);
+    border-left: 4px solid var(--rule); border-radius: 9px;
+    padding: 12px 14px; display: flex; gap: 12px;
+  }
+  .rubro .num { flex: none; text-align: center; min-width: 46px; }
+  .rubro .nota { font-size: 27px; font-weight: 650; line-height: 1.05; letter-spacing: -0.02em; }
+  .rubro .delta { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+  .rubro .cuerpo { min-width: 0; }
+  .rubro .nombre {
+    font-size: 13.5px; font-weight: 600; margin-bottom: 3px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .rubro .riesgo { font-size: 12px; color: var(--text-secondary); }
+  .rubro .razon {
+    font-size: 11px; color: var(--text-muted); margin-top: 5px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .sev { font-size: 11px; color: var(--text-muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
+
+  /* ── Tablas ─────────────────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; min-width: 640px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td code { font-size: 11.5px; color: var(--text-secondary); }
+  /* NADA de `white-space: nowrap` aquí: la primera captura salió con la
+     columna de estado cortada en el borde derecho — «…update de viaje.anticipo
+     e». Mirar la imagen fue lo que lo encontró; el HTML compilaba perfecto. */
+  .estado { font-weight: 600; }
+  /* Acotado a la tabla de críticos: la segunda captura lo tenía global y
+     aplastó la primera columna de las otras dos tablas a una tira vertical. */
+  .criticos th:nth-child(1), .criticos td:nth-child(1) { width: 74px; }
+  .criticos th:last-child, .criticos td:last-child { width: 27%; }
+
+  .nota-pie { font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+  .nota-pie strong { color: var(--text-primary); }
+  .aviso {
+    background: var(--surface-2); border: 1px solid var(--rule);
+    border-left: 4px solid var(--warning);
+    border-radius: 9px; padding: 13px 16px; margin: 16px 0;
+    font-size: 12.5px; color: var(--text-secondary);
+  }
+  .aviso b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Likida · Auditoría 30</h1>
+  <p class="sub">12-sep-2026 · ronda <b>COMPLETA</b>, 12 rubros · rama <code>claude/auditoria-30</code> sobre <code>4e36c82</code> · ventana <code>7bcc319..HEAD</code>, 38 commits</p>
+</header>
+
+<!-- ── 1. ¿Está roja la compuerta? Encabeza el tablero. ─────────────── -->
+<div class="compuerta">
+  <span class="chip"><span class="dot" style="background:var(--good)"></span><b>npm test</b> 984 archivos · 12,934 pasan · 6 saltadas · 0 fallan</span>
+  <span class="chip"><span class="dot" style="background:var(--good)"></span><b>tsc --noEmit</b> exit 0</span>
+  <span class="chip"><span class="dot" style="background:var(--good)"></span><b>lint</b> 0 errores · 154 avisos</span>
+  <span class="chip"><span class="dot" style="background:var(--good)"></span><b>lint:ratchet</b> 0 nuevos</span>
+  <span class="chip"><span class="dot" style="background:var(--text-muted)"></span><b>build</b> no se corre en la nube (sin credenciales)</span>
+</div>
+
+<!-- ── 2. ¿Voy mejorando o me estoy contando una historia? ──────────── -->
+<div class="global">
+  <div class="hero">
+    <div>
+      <div style="display:flex;align-items:baseline;gap:10px">
+        <span class="n">5.2</span>
+        <span class="d">▼ 0.8</span>
+      </div>
+      <span class="lbl">global · antes 6.0 · suma 62/12</span>
+    </div>
+  </div>
+  <div class="serie">
+    <svg viewBox="0 0 460 104" width="100%" height="104" role="img"
+         aria-label="Serie histórica de la nota global: 6.2, 5.3, 6.0, 5.3, 4.4, 6.0, 5.2 en las auditorías 24 a 30.">
+      <!-- rejilla recesiva -->
+      <line x1="34" y1="12"  x2="452" y2="12"  stroke="var(--rule)" stroke-width="1"/>
+      <line x1="34" y1="46"  x2="452" y2="46"  stroke="var(--rule)" stroke-width="1"/>
+      <line x1="34" y1="80"  x2="452" y2="80"  stroke="var(--rule)" stroke-width="1"/>
+      <text x="26" y="16" text-anchor="end" font-size="9" fill="var(--text-muted)">7</text>
+      <text x="26" y="50" text-anchor="end" font-size="9" fill="var(--text-muted)">5.5</text>
+      <text x="26" y="84" text-anchor="end" font-size="9" fill="var(--text-muted)">4</text>
+      <!-- 24:6.2 25:5.3 26:6.0 27:5.3 28:4.4 29:6.0 30:5.2   y = 12 + (7-v)*(68/3) -->
+      <polyline fill="none" stroke="var(--linea)" stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round"
+                points="52,30.1 118,50.5 184,34.7 250,50.5 316,70.9 382,34.7 448,52.8"/>
+      <g fill="var(--linea)">
+        <circle cx="52"  cy="30.1" r="3"/><circle cx="118" cy="50.5" r="3"/>
+        <circle cx="184" cy="34.7" r="3"/><circle cx="250" cy="50.5" r="3"/>
+        <circle cx="316" cy="70.9" r="3"/><circle cx="382" cy="34.7" r="3"/>
+      </g>
+      <!-- el punto de hoy, anillado contra la superficie -->
+      <circle cx="448" cy="52.8" r="4.5" fill="var(--linea)" stroke="var(--surface-1)" stroke-width="2"/>
+      <g font-size="9" fill="var(--text-muted)" text-anchor="middle">
+        <text x="52"  y="99">24</text><text x="118" y="99">25</text>
+        <text x="184" y="99">26</text><text x="250" y="99">27</text>
+        <text x="316" y="99">28</text><text x="382" y="99">29</text>
+        <text x="448" y="99">30</text>
+      </g>
+      <!-- etiqueta directa solo en el último: nunca un número por punto -->
+      <text x="448" y="44" text-anchor="end" font-size="10.5" font-weight="600" fill="var(--text-primary)">5.2</text>
+    </svg>
+  </div>
+</div>
+
+<div class="aviso">
+  <b>La reserva que va con este −0.8, y es del orquestador, no de los auditores.</b>
+  El <code>MAPA.md</code> que recibieron los doce les dijo, con estas palabras, que
+  «bajar una nota con la razón <i>mirada más profunda</i> escrita es un resultado
+  válido y esperado». Nueve de las doce notas bajaron y <b>siete citan justamente esa
+  razón</b>. Parte del −0.8 es corrección real de la sobre-corrección de la 29
+  —que subió once notas— y parte puede ser el eco de esa invitación. No puedo
+  separarlas con lo medido hoy, así que queda escrito: la 31 debe recibir un MAPA
+  neutral para saber cuál de las dos fuerzas era.
+</div>
+
+<!-- ── 3. Los doce rubros ──────────────────────────────────────────── -->
+<h2>Los doce rubros · el color codifica la NOTA (rojo ≤4 · ámbar 5–6 · verde ≥7), nunca el delta</h2>
+<div class="rejilla">
+
+  <div class="rubro" style="border-left-color:var(--warning)">
+    <div class="num"><div class="nota">5</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--warning)"></span>Frontend</div>
+      <div class="riesgo">El despacho sigue sin ofrecer el Anticipo: el viaje nace en 0 y la pantalla de firma presenta ese cero como una medición.</div>
+      <div class="sev">1 crít · 1 alto · 2 med · 2 bajo — 4 reincidentes</div>
+      <div class="razon">Mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--good)">
+    <div class="num"><div class="nota">7</div><div class="delta">▲1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--good)"></span>Backend y API</div>
+      <div class="riesgo">BE-3 cerró de verdad con la 0348, pero no cerró la clase: el mismo predicado falta en <code>libro_viaje.ts:590</code>.</div>
+      <div class="sev">0 crít · 3 alto · 3 med · 2 bajo</div>
+      <div class="razon">Se atacó y subió</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--critical)">
+    <div class="num"><div class="nota">4</div><div class="delta">▼3</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--critical)"></span>Sistema agéntico</div>
+      <div class="riesgo">El +3 de la 29 no lo sostenía el código: 5 reincidentes intactos línea por línea y un ciclo que se reintenta sin cerrarse.</div>
+      <div class="sev">1 crít · 3 alto · 3 med · 2 bajo — 5 reincidentes</div>
+      <div class="razon">Mirada más profunda + deuda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--warning)">
+    <div class="num"><div class="nota">5</div><div class="delta">▼2</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--warning)"></span>Tool calling</div>
+      <div class="riesgo">El adaptador cableado deja que el modelo escriba el <i>valor</i> que se teclea en un formulario fiscal; cuatro rondas miraron el selector, ninguna el valor.</div>
+      <div class="sev">0 crít · 3 alto · 4 med · 4 bajo — 8 reincidentes</div>
+      <div class="razon">Mirada más profunda + deuda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--warning)">
+    <div class="num"><div class="nota">6</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--warning)"></span>Seguridad</div>
+      <div class="riesgo"><code>no-store</code> se aplicó ruta por ruta: 13 salidas 200 más con datos de un tenant siguen sin la marca.</div>
+      <div class="sev">0 crít · 1 alto · 2 med · 4 bajo</div>
+      <div class="razon">Deuda + mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--critical)">
+    <div class="num"><div class="nota">3</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--critical)"></span>Cumplimiento fiscal</div>
+      <div class="riesgo">El cotejo contra la clave del SAT corre DESPUÉS de la escritura que vigila, y solo en la ruta de <code>/admin/flotas</code>.</div>
+      <div class="sev">2 crít · 3 alto · 5 med · 3 bajo</div>
+      <div class="razon">Mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--critical)">
+    <div class="num"><div class="nota">4</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--critical)"></span>Cumplimiento legal</div>
+      <div class="riesgo">La coordenada exacta del operador queda en texto dentro de <code>coordinacion_proveedor.mensaje_preparado</code>: ni la purga de 90 días ni el ARCO la tocan.</div>
+      <div class="sev">1 crít · 7 alto · 4 med · 1 bajo — 6 reincidentes</div>
+      <div class="razon">Mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--critical)">
+    <div class="num"><div class="nota">3</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--critical)"></span>Arquitectura</div>
+      <div class="riesgo">El predicado del 15 % no bajó de cinco copias: subió a <b>seis</b>, y las tres SQL se reescribieron en esta ventana.</div>
+      <div class="sev">2 crít · 4 alto · 3 med · 3 bajo — 8 reincidentes</div>
+      <div class="razon">Deuda que cobró factura</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--warning)">
+    <div class="num"><div class="nota">6</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--warning)"></span>Pruebas</div>
+      <div class="riesgo">La campaña de 47 páginas no tiene una sola aserción sobre una cifra de dinero: <b>0 de 11</b> mutaciones del número impreso mueren.</div>
+      <div class="sev">1 crít · 3 alto · 3 med · 1 bajo — 5 reincidentes</div>
+      <div class="razon">Mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--good)">
+    <div class="num"><div class="nota">7</div><div class="delta">▲1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--good)"></span>Operabilidad y DX</div>
+      <div class="riesgo">Publicación al 100 % y producción en verde, pero <code>crons=degraded</code> sigue sin decir cuál: 104 corridas rojas, 57 h, una sola notificación.</div>
+      <div class="sev">1 crít · 4 alto · 5 med · 1 bajo</div>
+      <div class="razon">Se atacó y subió</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--warning)">
+    <div class="num"><div class="nota">5</div><div class="delta">▼1</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--warning)"></span>Rendimiento y costo</div>
+      <div class="riesgo">REN-C1 mutó: la mitad reintentable cerró, pero la suma de tiempo no se movió un segundo — 331.2 s contra un <code>maxDuration</code> de 300.</div>
+      <div class="sev">2 crít · 3 alto · 6 med · 2 bajo — 6 reincidentes</div>
+      <div class="razon">Mirada más profunda</div>
+    </div>
+  </div>
+
+  <div class="rubro" style="border-left-color:var(--good)">
+    <div class="num"><div class="nota">7</div><div class="delta">=</div></div>
+    <div class="cuerpo">
+      <div class="nombre"><span class="dot" style="background:var(--good)"></span>Modelo de datos</div>
+      <div class="riesgo">Se sostiene por otra razón: el argumento «el esquema no cambió» desapareció y el 7 lo gana el trabajo nuevo — 8 de 9 migraciones traen prueba que hace divergir.</div>
+      <div class="sev">0 crít · 0 alto · 4 med · 7 bajo</div>
+      <div class="razon">Se sostiene, razón nueva</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── 4. ¿Qué me impide llegar al demo? ───────────────────────────── -->
+<h2>Los 11 críticos · ninguno sin estado</h2>
+<div class="scroll">
+<table class="criticos">
+  <thead>
+    <tr><th>ID</th><th>Qué pasa</th><th><code>archivo:línea</code></th><th>Estado</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>AG-C1</b></td>
+      <td>El ECC reintentado se concilia y NO sale de la bandeja: se le ofrece al contralor para ligarlo 1:1 contra un ticket, con el acreditamiento ya repartido.</td>
+      <td><code>sat_descarga/ciclo.ts:342</code></td>
+      <td class="estado" style="color:var(--good)">✔ arreglado <code>7d5bcdc</code></td>
+    </tr>
+    <tr>
+      <td><b>ARQ-C2</b></td>
+      <td>La 0349 dedupó el cubo del 15 % en SQL y la resta gemela en TS no se movió: $100,000 − $4,700 sale <b>90,600</b> en vez de <b>95,300</b>. Cupo regalado por cada ticket duplicado.</td>
+      <td><code>cuadre/desde_db.ts:175</code></td>
+      <td class="estado" style="color:var(--good)">✔ arreglado <code>b740fe0</code></td>
+    </tr>
+    <tr>
+      <td><b>FE-C1</b></td>
+      <td>El despacho no ofrece el Anticipo; el viaje nace en 0 y la firma presenta ese cero como medición. <b>5ª ronda.</b></td>
+      <td><code>dashboard/despacho</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · exige alcance de producto (no existe un solo <code>update</code> de <code>viaje.anticipo</code> en <code>src/</code>)</td>
+    </tr>
+    <tr>
+      <td><b>FIS-C1</b></td>
+      <td>El cotejo contra la clave del SAT corre DESPUÉS de la escritura: la declaración contradictoria queda guardada, se rechaza en pantalla, y el motor deduce igual.</td>
+      <td><code>perfil/preguntas.ts</code>, <code>administracion.ts</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · toca onboarding + entrevista de WhatsApp, no es quirúrgico</td>
+    </tr>
+    <tr>
+      <td><b>FIS-C2</b></td>
+      <td>El cotejo es de una dirección y un momento: cambiar la clave del SAT después no recalcula nada, y el cliente puede cambiarla desde <code>/dashboard/suscripcion</code>.</td>
+      <td><code>administracion.ts</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · mismo rediseño que FIS-C1</td>
+    </tr>
+    <tr>
+      <td><b>LEG-C1</b></td>
+      <td>La coordenada exacta del operador queda en texto dentro de <code>coordinacion_proveedor.mensaje_preparado</code>: ni la purga de 90 días que promete el aviso ni la cancelación ARCO la alcanzan.</td>
+      <td><code>coordinacion_proveedor</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · exige migración de purga y base viva para verificar</td>
+    </tr>
+    <tr>
+      <td><b>ARQ-C1</b></td>
+      <td>Un ajuste firmado sigue tirando el export contable del periodo completo. <b>8ª aparición desde la 24</b>; <code>git diff</code> de la ventana sobre ese camino: vacío.</td>
+      <td><code>api/export/poliza/route.ts:117</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · rediseño, 8ª ronda</td>
+    </tr>
+    <tr>
+      <td><b>PRU-C1</b></td>
+      <td>11 mutaciones que cambian el número de dinero impreso sobreviven las 982 pruebas.</td>
+      <td><code>clientes/vista.tsx:110</code> +10 más</td>
+      <td class="estado" style="color:var(--warning)">propuesto · es trabajo de cobertura (11 aserciones), no un bug puntual</td>
+    </tr>
+    <tr>
+      <td><b>OP-C1</b></td>
+      <td><code>crons=degraded</code> sigue sin decir cuál: 104 corridas rojas consecutivas, 57 h, una sola notificación, para hallar al final una variable de entorno faltante. <b>4ª ronda.</b></td>
+      <td><code>api/health</code>, <code>salud-produccion.yml</code></td>
+      <td class="estado" style="color:var(--serious)">pendiente · <code>94de18f</code> arregló la pantalla, que no era el hallazgo; el log y el issue no cambiaron</td>
+    </tr>
+    <tr>
+      <td><b>REN-30-C1</b></td>
+      <td>«Ejecutar ahora» del Agente de Peajes: 3,047 viajes de red sin reloj y sin <code>maxDuration</code> declarado — 914 s nominales contra 300.</td>
+      <td><code>barrerPorConciliar</code></td>
+      <td class="estado" style="color:var(--warning)">propuesto · verificado, arreglo no quirúrgico (toca el camino del dinero)</td>
+    </tr>
+    <tr>
+      <td><b>REN-30-C2</b></td>
+      <td><code>candidatosDeGasto</code> sola cuesta 427.5 s contra <code>maxDuration = 300</code>, y va antes del único punto donde el consolidado escribe avance durable.</td>
+      <td><code>intake/consolidado.ts</code></td>
+      <td class="estado" style="color:var(--warning)">propuesto · verificado, mismo camino que REN-30-C1</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>También arreglado · el guardia que debió atrapar a ARQ-C2</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Qué pasaba</th><th><code>archivo:línea</code></th><th>Estado</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>El guardia TS↔SQL del cubo del 15 % tenía la ruta <b>tecleada</b> en la <code>0345</code>, sustituida por la <code>0349</code> en esta misma ventana: pasaba verde comparando <code>engine.ts</code> contra SQL muerto. Ya había pasado en la ronda 25. Ahora la ruta se deriva.</td>
+      <td><code>fiscal_agregado_15pct.test.ts:38</code></td>
+      <td class="estado" style="color:var(--good)">✔ arreglado <code>7a9b087</code></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Descartados · la prueba de que la verificación ocurrió</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Hipótesis</th><th>Por qué se descarta</th><th>Quién la refutó</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>El reintento del consolidado ECC duplica comprobantes (⇒ duplica deducción).</td>
+      <td><b>Falsa.</b> Lo impiden el <code>unique (cfdi_xml_id, indice)</code>, la salida temprana y la reanudación por sello. El orquestador la había puesto como foco obligatorio en el MAPA.</td>
+      <td>fiscal (contra su propio encargo)</td>
+    </tr>
+    <tr>
+      <td>Alguna de las 9 migraciones pierde su <code>search_path</code> o gana <code>SECURITY DEFINER</code> ⇒ escalada de privilegios.</td>
+      <td><b>Falsa.</b> Las 12 funciones conservan cláusula de seguridad, <code>search_path</code> y firma exacta. Era el hallazgo que el MAPA señalaba como el más valioso posible.</td>
+      <td>seguridad</td>
+    </tr>
+    <tr>
+      <td>Hay un camino de acceso sin autenticar a datos de un tenant.</td>
+      <td><b>No se encontró.</b> Se buscó: 72 <code>route.ts</code>, 47 páginas de <code>/dashboard</code> con su puerta identificada, 124 llamadas al resolvedor de tenant contra la ruta real. Cero discrepancias.</td>
+      <td>seguridad</td>
+    </tr>
+    <tr>
+      <td>La cobertura nueva de las 6 páginas sensibles es decoración también para el control de acceso.</td>
+      <td><b>Falsa.</b> Sí prueban las dos capas y que el <code>tenantId</code> sale del closure. La decoración está en el eje del <i>dinero</i>, no en el del acceso.</td>
+      <td>seguridad + pruebas</td>
+    </tr>
+    <tr>
+      <td><code>src/middleware.ts</code> es una de las fronteras del rubro de backend.</td>
+      <td><b>No existe</b> en el repo, aunque la ficha del rubro lo asigna. Corrección para <code>references/rubros.md</code>.</td>
+      <td>backend</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2>La pregunta que traía esta ronda</h2>
+<p class="nota-pie">
+  La ventana era una <b>campaña de cobertura</b>: 20 de 38 commits, ~49 archivos de
+  prueba nuevos, primera cobertura para ~35 páginas. La pregunta era si muerde o si
+  solo prueba que el componente renderiza. <strong>Contestada, y las dos mitades
+  importan</strong>: sobre el <b>argumento de una escritura</b> (tenant, userId, id)
+  muerde — 9 de 12 mutaciones mueren, y seguridad confirmó que el control de acceso
+  se afirma de verdad. Sobre <b>la cifra de dinero que la pantalla imprime</b> no
+  muerde nada: <b>0 de 11</b>. El conteo total de la suite subió 378 pruebas y la
+  capacidad de detectar un número mal impreso subió cero.
+</p>
+<p class="nota-pie">
+  <b>Reincidentes: 42 de 122 hallazgos.</b> Un hallazgo que vuelve es peor noticia
+  que uno nuevo. Los que más pesan: ARQ-C1 en su <b>8ª</b> aparición, FE-C1 en su
+  <b>5ª</b>, OP-C1 en su <b>4ª</b>, y el predicado del 15 % que subió de 5 copias a
+  <b>6</b> — las tres SQL reescritas en esta misma ventana.
+</p>
+
+</div>
+</body>
+</html>
